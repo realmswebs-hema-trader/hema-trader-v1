@@ -1,5 +1,12 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+import { 
+  User, 
+  onAuthStateChanged, 
+  signInWithRedirect,
+  getRedirectResult,
+  GoogleAuthProvider, 
+  signOut 
+} from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../../lib/firebase';
 
@@ -24,16 +31,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [viewMode, setViewMode] = useState<'buyer' | 'seller'>('buyer');
 
   useEffect(() => {
+    // 🔥 HANDLE REDIRECT RESULT (FIXES POPUP ISSUE)
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          console.log("User logged in via redirect:", result.user);
+        }
+      })
+      .catch((error) => {
+        console.error("Redirect login error:", error);
+      });
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
+
       if (currentUser) {
         const userDocRef = doc(db, 'users', currentUser.uid);
+
         try {
           const userDoc = await getDoc(userDocRef);
+
           if (userDoc.exists()) {
             const userData = userDoc.data();
-            // Admin Bootstrap Force-Sync
-            if (currentUser.email === 'realmswebs@gmail.com' && (userData.verificationStatus !== 'verified' || userData.badge !== 'Elite Producer')) {
+
+            // Admin Bootstrap
+            if (
+              currentUser.email === 'realmswebs@gmail.com' &&
+              (userData.verificationStatus !== 'verified' ||
+                userData.badge !== 'Elite Producer')
+            ) {
               const adminUpdates = {
                 verificationStatus: 'verified',
                 averageRating: 5.0,
@@ -43,6 +69,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 roles: ['buyer', 'seller', 'admin'],
                 updatedAt: serverTimestamp()
               };
+
               await updateDoc(userDocRef, adminUpdates);
               setProfile({ ...userData, ...adminUpdates });
             } else {
@@ -53,6 +80,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           } else {
             const isAdminEmail = currentUser.email === 'realmswebs@gmail.com';
+
             const newProfile = {
               userId: currentUser.uid,
               displayName: currentUser.displayName || (isAdminEmail ? 'Admin Farmer' : 'Farmer'),
@@ -65,10 +93,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               followersCount: 0,
               followingCount: 0,
               fcmToken: null,
-              roles: isAdminEmail ? ['buyer', 'seller', 'admin'] : [], // Start empty to force selection
+              roles: isAdminEmail ? ['buyer', 'seller', 'admin'] : [],
               isAdmin: isAdminEmail,
               createdAt: serverTimestamp(),
             };
+
             await setDoc(userDocRef, newProfile);
             setProfile(newProfile);
           }
@@ -78,6 +107,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         setProfile(null);
       }
+
       setLoading(false);
     });
 
@@ -86,33 +116,39 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     if (!user) return;
-    
+
     const updateHeartbeat = async () => {
       try {
         const userDocRef = doc(db, 'users', user.uid);
-        const mockToken = localStorage.getItem('fcm_token_sim') || `token_${Math.random().toString(36).substring(7)}`;
+
+        const mockToken =
+          localStorage.getItem('fcm_token_sim') ||
+          `token_${Math.random().toString(36).substring(7)}`;
+
         localStorage.setItem('fcm_token_sim', mockToken);
 
-        await updateDoc(userDocRef, { 
+        await updateDoc(userDocRef, {
           lastActiveAt: serverTimestamp(),
           fcmToken: mockToken
         });
       } catch (e) {
-        // Silent fail for heartbeat
+        // silent fail
       }
     };
 
     updateHeartbeat();
-    const interval = setInterval(updateHeartbeat, 1000 * 60 * 5); 
+    const interval = setInterval(updateHeartbeat, 1000 * 60 * 5);
     return () => clearInterval(interval);
   }, [user]);
 
   const updateLocation = async () => {
     if (!user) return;
+
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(async (position) => {
         const { latitude, longitude } = position.coords;
         const userDocRef = doc(db, 'users', user.uid);
+
         try {
           await setDoc(userDocRef, { latitude, longitude }, { merge: true });
           setProfile((prev: any) => ({ ...prev, latitude, longitude }));
@@ -125,20 +161,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateRoles = async (roles: string[]) => {
     if (!user) return;
+
     const userDocRef = doc(db, 'users', user.uid);
+
     try {
-      await updateDoc(userDocRef, { roles, updatedAt: serverTimestamp() });
+      await updateDoc(userDocRef, {
+        roles,
+        updatedAt: serverTimestamp()
+      });
+
       setProfile((prev: any) => ({ ...prev, roles }));
+
       if (roles.includes('seller')) setViewMode('seller');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
     }
   };
 
+  // 🔥 FIXED LOGIN (REDIRECT INSTEAD OF POPUP)
   const signInWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
+
     try {
-      await signInWithPopup(auth, provider);
+      await signInWithRedirect(auth, provider);
     } catch (error) {
       console.error('Google Sign In Error', error);
     }
@@ -153,17 +198,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ 
-      user, 
-      profile, 
-      loading, 
-      viewMode, 
-      setViewMode, 
-      signInWithGoogle, 
-      logout, 
-      updateLocation,
-      updateRoles 
-    }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        loading,
+        viewMode,
+        setViewMode,
+        signInWithGoogle,
+        logout,
+        updateLocation,
+        updateRoles
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -171,8 +218,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
+
   if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
+
   return context;
 };
