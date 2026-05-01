@@ -1,0 +1,6 @@
+{
+  "name": "Hema Trader",
+  "description": "A professional mobile-first marketplace for trading goods with secure verification and real-time chat.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}

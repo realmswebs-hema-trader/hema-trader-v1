@@ -1,0 +1,268 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Farmer profile with location and reputation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "averageRating": { "type": "number" },
+        "totalTrades": { "type": "number" },
+        "verificationStatus": { 
+          "type": "string",
+          "enum": ["unverified", "pending", "verified", "rejected"]
+        },
+        "badge": { "type": "string" },
+        "fcmToken": { "type": "string" },
+        "roles": { 
+          "type": "array", 
+          "items": { "type": "string", "enum": ["buyer", "seller", "admin", "driver"] } 
+        },
+        "driverStatus": { "type": "string", "enum": ["available", "busy", "offline"] },
+        "vehicleType": { "type": "string" },
+        "deliveriesCount": { "type": "integer" },
+        "avgDriverRating": { "type": "number" },
+        "reliabilityScore": { "type": "number", "description": "0-100 logic based on completions vs cancellations" },
+        "badges": { "type": "array", "items": { "type": "string" } },
+        "sellerTier": { "type": "string", "enum": ["none", "elite", "trusted", "official"] },
+        "driverTier": { "type": "string", "enum": ["none", "trusted", "master"] },
+        "geohash": { "type": "string", "description": "For scalable location-based driver matching" },
+        "zoneId": { "type": "string", "description": "Broad routing zone for regional load balancing" },
+        "totalEarnings": { "type": "number" },
+        "isBanned": { "type": "boolean" },
+        "isSuspended": { "type": "boolean" },
+        "suspensionUntil": { "type": "string", "format": "date-time" },
+        "warningCount": { "type": "integer" },
+        "riskLevel": { "type": "string", "enum": ["none", "low", "medium", "high"] },
+        "riskFlags": { "type": "array", "items": { "type": "string" } },
+        "followersCount": { "type": "integer" },
+        "followingCount": { "type": "integer" },
+        "lastActiveAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "verificationStatus"]
+    },
+    "Listing": {
+      "title": "Listing",
+      "description": "Crop or livestock listing.",
+      "type": "object",
+      "properties": {
+        "listingId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "quantity": { "type": "string" },
+        "category": { "type": "string", "enum": ["Animals", "Farming Products", "Electronics", "Equipment", "Seeds"] },
+        "metadata": { "type": "object", "description": "Category-specific details like weight, breed, or specs" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "images": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string", "enum": ["active", "sold", "deleted"] },
+        "isBoosted": { "type": "boolean" },
+        "boostTier": { "type": "string", "enum": ["standard", "premium"] },
+        "boostExpiresAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["listingId", "ownerId", "title", "price", "status"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "User peer review after a trade.",
+      "type": "object",
+      "properties": {
+        "reviewId": { "type": "string" },
+        "tradeId": { "type": "string" },
+        "reviewerId": { "type": "string" },
+        "revieweeId": { "type": "string" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reviewId", "tradeId", "reviewerId", "revieweeId", "rating"]
+    },
+    "Trade": {
+      "title": "Trade",
+      "description": "Trade transaction between buyer and seller.",
+      "type": "object",
+      "properties": {
+        "tradeId": { "type": "string" },
+        "listingId": { "type": "string" },
+        "sellerId": { "type": "string" },
+        "buyerId": { "type": "string" },
+        "status": { 
+          "type": "string", 
+          "enum": ["pending", "funded", "shipped", "completed", "disputed", "cancelled"] 
+        },
+        "amount": { "type": "number" },
+        "platformFee": { "type": "number" },
+        "deliveryFee": { "type": "number" },
+        "driverId": { "type": "string" },
+        "driverCommission": { "type": "number" },
+        "deliveryStatus": { "type": "string", "enum": ["none", "pending", "assigned", "accepted", "picked_up", "delivered", "rejected"] },
+        "deliveryType": { "type": "string", "enum": ["pickup", "delivery"] },
+        "deliveryRequestStatus": { "type": "string", "enum": ["none", "open", "claimed"] },
+        "deliveryETA": { "type": "string" },
+        "isDisputed": { "type": "boolean" },
+        "disputeStatus": { "type": "string", "enum": ["none", "pending", "reviewing", "resolved"] },
+        "paymentReference": { "type": "string", "description": "Flutterwave transaction ID" },
+        "paymentStatus": { "type": "string", "enum": ["awaiting", "paid", "failed", "refunded"] },
+        "lastActivityAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["tradeId", "listingId", "sellerId", "buyerId", "status"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Chat message within a trade context.",
+      "type": "object",
+      "properties": {
+        "messageId": { "type": "string" },
+        "tradeId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["messageId", "tradeId", "senderId", "text"]
+    },
+    "Offer": {
+      "title": "Offer",
+      "description": "A negotiation offer for a trade.",
+      "type": "object",
+      "properties": {
+        "offerId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "amount": { "type": "number" },
+        "quantity": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["offerId", "senderId", "amount", "status"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app alerts for trade activity and messages.",
+      "type": "object",
+      "properties": {
+        "notificationId": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "type": { "type": "string", "enum": ["message", "trade_update", "offer", "rating", "system", "new_listing"] },
+        "targetId": { "type": "string" },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["notificationId", "userId", "title", "body", "type", "isRead", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Individual user profiles."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "User specific in-app notifications."
+    },
+    "/follows/{followId}": {
+      "schema": {
+        "title": "Follow",
+        "type": "object",
+        "properties": {
+          "followerId": { "type": "string" },
+          "followingId": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "description": "Social graph for marketplace sellers."
+    },
+    "/listings/{listingId}": {
+      "schema": "Listing",
+      "description": "Marketplace listings."
+    },
+    "/trades/{tradeId}": {
+      "schema": "Trade",
+      "description": "Trade transactions."
+    },
+    "/trades/{tradeId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages for a specific trade."
+    },
+    "/trades/{tradeId}/offers/{offerId}": {
+      "schema": "Offer",
+      "description": "Negotiation offers for a specific trade."
+    },
+    "/reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Immutable user reviews."
+    },
+    "/driver_ratings/{ratingId}": {
+      "schema": {
+        "title": "DriverRating",
+        "type": "object",
+        "properties": {
+          "driverId": { "type": "string" },
+          "raterId": { "type": "string" },
+          "tradeId": { "type": "string" },
+          "rating": { "type": "integer", "enum": [1, 2, 3, 4, 5] },
+          "comment": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "description": "Ratings for delivery partners"
+    },
+    "/reports/{reportId}": {
+      "schema": {
+        "title": "Report",
+        "type": "object",
+        "properties": {
+          "reporterId": { "type": "string" },
+          "targetId": { "type": "string" },
+          "reason": { "type": "string" },
+          "description": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "reviewed", "dismissed", "banned"] },
+          "adminNote": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "description": "User reports for moderation"
+    },
+    "/audit_logs/{logId}": {
+      "schema": {
+        "title": "AuditLog",
+        "type": "object",
+        "properties": {
+          "adminId": { "type": "string" },
+          "action": { "type": "string" },
+          "targetId": { "type": "string" },
+          "reason": { "type": "string" },
+          "metadata": { "type": "object" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "description": "History of all administrative actions"
+    },
+    "/notifications/{notifId}": {
+      "schema": {
+        "title": "Notification",
+        "type": "object",
+        "properties": {
+          "userId": { "type": "string" },
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "type": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "sent", "failed"] },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "description": "Asynchronous notification queue for scalability"
+    }
+  }
+}

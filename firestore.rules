@@ -1,0 +1,294 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // --- HELPERS ---
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'realmswebs@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- SCHEMAS ---
+
+    function isValidUser(data) {
+      let isAssigningAdmin = data.roles.size() > 0 && data.roles.hasAny(['admin']);
+      return data.userId == request.auth.uid
+        && data.verificationStatus in ['unverified', 'pending', 'verified', 'rejected']
+        && (data.lastActiveAt == null || data.lastActiveAt is timestamp)
+        && (data.createdAt == request.time || data.createdAt is timestamp)
+        && (data.driverStatus == null || data.driverStatus in ['available', 'busy', 'offline'])
+        && (data.vehicleType == null || data.vehicleType is string)
+        && (data.deliveriesCount == null || data.deliveriesCount is int)
+        && (data.avgDriverRating == null || data.avgDriverRating is number)
+        && (data.reliabilityScore == null || data.reliabilityScore is number)
+        && (data.badges == null || data.badges is list)
+        && (data.sellerTier == null || data.sellerTier in ['none', 'elite', 'trusted', 'official'])
+        && (data.driverTier == null || data.driverTier in ['none', 'trusted', 'master'])
+        && (data.totalEarnings == null || data.totalEarnings is number)
+        && (data.isBanned == null || data.isBanned is bool)
+        && (data.warningCount == null || data.warningCount is int)
+        && (data.isSuspended == null || data.isSuspended is bool)
+        && (data.suspensionUntil == null || data.suspensionUntil is timestamp)
+        && (data.riskLevel == null || data.riskLevel in ['none', 'low', 'medium', 'high'])
+        && (data.riskFlags == null || data.riskFlags is list)
+        && data.roles is list
+        && (!isAssigningAdmin || isAdmin());
+    }
+
+    function isValidListing(data) {
+      return data.ownerId == request.auth.uid
+        && data.title is string && data.title.size() <= 100
+        && data.price is number && data.price >= 0
+        && data.status in ['active', 'sold', 'deleted']
+        && data.category in ['Animals', 'Farming Products', 'Electronics', 'Equipment', 'Seeds']
+        && (data.latitude == null || data.latitude is number)
+        && (data.longitude == null || data.longitude is number)
+        && (data.isBoosted == null || data.isBoosted is bool)
+        && (data.boostTier == null || data.boostTier in ['standard', 'premium'])
+        && (data.boostExpiresAt == null || data.boostExpiresAt is timestamp)
+        && (data.createdAt == request.time || data.createdAt is timestamp);
+    }
+
+    function isValidTrade(data) {
+      return (data.buyerId == request.auth.uid || data.sellerId == request.auth.uid || isAdmin())
+        && data.status in ['pending', 'funded', 'shipped', 'completed', 'disputed', 'cancelled']
+        && data.amount is number && data.amount >= 0
+        && (data.isDisputed == null || data.isDisputed is bool)
+        && (data.platformFee == null || data.platformFee is number)
+        && (data.deliveryFee == null || data.deliveryFee is number)
+        && (data.driverId == null || data.driverId is string)
+        && (data.driverCommission == null || data.driverCommission is number)
+        && (data.deliveryStatus == null || data.deliveryStatus in ['none', 'pending', 'assigned', 'accepted', 'picked_up', 'delivered', 'rejected'])
+        && (data.deliveryType == null || data.deliveryType in ['pickup', 'delivery'])
+        && (data.deliveryRequestStatus == null || data.deliveryRequestStatus in ['none', 'open', 'claimed'])
+        && (data.deliveryETA == null || data.deliveryETA is string)
+        && (data.paymentStatus == null || data.paymentStatus in ['awaiting', 'paid', 'failed', 'refunded'])
+        && (data.paymentReference == null || data.paymentReference is string)
+        && (data.isDisputed == null || data.isDisputed is bool)
+        && (data.disputeStatus == null || data.disputeStatus in ['none', 'pending', 'reviewing', 'resolved'])
+        && (data.lastActivityAt == null || data.lastActivityAt is timestamp)
+        && (data.createdAt == request.time || data.createdAt is timestamp)
+        && (data.updatedAt == request.time || data.updatedAt is timestamp);
+    }
+
+    function isValidNotification(data) {
+      return data.userId is string
+        && data.title is string && data.title.size() <= 200
+        && data.body is string && data.body.size() <= 1000
+        && data.type in ['message', 'trade_update', 'offer', 'rating', 'system', 'new_listing']
+        && data.isRead == false
+        && data.createdAt == request.time;
+    }
+
+    function isValidReview(data) {
+      return data.reviewerId == request.auth.uid
+        && data.rating is number && data.rating >= 1 && data.rating <= 5
+        && data.comment is string && data.comment.size() <= 1000
+        && data.createdAt == request.time;
+    }
+
+    function isValidMessage(data, tradeId) {
+      return data.senderId == request.auth.uid
+        && data.tradeId == tradeId
+        && data.text is string && data.text.size() <= 2000
+        && data.createdAt == request.time;
+    }
+
+    function isValidOffer(data) {
+      return data.senderId == request.auth.uid
+        && data.amount is number && data.amount >= 0
+        && data.status in ['pending', 'accepted', 'declined']
+        && data.createdAt == request.time;
+    }
+
+    function isValidDriverRating(data) {
+      return data.raterId == request.auth.uid
+        && data.rating is int && data.rating >= 1 && data.rating <= 5
+        && data.comment is string && data.comment.size() <= 1000
+        && data.createdAt == request.time;
+    }
+
+    function isValidReport(data) {
+      return data.reporterId == request.auth.uid
+        && data.status == 'pending'
+        && data.reason is string && data.reason.size() <= 100
+        && data.description is string && data.description.size() <= 1000
+        && data.createdAt == request.time;
+    }
+
+    // --- COLLECTIONS ---
+
+    // Connection test path
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Admins collection - managed manually or via server
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+    }
+
+    match /users/{userId} {
+      allow get: if true; // Public seller profiles
+      allow list: if true; // Public discovery of active sellers
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if (isOwner(userId) && (
+        incoming().diff(existing()).affectedKeys().hasAny(['lastActiveAt', 'fcmToken', 'followersCount', 'followingCount', 'driverStatus', 'vehicleType', 'roles'])
+      )) || (isSignedIn() && (
+        incoming().diff(existing()).affectedKeys().hasAny(['followersCount', 'deliveriesCount', 'avgDriverRating', 'reliabilityScore', 'totalEarnings', 'warningCount'])
+      )) || (request.auth == null && (
+        // Allow server-side updates to reputation and earnings
+        incoming().diff(existing()).affectedKeys().hasAny(['totalEarnings', 'totalTrades', 'deliveriesCount', 'updatedAt', 'isSuspended', 'riskLevel', 'riskFlags'])
+      )) || isAdmin();
+    }
+
+    match /users/{userId}/notifications/{notificationId} {
+      allow list, get: if isOwner(userId);
+      allow create: if (isSignedIn() || request.auth == null) && isValidNotification(incoming()) && incoming().userId == userId;
+      allow update: if isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['isRead']);
+    }
+
+    match /follows/{followId} {
+      allow list: if isSignedIn() && (resource.data.followerId == request.auth.uid || resource.data.followingId == request.auth.uid);
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && incoming().followerId == request.auth.uid && isValidId(followId);
+      allow delete: if isSignedIn() && existing().followerId == request.auth.uid;
+    }
+
+    match /boosts/{boostId} {
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid && isValidId(boostId);
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /listings/{listingId} {
+      allow get: if true; // Public view
+      allow list: if true; // Public gallery
+      
+      allow create: if isSignedIn() && isValidListing(incoming()) && isValidId(listingId);
+      
+      allow update: if (isOwner(existing().ownerId) && isValidListing(incoming()) && (
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'price', 'category', 'location', 'images', 'status'])
+      )) || isAdmin();
+
+      allow delete: if isAdmin();
+    }
+
+    match /trades/{tradeId} {
+      allow get: if isSignedIn() && (isOwner(existing().buyerId) || isOwner(existing().sellerId) || isOwner(existing().driverId) || isAdmin()) || (request.auth == null);
+      allow list: if isSignedIn() && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid || resource.data.driverId == request.auth.uid || isAdmin()) || (request.auth == null);
+
+      allow create: if isSignedIn() && isValidTrade(incoming()) && isValidId(tradeId)
+        && incoming().buyerId == request.auth.uid
+        && get(/databases/$(database)/documents/listings/$(incoming().listingId)).data.status == 'active';
+
+      allow update: if (isSignedIn() && (isOwner(existing().buyerId) || isOwner(existing().sellerId) || isOwner(existing().driverId) || isAdmin())) 
+        || (request.auth == null) // Allow server updates
+        && (incoming().buyerId == existing().buyerId && incoming().sellerId == existing().sellerId) // Participants are immutable
+        && (
+          // Action 1: Buyer Pays
+          (existing().status == 'pending' && incoming().status == 'funded' && (isOwner(existing().buyerId) || request.auth == null)) ||
+          // Action 2: Seller/Driver ships (If delivery type)
+          (existing().status == 'funded' && incoming().status == 'shipped' && (isOwner(existing().sellerId) || isOwner(existing().driverId))) ||
+          // Action 3: Buyer confirms receipt
+          (existing().status == 'shipped' && incoming().status == 'completed' && (isOwner(existing().buyerId) || request.auth == null)) ||
+          // Action 4: Buyer confirms pickup (If pickup type)
+          (existing().status == 'funded' && incoming().status == 'completed' && existing().deliveryType == 'pickup' && (isOwner(existing().buyerId) || request.auth == null)) ||
+          // Administration & Disputes & Typing
+          isAdmin() ||
+          (incoming().diff(existing()).affectedKeys().hasAny(['typing', 'updatedAt', 'lastActivityAt', 'isDisputed', 'disputeStatus', 'deliveryStatus', 'driverId', 'deliveryETA', 'paymentStatus', 'paymentReference', 'adminNote']))
+        );
+    }
+
+    match /trades/{tradeId}/messages/{messageId} {
+      allow list, get: if isSignedIn() && (
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.buyerId == request.auth.uid ||
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isSignedIn() && isValidMessage(incoming(), tradeId) && (
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.buyerId == request.auth.uid ||
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.sellerId == request.auth.uid
+      );
+    }
+
+    match /trades/{tradeId}/offers/{offerId} {
+      allow list, get: if isSignedIn() && (
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.buyerId == request.auth.uid ||
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.sellerId == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isSignedIn() && isValidOffer(incoming()) && (
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.buyerId == request.auth.uid ||
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.sellerId == request.auth.uid
+      ) && incoming().status == 'pending';
+
+      allow update: if isSignedIn() && (
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.buyerId == request.auth.uid ||
+        get(/databases/$(database)/documents/trades/$(tradeId)).data.sellerId == request.auth.uid
+      ) && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidReview(incoming()) && isValidId(reviewId)
+        && exists(/databases/$(database)/documents/trades/$(incoming().tradeId))
+        && get(/databases/$(database)/documents/trades/$(incoming().tradeId)).data.status == 'completed';
+    }
+
+    match /driver_ratings/{ratingId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidDriverRating(incoming()) && isValidId(ratingId)
+        && exists(/databases/$(database)/documents/trades/$(incoming().tradeId))
+        && get(/databases/$(database)/documents/trades/$(incoming().tradeId)).data.deliveryStatus == 'delivered';
+    }
+
+    match /reports/{reportId} {
+      allow get: if isAdmin() || (isSignedIn() && resource.data.reporterId == request.auth.uid);
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && isValidReport(incoming()) && isValidId(reportId);
+      allow update: if isAdmin() && incoming().diff(existing()).affectedKeys().hasAny(['status', 'adminNote']);
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && isValidId(logId) && incoming().createdAt == request.time;
+    }
+
+    match /notifications/{notifId} {
+      // Background worker (server) needs access. In this environment, server uses client SDK without auth.
+      // We allow list/get/update if status is 'pending' or 'sent' for the queue processor.
+      allow read: if isSignedIn() || (request.auth == null); 
+      allow update: if isAdmin() || (request.auth == null && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']));
+      allow create: if isSignedIn() && isValidNotification(incoming()) && isValidId(notifId);
+    }
+
+    // --- GLOBAL SAFETY NET ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
