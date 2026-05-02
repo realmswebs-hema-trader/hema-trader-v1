@@ -1,13 +1,19 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { 
-  User, 
-  onAuthStateChanged, 
+import {
+  User,
+  onAuthStateChanged,
   signInWithRedirect,
   getRedirectResult,
-  GoogleAuthProvider, 
-  signOut 
+  GoogleAuthProvider,
+  signOut
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp, updateDoc } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
+  updateDoc
+} from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from '../../lib/firebase';
 
 interface AuthContextType {
@@ -31,17 +37,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [viewMode, setViewMode] = useState<'buyer' | 'seller'>('buyer');
 
   useEffect(() => {
-    // 🔥 HANDLE REDIRECT RESULT (FIXES POPUP ISSUE)
-    getRedirectResult(auth)
-      .then((result) => {
+    // ✅ HANDLE REDIRECT RESULT (CRITICAL FIX)
+    const handleRedirect = async () => {
+      try {
+        const result = await getRedirectResult(auth);
         if (result?.user) {
-          console.log("User logged in via redirect:", result.user);
+          console.log("✅ Redirect login success:", result.user);
         }
-      })
-      .catch((error) => {
-        console.error("Redirect login error:", error);
-      });
+      } catch (error) {
+        console.error("❌ Redirect login error:", error);
+      }
+    };
 
+    handleRedirect();
+
+    // ✅ AUTH STATE LISTENER
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
 
@@ -54,7 +64,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (userDoc.exists()) {
             const userData = userDoc.data();
 
-            // Admin Bootstrap
+            // ✅ ADMIN AUTO-SETUP
             if (
               currentUser.email === 'realmswebs@gmail.com' &&
               (userData.verificationStatus !== 'verified' ||
@@ -79,6 +89,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
             }
           } else {
+            // ✅ FIRST TIME USER (AUTO SIGNUP)
             const isAdminEmail = currentUser.email === 'realmswebs@gmail.com';
 
             const newProfile = {
@@ -114,6 +125,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
+  // ✅ HEARTBEAT (KEEP USER ACTIVE)
   useEffect(() => {
     if (!user) return;
 
@@ -131,7 +143,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           lastActiveAt: serverTimestamp(),
           fcmToken: mockToken
         });
-      } catch (e) {
+      } catch {
         // silent fail
       }
     };
@@ -178,7 +190,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // 🔥 FIXED LOGIN (REDIRECT INSTEAD OF POPUP)
+  // ✅ FINAL LOGIN METHOD (REDIRECT)
   const signInWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
 
@@ -219,7 +231,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 export const useAuth = () => {
   const context = useContext(AuthContext);
 
-  if (context === undefined) {
+  if (!context) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
 
