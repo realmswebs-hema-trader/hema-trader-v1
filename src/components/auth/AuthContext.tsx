@@ -37,12 +37,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [viewMode, setViewMode] = useState<'buyer' | 'seller'>('buyer');
 
   useEffect(() => {
-    // ✅ HANDLE REDIRECT RESULT (CRITICAL FIX)
+    // 🔥 HANDLE REDIRECT FIRST (VERY IMPORTANT)
     const handleRedirect = async () => {
       try {
         const result = await getRedirectResult(auth);
+
         if (result?.user) {
           console.log("✅ Redirect login success:", result.user);
+
+          // 🔥 FORCE USER STATE IMMEDIATELY
+          setUser(result.user);
         }
       } catch (error) {
         console.error("❌ Redirect login error:", error);
@@ -51,7 +55,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     handleRedirect();
 
-    // ✅ AUTH STATE LISTENER
+    // 🔥 AUTH STATE LISTENER
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
 
@@ -64,7 +68,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (userDoc.exists()) {
             const userData = userDoc.data();
 
-            // ✅ ADMIN AUTO-SETUP
+            // ADMIN AUTO-SETUP
             if (
               currentUser.email === 'realmswebs@gmail.com' &&
               (userData.verificationStatus !== 'verified' ||
@@ -89,7 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
             }
           } else {
-            // ✅ FIRST TIME USER (AUTO SIGNUP)
+            // FIRST TIME USER (AUTO SIGNUP)
             const isAdminEmail = currentUser.email === 'realmswebs@gmail.com';
 
             const newProfile = {
@@ -125,7 +129,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  // ✅ HEARTBEAT (KEEP USER ACTIVE)
+  // HEARTBEAT
   useEffect(() => {
     if (!user) return;
 
@@ -143,9 +147,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           lastActiveAt: serverTimestamp(),
           fcmToken: mockToken
         });
-      } catch {
-        // silent fail
-      }
+      } catch {}
     };
 
     updateHeartbeat();
@@ -190,15 +192,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // ✅ FINAL LOGIN METHOD (REDIRECT)
+  // 🔥 FINAL LOGIN FUNCTION
   const signInWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
 
-    try {
-      await signInWithRedirect(auth, provider);
-    } catch (error) {
-      console.error('Google Sign In Error', error);
-    }
+    console.log("🚀 Starting Google login...");
+
+    await signInWithRedirect(auth, provider);
   };
 
   const logout = async () => {
