@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './components/auth/AuthContext';
 import { NotificationProvider } from './components/notifications/NotificationContext';
 import RetentionManager from './components/notifications/RetentionManager';
 import { WifiOff, Loader2 } from 'lucide-react';
+
 import Home from './pages/Home';
 import ListingDetail from './pages/ListingDetail';
 import CreateListing from './pages/CreateListing';
@@ -15,19 +16,31 @@ import DriverDiscovery from './pages/DriverDiscovery';
 import Admin from './pages/Admin';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
+
 import Header from './components/layout/Header';
 import BottomNav from './components/layout/BottomNav';
 import RoleSelection from './components/auth/RoleSelection';
 
+// 🔥 IMPORT YOUR AUTH UI
+import AuthScreen from './components/auth/AuthScreen'; // <-- IMPORTANT
+
+// ==========================
+// PRIVATE ROUTE
+// ==========================
 const PrivateRoute = ({ children }: { children: ReactNode }) => {
   const { user, profile, loading } = useAuth();
-  if (loading) return (
-    <div className="flex h-[80vh] flex-col items-center justify-center gap-4 text-slate-500">
-      <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
-      <span className="text-[10px] font-bold uppercase tracking-wider">Loading your profile...</span>
-    </div>
-  );
-  
+
+  if (loading) {
+    return (
+      <div className="flex h-[80vh] flex-col items-center justify-center gap-4 text-slate-500">
+        <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
+        <span className="text-[10px] font-bold uppercase tracking-wider">
+          Loading your profile...
+        </span>
+      </div>
+    );
+  }
+
   if (user && profile && (!profile.roles || profile.roles.length === 0)) {
     return <RoleSelection />;
   }
@@ -35,25 +48,39 @@ const PrivateRoute = ({ children }: { children: ReactNode }) => {
   return user ? <>{children}</> : <Navigate to="/" />;
 };
 
+// ==========================
+// ADMIN ROUTE
+// ==========================
 const AdminRoute = ({ children }: { children: ReactNode }) => {
   const { profile, loading } = useAuth();
-  if (loading) return (
-    <div className="flex h-[80vh] flex-col items-center justify-center gap-4 text-slate-500">
-      <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
-      <span className="text-[10px] font-bold uppercase tracking-wider">Verifying permissions...</span>
-    </div>
-  );
+
+  if (loading) {
+    return (
+      <div className="flex h-[80vh] flex-col items-center justify-center gap-4 text-slate-500">
+        <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
+        <span className="text-[10px] font-bold uppercase tracking-wider">
+          Verifying permissions...
+        </span>
+      </div>
+    );
+  }
+
   return profile?.roles?.includes('admin') ? <>{children}</> : <Navigate to="/" />;
 };
 
+// ==========================
+// OFFLINE BANNER
+// ==========================
 const OfflineBanner = () => {
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   useEffect(() => {
     const onOnline = () => setIsOffline(false);
     const onOffline = () => setIsOffline(true);
+
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+
     return () => {
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
@@ -64,13 +91,33 @@ const OfflineBanner = () => {
 
   return (
     <div className="bg-amber-500 py-2 text-center text-[10px] font-bold uppercase tracking-wider text-black">
-      <WifiOff className="inline-block mr-2 h-3 w-3 mb-0.5" /> 
+      <WifiOff className="inline-block mr-2 h-3 w-3 mb-0.5" />
       You're currently offline. Some features may be limited until you reconnect.
     </div>
   );
 };
 
+// ==========================
+// MAIN ROUTES
+// ==========================
 function AppRoutes() {
+  const { user, loading } = useAuth();
+
+  // 🔥 GLOBAL LOADING
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
+      </div>
+    );
+  }
+
+  // 🔥 THIS IS THE FIX — SHOW AUTH IF NOT LOGGED IN
+  if (!user) {
+    return <AuthScreen />;
+  }
+
+  // 🔥 USER IS LOGGED IN → SHOW APP
   return (
     <div className="flex min-h-screen flex-col bg-brand-bg pb-20 font-sans text-slate-200">
       <OfflineBanner />
@@ -96,6 +143,9 @@ function AppRoutes() {
   );
 }
 
+// ==========================
+// ROOT APP
+// ==========================
 export default function App() {
   return (
     <Router>
