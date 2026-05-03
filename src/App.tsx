@@ -21,8 +21,8 @@ import Header from './components/layout/Header';
 import BottomNav from './components/layout/BottomNav';
 import RoleSelection from './components/auth/RoleSelection';
 
-// 🔥 IMPORT YOUR AUTH UI
-import AuthScreen from './components/auth/AuthScreen'; // <-- IMPORTANT
+// ✅ AUTH SCREEN
+import AuthScreen from './components/auth/AuthScreen';
 
 // ==========================
 // PRIVATE ROUTE
@@ -98,7 +98,7 @@ const OfflineBanner = () => {
 };
 
 // ==========================
-// MAIN ROUTES
+// MAIN ROUTES (FIXED)
 // ==========================
 function AppRoutes() {
   const { user, loading } = useAuth();
@@ -112,7 +112,7 @@ function AppRoutes() {
     );
   }
 
-  // 🔥 THIS IS THE FIX — SHOW AUTH IF NOT LOGGED IN
+  // 🔥 SHOW AUTH SCREEN IF NOT LOGGED IN
   if (!user) {
     return <AuthScreen />;
   }
