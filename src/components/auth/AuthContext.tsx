@@ -14,7 +14,7 @@ import {
   serverTimestamp,
   updateDoc
 } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import { auth, db } from '../../lib/firebase';
 
 interface AuthContextType {
   user: User | null;
@@ -37,117 +37,136 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [viewMode, setViewMode] = useState<'buyer' | 'seller'>('buyer');
 
   useEffect(() => {
-    // 🔥 HANDLE REDIRECT FIRST (VERY IMPORTANT)
+    let isMounted = true;
+
+    // 🔥 HANDLE REDIRECT RESULT FIRST
     const handleRedirect = async () => {
       try {
         const result = await getRedirectResult(auth);
-
         if (result?.user) {
-          console.log("✅ Redirect login success:", result.user);
-
-          // 🔥 FORCE USER STATE IMMEDIATELY
-          setUser(result.user);
+          console.log("✅ Redirect success:", result.user.uid);
         }
       } catch (error) {
-        console.error("❌ Redirect login error:", error);
+        console.error("❌ Redirect error:", error);
       }
     };
 
     handleRedirect();
 
-    // 🔥 AUTH STATE LISTENER
+    // 🔥 AUTH STATE LISTENER (MAIN LOGIC)
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (!isMounted) return;
+
       setUser(currentUser);
 
-      if (currentUser) {
-        const userDocRef = doc(db, 'users', currentUser.uid);
-
-        try {
-          const userDoc = await getDoc(userDocRef);
-
-          if (userDoc.exists()) {
-            const userData = userDoc.data();
-
-            // ADMIN AUTO-SETUP
-            if (
-              currentUser.email === 'realmswebs@gmail.com' &&
-              (userData.verificationStatus !== 'verified' ||
-                userData.badge !== 'Elite Producer')
-            ) {
-              const adminUpdates = {
-                verificationStatus: 'verified',
-                averageRating: 5.0,
-                totalTrades: 100,
-                badge: 'Elite Producer',
-                isAdmin: true,
-                roles: ['buyer', 'seller', 'admin'],
-                updatedAt: serverTimestamp()
-              };
-
-              await updateDoc(userDocRef, adminUpdates);
-              setProfile({ ...userData, ...adminUpdates });
-            } else {
-              setProfile(userData);
-              if (userData.roles?.includes('seller')) {
-                setViewMode('seller');
-              }
-            }
-          } else {
-            // FIRST TIME USER (AUTO SIGNUP)
-            const isAdminEmail = currentUser.email === 'realmswebs@gmail.com';
-
-            const newProfile = {
-              userId: currentUser.uid,
-              displayName: currentUser.displayName || (isAdminEmail ? 'Admin Farmer' : 'Farmer'),
-              email: currentUser.email,
-              photoURL: currentUser.photoURL,
-              verificationStatus: isAdminEmail ? 'verified' : 'unverified',
-              totalTrades: isAdminEmail ? 100 : 0,
-              averageRating: isAdminEmail ? 5.0 : 0,
-              badge: isAdminEmail ? 'Elite Producer' : null,
-              followersCount: 0,
-              followingCount: 0,
-              fcmToken: null,
-              roles: isAdminEmail ? ['buyer', 'seller', 'admin'] : [],
-              isAdmin: isAdminEmail,
-              createdAt: serverTimestamp(),
-            };
-
-            await setDoc(userDocRef, newProfile);
-            setProfile(newProfile);
-          }
-        } catch (error) {
-          handleFirestoreError(error, OperationType.GET, `users/${currentUser.uid}`);
-        }
-      } else {
+      if (!currentUser) {
         setProfile(null);
+        setLoading(false);
+        return;
       }
 
-      setLoading(false);
+      const userRef = doc(db, 'users', currentUser.uid);
+
+      try {
+        let userSnap;
+
+        // 🔥 SAFE FIRESTORE READ
+        try {
+          userSnap = await getDoc(userRef);
+        } catch (err) {
+          console.error("🔥 Firestore read failed:", err);
+          setLoading(false);
+          return;
+        }
+
+        if (userSnap.exists()) {
+          const data = userSnap.data();
+
+          // 🔥 ADMIN AUTO SET
+          if (
+            currentUser.email === 'realmswebs@gmail.com' &&
+            (!data.isAdmin || data.badge !== 'Elite Producer')
+          ) {
+            const adminUpdate = {
+              verificationStatus: 'verified',
+              averageRating: 5.0,
+              totalTrades: 100,
+              badge: 'Elite Producer',
+              isAdmin: true,
+              roles: ['buyer', 'seller', 'admin'],
+              updatedAt: serverTimestamp()
+            };
+
+            await updateDoc(userRef, adminUpdate);
+            setProfile({ ...data, ...adminUpdate });
+          } else {
+            setProfile(data);
+            if (data.roles?.includes('seller')) {
+              setViewMode('seller');
+            }
+          }
+        } else {
+          // 🔥 FIRST TIME USER
+          const isAdmin = currentUser.email === 'realmswebs@gmail.com';
+
+          const newUser = {
+            userId: currentUser.uid,
+            displayName: currentUser.displayName || (isAdmin ? 'Admin Farmer' : 'Farmer'),
+            email: currentUser.email,
+            photoURL: currentUser.photoURL,
+            verificationStatus: isAdmin ? 'verified' : 'unverified',
+            totalTrades: isAdmin ? 100 : 0,
+            averageRating: isAdmin ? 5.0 : 0,
+            badge: isAdmin ? 'Elite Producer' : null,
+            followersCount: 0,
+            followingCount: 0,
+            fcmToken: null,
+            roles: isAdmin ? ['buyer', 'seller', 'admin'] : [],
+            isAdmin,
+            createdAt: serverTimestamp(),
+          };
+
+          await setDoc(userRef, newUser);
+          setProfile(newUser);
+        }
+
+      } catch (error) {
+        console.error("❌ Auth processing error:", error);
+      }
+
+      // 🔥 ALWAYS STOP LOADING (CRITICAL FIX)
+      setTimeout(() => {
+        if (isMounted) setLoading(false);
+      }, 300);
     });
 
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, []);
 
-  // HEARTBEAT
+  // 🔥 HEARTBEAT (SAFE)
   useEffect(() => {
     if (!user) return;
 
     const updateHeartbeat = async () => {
       try {
-        const userDocRef = doc(db, 'users', user.uid);
+        const userRef = doc(db, 'users', user.uid);
 
-        const mockToken =
+        const token =
           localStorage.getItem('fcm_token_sim') ||
           `token_${Math.random().toString(36).substring(7)}`;
 
-        localStorage.setItem('fcm_token_sim', mockToken);
+        localStorage.setItem('fcm_token_sim', token);
 
-        await updateDoc(userDocRef, {
+        await updateDoc(userRef, {
           lastActiveAt: serverTimestamp(),
-          fcmToken: mockToken
+          fcmToken: token
         });
-      } catch {}
+      } catch (err) {
+        console.warn("Heartbeat failed");
+      }
     };
 
     updateHeartbeat();
@@ -159,16 +178,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!user) return;
 
     if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(async (position) => {
-        const { latitude, longitude } = position.coords;
-        const userDocRef = doc(db, 'users', user.uid);
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        const userRef = doc(db, 'users', user.uid);
 
-        try {
-          await setDoc(userDocRef, { latitude, longitude }, { merge: true });
-          setProfile((prev: any) => ({ ...prev, latitude, longitude }));
-        } catch (error) {
-          handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
-        }
+        await setDoc(userRef, { latitude, longitude }, { merge: true });
+        setProfile((prev: any) => ({ ...prev, latitude, longitude }));
       });
     }
   };
@@ -176,37 +191,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateRoles = async (roles: string[]) => {
     if (!user) return;
 
-    const userDocRef = doc(db, 'users', user.uid);
+    const userRef = doc(db, 'users', user.uid);
 
-    try {
-      await updateDoc(userDocRef, {
-        roles,
-        updatedAt: serverTimestamp()
-      });
+    await updateDoc(userRef, {
+      roles,
+      updatedAt: serverTimestamp()
+    });
 
-      setProfile((prev: any) => ({ ...prev, roles }));
+    setProfile((prev: any) => ({ ...prev, roles }));
 
-      if (roles.includes('seller')) setViewMode('seller');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
-    }
+    if (roles.includes('seller')) setViewMode('seller');
   };
 
-  // 🔥 FINAL LOGIN FUNCTION
   const signInWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
-
     console.log("🚀 Starting Google login...");
-
     await signInWithRedirect(auth, provider);
   };
 
   const logout = async () => {
-    try {
-      await signOut(auth);
-    } catch (error) {
-      console.error('Logout Error', error);
-    }
+    await signOut(auth);
   };
 
   return (
@@ -230,10 +234,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
   return context;
 };
