@@ -39,110 +39,124 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let isMounted = true;
 
-    // 🔥 HANDLE REDIRECT RESULT FIRST
-    const handleRedirect = async () => {
+    // 🔥 HARD TIMEOUT — NEVER ALLOW INFINITE LOADING
+    const safetyTimeout = setTimeout(() => {
+      if (isMounted) {
+        console.warn("⚠️ Safety timeout triggered — forcing UI load");
+        setLoading(false);
+      }
+    }, 5000);
+
+    const initAuth = async () => {
       try {
+        // 🔥 HANDLE REDIRECT RESULT
         const result = await getRedirectResult(auth);
         if (result?.user) {
-          console.log("✅ Redirect success:", result.user.uid);
+          console.log("✅ Redirect login:", result.user.uid);
         }
       } catch (error) {
         console.error("❌ Redirect error:", error);
       }
-    };
 
-    handleRedirect();
+      // 🔥 AUTH LISTENER
+      const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+        if (!isMounted) return;
 
-    // 🔥 AUTH STATE LISTENER (MAIN LOGIC)
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (!isMounted) return;
+        console.log("🔥 Auth state:", currentUser?.uid);
 
-      setUser(currentUser);
+        setUser(currentUser);
 
-      if (!currentUser) {
-        setProfile(null);
-        setLoading(false);
-        return;
-      }
-
-      const userRef = doc(db, 'users', currentUser.uid);
-
-      try {
-        let userSnap;
-
-        // 🔥 SAFE FIRESTORE READ
-        try {
-          userSnap = await getDoc(userRef);
-        } catch (err) {
-          console.error("🔥 Firestore read failed:", err);
+        if (!currentUser) {
+          setProfile(null);
           setLoading(false);
           return;
         }
 
-        if (userSnap.exists()) {
-          const data = userSnap.data();
+        const userRef = doc(db, 'users', currentUser.uid);
 
-          // 🔥 ADMIN AUTO SET
-          if (
-            currentUser.email === 'realmswebs@gmail.com' &&
-            (!data.isAdmin || data.badge !== 'Elite Producer')
-          ) {
-            const adminUpdate = {
-              verificationStatus: 'verified',
-              averageRating: 5.0,
-              totalTrades: 100,
-              badge: 'Elite Producer',
-              isAdmin: true,
-              roles: ['buyer', 'seller', 'admin'],
-              updatedAt: serverTimestamp()
+        try {
+          console.log("🔥 Fetching user profile...");
+
+          const userSnap = await getDoc(userRef);
+
+          if (userSnap.exists()) {
+            const data = userSnap.data();
+            console.log("✅ User exists");
+
+            // ADMIN AUTO SET
+            if (
+              currentUser.email === 'realmswebs@gmail.com' &&
+              (!data.isAdmin || data.badge !== 'Elite Producer')
+            ) {
+              const adminUpdate = {
+                verificationStatus: 'verified',
+                averageRating: 5.0,
+                totalTrades: 100,
+                badge: 'Elite Producer',
+                isAdmin: true,
+                roles: ['buyer', 'seller', 'admin'],
+                updatedAt: serverTimestamp()
+              };
+
+              await updateDoc(userRef, adminUpdate);
+              setProfile({ ...data, ...adminUpdate });
+            } else {
+              setProfile(data);
+              if (data.roles?.includes('seller')) {
+                setViewMode('seller');
+              }
+            }
+          } else {
+            console.log("🆕 Creating new user profile...");
+
+            const isAdmin = currentUser.email === 'realmswebs@gmail.com';
+
+            const newUser = {
+              userId: currentUser.uid,
+              displayName: currentUser.displayName || (isAdmin ? 'Admin Farmer' : 'Farmer'),
+              email: currentUser.email,
+              photoURL: currentUser.photoURL,
+              verificationStatus: isAdmin ? 'verified' : 'unverified',
+              totalTrades: isAdmin ? 100 : 0,
+              averageRating: isAdmin ? 5.0 : 0,
+              badge: isAdmin ? 'Elite Producer' : null,
+              followersCount: 0,
+              followingCount: 0,
+              fcmToken: null,
+              roles: isAdmin ? ['buyer', 'seller', 'admin'] : [],
+              isAdmin,
+              createdAt: serverTimestamp(),
             };
 
-            await updateDoc(userRef, adminUpdate);
-            setProfile({ ...data, ...adminUpdate });
-          } else {
-            setProfile(data);
-            if (data.roles?.includes('seller')) {
-              setViewMode('seller');
-            }
+            await setDoc(userRef, newUser);
+            setProfile(newUser);
           }
-        } else {
-          // 🔥 FIRST TIME USER
-          const isAdmin = currentUser.email === 'realmswebs@gmail.com';
 
-          const newUser = {
+        } catch (error) {
+          console.error("❌ Firestore error:", error);
+
+          // 🔥 FAIL SAFE — DO NOT BLOCK USER
+          setProfile({
             userId: currentUser.uid,
-            displayName: currentUser.displayName || (isAdmin ? 'Admin Farmer' : 'Farmer'),
             email: currentUser.email,
-            photoURL: currentUser.photoURL,
-            verificationStatus: isAdmin ? 'verified' : 'unverified',
-            totalTrades: isAdmin ? 100 : 0,
-            averageRating: isAdmin ? 5.0 : 0,
-            badge: isAdmin ? 'Elite Producer' : null,
-            followersCount: 0,
-            followingCount: 0,
-            fcmToken: null,
-            roles: isAdmin ? ['buyer', 'seller', 'admin'] : [],
-            isAdmin,
-            createdAt: serverTimestamp(),
-          };
-
-          await setDoc(userRef, newUser);
-          setProfile(newUser);
+            fallback: true
+          });
         }
 
-      } catch (error) {
-        console.error("❌ Auth processing error:", error);
-      }
+        // 🔥 ALWAYS STOP LOADING
+        setLoading(false);
+      });
 
-      // 🔥 ALWAYS STOP LOADING (CRITICAL FIX)
-      setTimeout(() => {
-        if (isMounted) setLoading(false);
-      }, 300);
-    });
+      return unsubscribe;
+    };
+
+    let unsubscribe: any;
+    initAuth().then((unsub) => (unsubscribe = unsub));
 
     return () => {
       isMounted = false;
-      unsubscribe();
+      clearTimeout(safetyTimeout);
+      if (unsubscribe) unsubscribe();
     };
   }, []);
 
@@ -164,8 +178,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           lastActiveAt: serverTimestamp(),
           fcmToken: token
         });
-      } catch (err) {
-        console.warn("Heartbeat failed");
+      } catch {
+        console.warn("⚠️ Heartbeat skipped");
       }
     };
 
@@ -177,15 +191,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateLocation = async () => {
     if (!user) return;
 
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition(async (pos) => {
-        const { latitude, longitude } = pos.coords;
-        const userRef = doc(db, 'users', user.uid);
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const { latitude, longitude } = pos.coords;
+      const userRef = doc(db, 'users', user.uid);
 
-        await setDoc(userRef, { latitude, longitude }, { merge: true });
-        setProfile((prev: any) => ({ ...prev, latitude, longitude }));
-      });
-    }
+      await setDoc(userRef, { latitude, longitude }, { merge: true });
+      setProfile((prev: any) => ({ ...prev, latitude, longitude }));
+    });
   };
 
   const updateRoles = async (roles: string[]) => {
