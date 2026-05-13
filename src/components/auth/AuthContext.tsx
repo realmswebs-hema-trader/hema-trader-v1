@@ -2,11 +2,11 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import {
   User,
   onAuthStateChanged,
-  signInWithRedirect,
-  getRedirectResult,
+  signInWithPopup,
   GoogleAuthProvider,
   signOut
 } from 'firebase/auth';
+
 import {
   doc,
   getDoc,
@@ -14,6 +14,7 @@ import {
   serverTimestamp,
   updateDoc
 } from 'firebase/firestore';
+
 import { auth, db } from '../../lib/firebase';
 
 interface AuthContextType {
@@ -39,128 +40,113 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let isMounted = true;
 
-    // 🔥 HARD TIMEOUT — NEVER ALLOW INFINITE LOADING
     const safetyTimeout = setTimeout(() => {
       if (isMounted) {
-        console.warn("⚠️ Safety timeout triggered — forcing UI load");
+        console.warn('⚠️ Safety timeout triggered — forcing UI load');
         setLoading(false);
       }
     }, 5000);
 
-    const initAuth = async () => {
-      try {
-        // 🔥 HANDLE REDIRECT RESULT
-        const result = await getRedirectResult(auth);
-        if (result?.user) {
-          console.log("✅ Redirect login:", result.user.uid);
-        }
-      } catch (error) {
-        console.error("❌ Redirect error:", error);
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (!isMounted) return;
+
+      console.log('🔥 Auth state:', currentUser?.uid);
+
+      setUser(currentUser);
+
+      if (!currentUser) {
+        setProfile(null);
+        setLoading(false);
+        return;
       }
 
-      // 🔥 AUTH LISTENER
-      const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-        if (!isMounted) return;
+      const userRef = doc(db, 'users', currentUser.uid);
 
-        console.log("🔥 Auth state:", currentUser?.uid);
+      try {
+        console.log('🔥 Fetching user profile...');
 
-        setUser(currentUser);
+        const userSnap = await getDoc(userRef);
 
-        if (!currentUser) {
-          setProfile(null);
-          setLoading(false);
-          return;
-        }
+        if (userSnap.exists()) {
+          const data = userSnap.data();
 
-        const userRef = doc(db, 'users', currentUser.uid);
+          console.log('✅ User exists');
 
-        try {
-          console.log("🔥 Fetching user profile...");
-
-          const userSnap = await getDoc(userRef);
-
-          if (userSnap.exists()) {
-            const data = userSnap.data();
-            console.log("✅ User exists");
-
-            // ADMIN AUTO SET
-            if (
-              currentUser.email === 'realmswebs@gmail.com' &&
-              (!data.isAdmin || data.badge !== 'Elite Producer')
-            ) {
-              const adminUpdate = {
-                verificationStatus: 'verified',
-                averageRating: 5.0,
-                totalTrades: 100,
-                badge: 'Elite Producer',
-                isAdmin: true,
-                roles: ['buyer', 'seller', 'admin'],
-                updatedAt: serverTimestamp()
-              };
-
-              await updateDoc(userRef, adminUpdate);
-              setProfile({ ...data, ...adminUpdate });
-            } else {
-              setProfile(data);
-              if (data.roles?.includes('seller')) {
-                setViewMode('seller');
-              }
-            }
-          } else {
-            console.log("🆕 Creating new user profile...");
-
-            const isAdmin = currentUser.email === 'realmswebs@gmail.com';
-
-            const newUser = {
-              userId: currentUser.uid,
-              displayName: currentUser.displayName || (isAdmin ? 'Admin Farmer' : 'Farmer'),
-              email: currentUser.email,
-              photoURL: currentUser.photoURL,
-              verificationStatus: isAdmin ? 'verified' : 'unverified',
-              totalTrades: isAdmin ? 100 : 0,
-              averageRating: isAdmin ? 5.0 : 0,
-              badge: isAdmin ? 'Elite Producer' : null,
-              followersCount: 0,
-              followingCount: 0,
-              fcmToken: null,
-              roles: isAdmin ? ['buyer', 'seller', 'admin'] : [],
-              isAdmin,
-              createdAt: serverTimestamp(),
+          if (
+            currentUser.email === 'realmswebs@gmail.com' &&
+            (!data.isAdmin || data.badge !== 'Elite Producer')
+          ) {
+            const adminUpdate = {
+              verificationStatus: 'verified',
+              averageRating: 5.0,
+              totalTrades: 100,
+              badge: 'Elite Producer',
+              isAdmin: true,
+              roles: ['buyer', 'seller', 'admin'],
+              updatedAt: serverTimestamp()
             };
 
-            await setDoc(userRef, newUser);
-            setProfile(newUser);
+            await updateDoc(userRef, adminUpdate);
+
+            setProfile({
+              ...data,
+              ...adminUpdate
+            });
+          } else {
+            setProfile(data);
+
+            if (data.roles?.includes('seller')) {
+              setViewMode('seller');
+            }
           }
+        } else {
+          console.log('🆕 Creating new user profile...');
 
-        } catch (error) {
-          console.error("❌ Firestore error:", error);
+          const isAdmin = currentUser.email === 'realmswebs@gmail.com';
 
-          // 🔥 FAIL SAFE — DO NOT BLOCK USER
-          setProfile({
+          const newUser = {
             userId: currentUser.uid,
+            displayName:
+              currentUser.displayName ||
+              (isAdmin ? 'Hema Trader' : 'Farmer'),
             email: currentUser.email,
-            fallback: true
-          });
+            photoURL: currentUser.photoURL,
+            verificationStatus: isAdmin ? 'verified' : 'unverified',
+            totalTrades: isAdmin ? 100 : 0,
+            averageRating: isAdmin ? 5.0 : 0,
+            badge: isAdmin ? 'Elite Producer' : null,
+            followersCount: 0,
+            followingCount: 0,
+            fcmToken: null,
+            roles: isAdmin ? ['buyer', 'seller', 'admin'] : [],
+            isAdmin,
+            createdAt: serverTimestamp()
+          };
+
+          await setDoc(userRef, newUser);
+
+          setProfile(newUser);
         }
+      } catch (error) {
+        console.error('❌ Firestore error:', error);
 
-        // 🔥 ALWAYS STOP LOADING
-        setLoading(false);
-      });
+        setProfile({
+          userId: currentUser.uid,
+          email: currentUser.email,
+          fallback: true
+        });
+      }
 
-      return unsubscribe;
-    };
-
-    let unsubscribe: any;
-    initAuth().then((unsub) => (unsubscribe = unsub));
+      setLoading(false);
+    });
 
     return () => {
       isMounted = false;
       clearTimeout(safetyTimeout);
-      if (unsubscribe) unsubscribe();
+      unsubscribe();
     };
   }, []);
 
-  // 🔥 HEARTBEAT (SAFE)
   useEffect(() => {
     if (!user) return;
 
@@ -179,12 +165,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           fcmToken: token
         });
       } catch {
-        console.warn("⚠️ Heartbeat skipped");
+        console.warn('⚠️ Heartbeat skipped');
       }
     };
 
     updateHeartbeat();
+
     const interval = setInterval(updateHeartbeat, 1000 * 60 * 5);
+
     return () => clearInterval(interval);
   }, [user]);
 
@@ -193,10 +181,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const { latitude, longitude } = pos.coords;
+
       const userRef = doc(db, 'users', user.uid);
 
-      await setDoc(userRef, { latitude, longitude }, { merge: true });
-      setProfile((prev: any) => ({ ...prev, latitude, longitude }));
+      await setDoc(
+        userRef,
+        {
+          latitude,
+          longitude
+        },
+        { merge: true }
+      );
+
+      setProfile((prev: any) => ({
+        ...prev,
+        latitude,
+        longitude
+      }));
     });
   };
 
@@ -210,15 +211,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updatedAt: serverTimestamp()
     });
 
-    setProfile((prev: any) => ({ ...prev, roles }));
+    setProfile((prev: any) => ({
+      ...prev,
+      roles
+    }));
 
-    if (roles.includes('seller')) setViewMode('seller');
+    if (roles.includes('seller')) {
+      setViewMode('seller');
+    }
   };
 
   const signInWithGoogle = async () => {
-    const provider = new GoogleAuthProvider();
-    console.log("🚀 Starting Google login...");
-    await signInWithRedirect(auth, provider);
+    try {
+      const provider = new GoogleAuthProvider();
+
+      provider.setCustomParameters({
+        prompt: 'select_account'
+      });
+
+      console.log('🚀 Starting Google popup login...');
+
+      await signInWithPopup(auth, provider);
+
+      console.log('✅ Google login success');
+    } catch (error) {
+      console.error('❌ Google sign in error:', error);
+    }
   };
 
   const logout = async () => {
@@ -246,6 +264,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) throw new Error('useAuth must be used within AuthProvider');
+
+  if (!context) {
+    throw new Error('useAuth must be used within AuthProvider');
+  }
+
   return context;
 };
