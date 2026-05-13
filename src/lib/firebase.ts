@@ -8,6 +8,10 @@ import {
   getFirestore
 } from 'firebase/firestore';
 
+import {
+  getStorage
+} from 'firebase/storage';
+
 // =====================================
 // FIREBASE CONFIG
 // =====================================
@@ -39,7 +43,7 @@ const firebaseConfig = {
 };
 
 // =====================================
-// INITIALIZE
+// INITIALIZE FIREBASE
 // =====================================
 
 export const app =
@@ -50,6 +54,9 @@ export const auth =
 
 export const db =
   getFirestore(app);
+
+export const storage =
+  getStorage(app);
 
 // =====================================
 // FIRESTORE ERROR HANDLER
