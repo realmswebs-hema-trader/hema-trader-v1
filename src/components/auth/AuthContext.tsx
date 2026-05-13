@@ -123,30 +123,77 @@ export const AuthProvider: React.FC<{
 
             let userSnap = null;
 
+            // =====================================
             // SAFE FETCH
+            // =====================================
             try {
               userSnap = await getDoc(
                 userRef
               );
-            } catch {
+            } catch (fetchError) {
               console.log(
                 'ℹ️ User document not available yet'
               );
 
-              setProfile({
+              // CREATE FALLBACK USER
+              const fallbackUser = {
                 userId:
                   currentUser.uid,
-
-                email:
-                  currentUser.email,
 
                 displayName:
                   currentUser.displayName ||
                   'User',
 
-                fallback: true,
+                email:
+                  currentUser.email,
 
-                roles: ['buyer']
+                photoURL:
+                  currentUser.photoURL ||
+                  null,
+
+                verificationStatus:
+                  'unverified',
+
+                totalTrades: 0,
+
+                averageRating: 0,
+
+                badge: null,
+
+                followersCount: 0,
+
+                followingCount: 0,
+
+                fcmToken: null,
+
+                roles: ['buyer'],
+
+                isAdmin: false,
+
+                createdAt:
+                  serverTimestamp()
+              };
+
+              try {
+                await setDoc(
+                  userRef,
+                  fallbackUser,
+                  { merge: true }
+                );
+
+                console.log(
+                  '✅ Fallback user document created'
+                );
+              } catch (createError) {
+                console.log(
+                  'ℹ️ Could not create fallback document yet',
+                  createError
+                );
+              }
+
+              setProfile({
+                ...fallbackUser,
+                fallback: true
               });
 
               setLoading(false);
@@ -154,7 +201,9 @@ export const AuthProvider: React.FC<{
               return;
             }
 
+            // =====================================
             // USER EXISTS
+            // =====================================
             if (userSnap.exists()) {
               const data =
                 userSnap.data();
@@ -228,7 +277,9 @@ export const AuthProvider: React.FC<{
               }
             }
 
+            // =====================================
             // CREATE NEW USER
+            // =====================================
             else {
               console.log(
                 '🆕 Creating new user profile...'
@@ -300,9 +351,10 @@ export const AuthProvider: React.FC<{
 
               setProfile(newUser);
             }
-          } catch {
+          } catch (error) {
             console.log(
-              'ℹ️ Temporary Firestore sync delay'
+              'ℹ️ Temporary Firestore sync delay',
+              error
             );
 
             setProfile({
