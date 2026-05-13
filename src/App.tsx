@@ -20,8 +20,6 @@ import TermsOfService from './pages/TermsOfService';
 import Header from './components/layout/Header';
 import BottomNav from './components/layout/BottomNav';
 import RoleSelection from './components/auth/RoleSelection';
-
-// ✅ AUTH SCREEN
 import AuthScreen from './components/auth/AuthScreen';
 
 // ==========================
@@ -65,7 +63,11 @@ const AdminRoute = ({ children }: { children: ReactNode }) => {
     );
   }
 
-  return profile?.roles?.includes('admin') ? <>{children}</> : <Navigate to="/" />;
+  return profile?.roles?.includes('admin') ? (
+    <>{children}</>
+  ) : (
+    <Navigate to="/" />
+  );
 };
 
 // ==========================
@@ -91,19 +93,19 @@ const OfflineBanner = () => {
 
   return (
     <div className="bg-amber-500 py-2 text-center text-[10px] font-bold uppercase tracking-wider text-black">
-      <WifiOff className="inline-block mr-2 h-3 w-3 mb-0.5" />
+      <WifiOff className="mb-0.5 mr-2 inline-block h-3 w-3" />
       You're currently offline. Some features may be limited until you reconnect.
     </div>
   );
 };
 
 // ==========================
-// MAIN ROUTES (FIXED)
+// MAIN ROUTES
 // ==========================
 function AppRoutes() {
   const { user, loading } = useAuth();
 
-  // 🔥 GLOBAL LOADING
+  // GLOBAL LOADING
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-black text-white">
@@ -112,32 +114,100 @@ function AppRoutes() {
     );
   }
 
-  // 🔥 SHOW AUTH SCREEN IF NOT LOGGED IN
+  // AUTH SCREEN
   if (!user) {
     return <AuthScreen />;
   }
 
-  // 🔥 USER IS LOGGED IN → SHOW APP
+  // APP
   return (
     <div className="flex min-h-screen flex-col bg-brand-bg pb-20 font-sans text-slate-200">
       <OfflineBanner />
+
       <Header />
+
       <main className="flex-1 px-4 py-6">
         <Routes>
+
+          {/* HOME */}
           <Route path="/" element={<Home />} />
+
+          {/* LISTINGS */}
           <Route path="/listing/:id" element={<ListingDetail />} />
-          <Route path="/create" element={<PrivateRoute><CreateListing /></PrivateRoute>} />
-          <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
+
+          {/* CREATE LISTING FIXED */}
+          <Route
+            path="/create-listing"
+            element={
+              <PrivateRoute>
+                <CreateListing />
+              </PrivateRoute>
+            }
+          />
+
+          {/* PROFILE */}
+          <Route
+            path="/profile"
+            element={
+              <PrivateRoute>
+                <Profile />
+              </PrivateRoute>
+            }
+          />
+
           <Route path="/profile/:userId" element={<Profile />} />
-          <Route path="/trades" element={<PrivateRoute><Trades /></PrivateRoute>} />
-          <Route path="/trade/:id" element={<PrivateRoute><TradeDetail /></PrivateRoute>} />
-          <Route path="/driver" element={<PrivateRoute><DriverDashboard /></PrivateRoute>} />
+
+          {/* TRADES */}
+          <Route
+            path="/trades"
+            element={
+              <PrivateRoute>
+                <Trades />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/trade/:id"
+            element={
+              <PrivateRoute>
+                <TradeDetail />
+              </PrivateRoute>
+            }
+          />
+
+          {/* DRIVERS */}
+          <Route
+            path="/driver"
+            element={
+              <PrivateRoute>
+                <DriverDashboard />
+              </PrivateRoute>
+            }
+          />
+
           <Route path="/drivers" element={<DriverDiscovery />} />
-          <Route path="/admin" element={<AdminRoute><Admin /></AdminRoute>} />
+
+          {/* ADMIN */}
+          <Route
+            path="/admin"
+            element={
+              <AdminRoute>
+                <Admin />
+              </AdminRoute>
+            }
+          />
+
+          {/* LEGAL */}
           <Route path="/privacy" element={<PrivacyPolicy />} />
           <Route path="/terms" element={<TermsOfService />} />
+
+          {/* FALLBACK */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+
         </Routes>
       </main>
+
       <BottomNav />
     </div>
   );
