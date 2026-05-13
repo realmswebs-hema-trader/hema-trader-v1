@@ -31,7 +31,9 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
+  children
+}) => {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,6 +42,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let isMounted = true;
 
+    // SAFETY TIMEOUT
     const safetyTimeout = setTimeout(() => {
       if (isMounted) {
         console.warn('⚠️ Safety timeout triggered — forcing UI load');
@@ -54,6 +57,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       setUser(currentUser);
 
+      // USER LOGGED OUT
       if (!currentUser) {
         setProfile(null);
         setLoading(false);
@@ -65,13 +69,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         console.log('🔥 Fetching user profile...');
 
-        const userSnap = await getDoc(userRef);
+        let userSnap = null;
 
+        // SAFE FETCH
+        try {
+          userSnap = await getDoc(userRef);
+        } catch (fetchError) {
+          console.warn('⚠️ User document fetch failed:', fetchError);
+
+          setProfile({
+            userId: currentUser.uid,
+            email: currentUser.email,
+            displayName: currentUser.displayName || 'User',
+            fallback: true,
+            roles: ['buyer']
+          });
+
+          setLoading(false);
+          return;
+        }
+
+        // USER EXISTS
         if (userSnap.exists()) {
           const data = userSnap.data();
 
           console.log('✅ User exists');
 
+          // ADMIN AUTO-SETUP
           if (
             currentUser.email === 'realmswebs@gmail.com' &&
             (!data.isAdmin || data.badge !== 'Elite Producer')
@@ -99,27 +123,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               setViewMode('seller');
             }
           }
-        } else {
+        }
+
+        // CREATE NEW USER
+        else {
           console.log('🆕 Creating new user profile...');
 
-          const isAdmin = currentUser.email === 'realmswebs@gmail.com';
+          const isAdmin =
+            currentUser.email === 'realmswebs@gmail.com';
 
           const newUser = {
             userId: currentUser.uid,
             displayName:
               currentUser.displayName ||
               (isAdmin ? 'Hema Trader' : 'Farmer'),
+
             email: currentUser.email,
             photoURL: currentUser.photoURL,
-            verificationStatus: isAdmin ? 'verified' : 'unverified',
+
+            verificationStatus: isAdmin
+              ? 'verified'
+              : 'unverified',
+
             totalTrades: isAdmin ? 100 : 0,
             averageRating: isAdmin ? 5.0 : 0,
-            badge: isAdmin ? 'Elite Producer' : null,
+
+            badge: isAdmin
+              ? 'Elite Producer'
+              : null,
+
             followersCount: 0,
             followingCount: 0,
+
             fcmToken: null,
-            roles: isAdmin ? ['buyer', 'seller', 'admin'] : [],
+
+            roles: isAdmin
+              ? ['buyer', 'seller', 'admin']
+              : ['buyer'],
+
             isAdmin,
+
             createdAt: serverTimestamp()
           };
 
@@ -128,12 +171,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setProfile(newUser);
         }
       } catch (error) {
-        console.error('❌ Firestore error:', error);
+        console.error('❌ Firestore profile error:', error);
 
+        // FALLBACK PROFILE
         setProfile({
           userId: currentUser.uid,
           email: currentUser.email,
-          fallback: true
+          displayName: currentUser.displayName || 'User',
+          fallback: true,
+          roles: ['buyer']
         });
       }
 
@@ -142,11 +188,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       isMounted = false;
+
       clearTimeout(safetyTimeout);
+
       unsubscribe();
     };
   }, []);
 
+  // HEARTBEAT
   useEffect(() => {
     if (!user) return;
 
@@ -156,9 +205,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         const token =
           localStorage.getItem('fcm_token_sim') ||
-          `token_${Math.random().toString(36).substring(7)}`;
+          `token_${Math.random()
+            .toString(36)
+            .substring(7)}`;
 
-        localStorage.setItem('fcm_token_sim', token);
+        localStorage.setItem(
+          'fcm_token_sim',
+          token
+        );
 
         await updateDoc(userRef, {
           lastActiveAt: serverTimestamp(),
@@ -171,36 +225,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     updateHeartbeat();
 
-    const interval = setInterval(updateHeartbeat, 1000 * 60 * 5);
+    const interval = setInterval(
+      updateHeartbeat,
+      1000 * 60 * 5
+    );
 
     return () => clearInterval(interval);
   }, [user]);
 
+  // UPDATE LOCATION
   const updateLocation = async () => {
     if (!user) return;
 
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      const { latitude, longitude } = pos.coords;
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
 
-      const userRef = doc(db, 'users', user.uid);
+        const userRef = doc(db, 'users', user.uid);
 
-      await setDoc(
-        userRef,
-        {
+        await setDoc(
+          userRef,
+          {
+            latitude,
+            longitude
+          },
+          { merge: true }
+        );
+
+        setProfile((prev: any) => ({
+          ...prev,
           latitude,
           longitude
-        },
-        { merge: true }
-      );
-
-      setProfile((prev: any) => ({
-        ...prev,
-        latitude,
-        longitude
-      }));
-    });
+        }));
+      }
+    );
   };
 
+  // UPDATE ROLES
   const updateRoles = async (roles: string[]) => {
     if (!user) return;
 
@@ -221,6 +282,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // GOOGLE LOGIN
   const signInWithGoogle = async () => {
     try {
       const provider = new GoogleAuthProvider();
@@ -229,16 +291,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         prompt: 'select_account'
       });
 
-      console.log('🚀 Starting Google popup login...');
+      console.log(
+        '🚀 Starting Google popup login...'
+      );
 
       await signInWithPopup(auth, provider);
 
       console.log('✅ Google login success');
     } catch (error) {
-      console.error('❌ Google sign in error:', error);
+      console.error(
+        '❌ Google sign in error:',
+        error
+      );
     }
   };
 
+  // LOGOUT
   const logout = async () => {
     await signOut(auth);
   };
@@ -266,7 +334,9 @@ export const useAuth = () => {
   const context = useContext(AuthContext);
 
   if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
+    throw new Error(
+      'useAuth must be used within AuthProvider'
+    );
   }
 
   return context;
