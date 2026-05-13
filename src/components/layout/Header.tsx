@@ -1,30 +1,16 @@
 import { useAuth } from '../auth/AuthContext';
 import { LogIn, User as UserIcon, ShoppingBag, Store } from 'lucide-react';
 import { motion } from 'motion/react';
+import { Link } from 'react-router-dom';
 import NotificationTray from '../notifications/NotificationTray';
 
 export default function Header() {
-  const { user, profile, viewMode, setViewMode, signInWithGoogle } = useAuth();
+  const { user, profile, viewMode, setViewMode } = useAuth();
 
-  const isBoth =
-    profile?.roles?.includes('buyer') &&
-    profile?.roles?.includes('seller');
-
-  // 🔥 DEBUG + SAFE HANDLER
-  const handleLoginClick = async () => {
-    console.log("🔥 SIGN IN BUTTON CLICKED");
-
-    try {
-      await signInWithGoogle();
-    } catch (error) {
-      console.error("❌ Login failed:", error);
-    }
-  };
+  const isBoth = profile?.roles?.includes('buyer') && profile?.roles?.includes('seller');
 
   return (
     <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b border-brand-border bg-brand-bg/80 px-4 backdrop-blur-md">
-      
-      {/* LEFT SIDE */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
           <motion.div
@@ -34,61 +20,46 @@ export default function Header() {
           >
             H
           </motion.div>
-          <h1 className="text-xl font-serif font-semibold tracking-tight text-white">
-            Hema Trader
-          </h1>
+          <h1 className="text-xl font-serif font-semibold tracking-tight text-white">Hema Trader</h1>
         </div>
 
         {isBoth && (
           <div className="hidden sm:flex items-center bg-black/40 rounded-xl p-1 border border-white/5">
-            
             <button
               onClick={() => setViewMode('buyer')}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-wider transition-all ${
-                viewMode === 'buyer'
-                  ? 'bg-white text-black shadow-lg'
+                viewMode === 'buyer' 
+                  ? 'bg-white text-black shadow-lg' 
                   : 'text-slate-500 hover:text-slate-300'
               }`}
             >
               <ShoppingBag className="h-3 w-3" />
               Buyer
             </button>
-
             <button
               onClick={() => setViewMode('seller')}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-wider transition-all ${
-                viewMode === 'seller'
-                  ? 'bg-amber-500 text-black shadow-lg'
+                viewMode === 'seller' 
+                  ? 'bg-amber-500 text-black shadow-lg' 
                   : 'text-slate-500 hover:text-slate-300'
               }`}
-            >
+             >
               <Store className="h-3 w-3" />
               Seller
             </button>
-
           </div>
         )}
       </div>
 
-      {/* RIGHT SIDE */}
       <div>
         {user ? (
           <div className="flex items-center gap-4">
             <NotificationTray />
-
             <div className="flex items-center gap-3">
-              <span className="hidden text-xs uppercase tracking-widest text-slate-400 sm:block">
-                {profile?.displayName}
-              </span>
-
+              <span className="hidden text-xs uppercase tracking-widest text-slate-400 sm:block">{profile?.displayName}</span>
               <div className="h-8 w-8 rounded-full bg-slate-800 border border-white/20 overflow-hidden">
                 {profile?.photoURL ? (
-                  <img
-                    src={profile.photoURL}
-                    alt="Avatar"
-                    className="h-full w-full object-cover"
-                    referrerPolicy="no-referrer"
-                  />
+                  <img src={profile.photoURL} alt="Avatar" className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                 ) : (
                   <UserIcon className="h-full w-full p-1 text-slate-500" />
                 )}
@@ -96,13 +67,13 @@ export default function Header() {
             </div>
           </div>
         ) : (
-          <button
-            onClick={handleLoginClick} // 🔥 FIXED HERE
-            className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-white transition-colors hover:bg-amber-700"
+          <Link
+            to="/auth"
+            className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-white transition-colors hover:bg-amber-700 shadow-lg shadow-amber-600/20 active:scale-95"
           >
             <LogIn className="h-4 w-4" />
             Sign In
-          </button>
+          </Link>
         )}
       </div>
     </header>

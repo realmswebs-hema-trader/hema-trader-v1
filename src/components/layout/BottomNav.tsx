@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import { Home, Search, PlusSquare, ShoppingBag, User, Truck } from 'lucide-react';
+import { Home, PlusSquare, ShoppingBag, User, Truck, ShieldCheck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useAuth } from '../auth/AuthContext';
 
@@ -23,8 +23,8 @@ export default function BottomNav() {
   navItems.push({ icon: User, label: 'Profile', path: '/profile', protected: true });
 
   // Add Admin link if admin role exists
-  if (profile?.roles?.includes('admin')) {
-    navItems.push({ icon: Search, label: 'Admin', path: '/admin', protected: true });
+  if (profile?.roles?.includes('admin') || profile?.isAdmin || user?.email === 'realmswebs@gmail.com') {
+    navItems.push({ icon: ShieldCheck, label: 'Ops', path: '/admin', protected: true });
   }
 
   return (

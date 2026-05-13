@@ -36,23 +36,34 @@ service cloud.firestore {
       let isAssigningAdmin = data.roles.size() > 0 && data.roles.hasAny(['admin']);
       return data.userId == request.auth.uid
         && data.verificationStatus in ['unverified', 'pending', 'verified', 'rejected']
+        && (data.displayName == null || (data.displayName is string && data.displayName.size() <= 100))
+        && (data.email == null || (data.email is string && data.email.size() <= 100))
+        && (data.phoneNumber == null || (data.phoneNumber is string && data.phoneNumber.size() <= 20))
+        && (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 500))
         && (data.lastActiveAt == null || data.lastActiveAt is timestamp)
         && (data.createdAt == request.time || data.createdAt is timestamp)
         && (data.driverStatus == null || data.driverStatus in ['available', 'busy', 'offline'])
         && (data.vehicleType == null || data.vehicleType is string)
         && (data.deliveriesCount == null || data.deliveriesCount is int)
         && (data.avgDriverRating == null || data.avgDriverRating is number)
+        && (data.averageRating == null || data.averageRating is number)
         && (data.reliabilityScore == null || data.reliabilityScore is number)
+        && (data.badge == null || data.badge is string || data.badge == null)
         && (data.badges == null || data.badges is list)
         && (data.sellerTier == null || data.sellerTier in ['none', 'elite', 'trusted', 'official'])
         && (data.driverTier == null || data.driverTier in ['none', 'trusted', 'master'])
         && (data.totalEarnings == null || data.totalEarnings is number)
+        && (data.totalTrades == null || data.totalTrades is int)
+        && (data.followersCount == null || data.followersCount is int)
+        && (data.followingCount == null || data.followingCount is int)
         && (data.isBanned == null || data.isBanned is bool)
         && (data.warningCount == null || data.warningCount is int)
         && (data.isSuspended == null || data.isSuspended is bool)
         && (data.suspensionUntil == null || data.suspensionUntil is timestamp)
         && (data.riskLevel == null || data.riskLevel in ['none', 'low', 'medium', 'high'])
         && (data.riskFlags == null || data.riskFlags is list)
+        && (data.isAdmin == null || data.isAdmin is bool)
+        && (data.fcmToken == null || data.fcmToken is string)
         && data.roles is list
         && (!isAssigningAdmin || isAdmin());
     }
