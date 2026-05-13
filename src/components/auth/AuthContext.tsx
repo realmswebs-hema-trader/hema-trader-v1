@@ -8,7 +8,8 @@ import React, {
 import {
   User,
   onAuthStateChanged,
-  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   signOut,
   createUserWithEmailAndPassword,
@@ -117,6 +118,24 @@ export const AuthProvider: React.FC<{
   // =====================================
 
   useEffect(() => {
+
+    // HANDLE GOOGLE REDIRECT
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result?.user) {
+          console.log(
+            '✅ Google Redirect Success',
+            result.user
+          );
+        }
+      })
+      .catch((error) => {
+        console.error(
+          'Google Redirect Error',
+          error
+        );
+      });
+
     const unsubscribe =
       onAuthStateChanged(
         auth,
@@ -333,6 +352,7 @@ export const AuthProvider: React.FC<{
       );
 
     return () => unsubscribe();
+
   }, []);
 
   // =====================================
@@ -391,6 +411,7 @@ export const AuthProvider: React.FC<{
 
     return () =>
       clearInterval(interval);
+
   }, [user]);
 
   // =====================================
@@ -522,14 +543,11 @@ export const AuthProvider: React.FC<{
           }
         );
 
-        await signInWithPopup(
+        await signInWithRedirect(
           auth,
           provider
         );
 
-        console.log(
-          '✅ Google Sign In Success'
-        );
       } catch (error) {
         console.error(
           'Google Sign In Error',
