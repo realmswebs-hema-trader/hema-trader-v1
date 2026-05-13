@@ -8,6 +8,10 @@ import {
   getFirestore
 } from 'firebase/firestore';
 
+// =====================================
+// FIREBASE CONFIG
+// =====================================
+
 const firebaseConfig = {
   apiKey:
     import.meta.env
@@ -34,6 +38,10 @@ const firebaseConfig = {
       .VITE_FIREBASE_APP_ID
 };
 
+// =====================================
+// INITIALIZE
+// =====================================
+
 export const app =
   initializeApp(firebaseConfig);
 
@@ -42,3 +50,27 @@ export const auth =
 
 export const db =
   getFirestore(app);
+
+// =====================================
+// FIRESTORE ERROR HANDLER
+// =====================================
+
+export enum OperationType {
+  READ = 'READ',
+  WRITE = 'WRITE',
+  UPDATE = 'UPDATE',
+  DELETE = 'DELETE'
+}
+
+export const handleFirestoreError =
+  (
+    error: any,
+    operation: OperationType,
+    path?: string
+  ) => {
+    console.error(
+      `[FIRESTORE ${operation}]`,
+      path || '',
+      error
+    );
+  };
