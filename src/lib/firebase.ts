@@ -1,9 +1,22 @@
 import { initializeApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+
+import {
+  getAuth,
+  browserLocalPersistence,
+  setPersistence
+} from "firebase/auth";
+
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager
+} from "firebase/firestore";
+
 import { getStorage } from "firebase/storage";
 
-// ✅ USE ENV VARIABLES (REQUIRED FOR RENDER)
+// =====================================
+// FIREBASE CONFIG
+// =====================================
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "hema-trader.firebaseapp.com",
@@ -13,18 +26,37 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-// ✅ Initialize Firebase
+// =====================================
+// INITIALIZE APP
+// =====================================
 const app = initializeApp(firebaseConfig);
 
-// ✅ Services
+// =====================================
+// AUTH
+// =====================================
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+setPersistence(auth, browserLocalPersistence).catch((err) => {
+  console.error("Auth persistence error:", err);
+});
+
+// =====================================
+// FIRESTORE (FIXED)
+// =====================================
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager(),
+  }),
+});
+
+// =====================================
+// STORAGE
+// =====================================
 export const storage = getStorage(app);
 
-// =============================
-// 🔥 ERROR HANDLING (KEEP)
-// =============================
-
+// =====================================
+// ERROR HANDLING
+// =====================================
 export enum OperationType {
   CREATE = "create",
   UPDATE = "update",
@@ -53,16 +85,19 @@ export function handleFirestoreError(
 ) {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
+
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
     },
+
     operationType,
     path,
   };
 
   console.error("Firestore Error:", errInfo);
+
   throw new Error(JSON.stringify(errInfo));
 }
