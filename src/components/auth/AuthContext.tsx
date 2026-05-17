@@ -8,8 +8,7 @@ import React, {
 import {
   User,
   onAuthStateChanged,
-  signInWithRedirect,
-  getRedirectResult,
+  signInWithPopup,
   GoogleAuthProvider,
   signOut,
   createUserWithEmailAndPassword,
@@ -99,6 +98,7 @@ const AuthContext =
 export const AuthProvider: React.FC<{
   children: React.ReactNode;
 }> = ({ children }) => {
+
   const [user, setUser] =
     useState<User | null>(null);
 
@@ -114,244 +114,189 @@ export const AuthProvider: React.FC<{
     );
 
   // =====================================
-  // AUTH LISTENER
+  // AUTH STATE
   // =====================================
 
   useEffect(() => {
-
-    // HANDLE GOOGLE REDIRECT
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result?.user) {
-          console.log(
-            '✅ Google Redirect Success',
-            result.user
-          );
-        }
-      })
-      .catch((error) => {
-        console.error(
-          'Google Redirect Error',
-          error
-        );
-      });
 
     const unsubscribe =
       onAuthStateChanged(
         auth,
         async (currentUser) => {
-          try {
-            if (currentUser) {
-              setLoading(true);
 
-              const userDocRef = doc(
-                db,
-                'users',
-                currentUser.uid
+          try {
+
+            setLoading(true);
+
+            // =====================================
+            // NO USER
+            // =====================================
+
+            if (!currentUser) {
+              setUser(null);
+              setProfile(null);
+              setLoading(false);
+              return;
+            }
+
+            setUser(currentUser);
+
+            const normalizedEmail =
+              currentUser.email
+                ?.toLowerCase()
+                .trim() || '';
+
+            const userRef = doc(
+              db,
+              'users',
+              currentUser.uid
+            );
+
+            const userSnap =
+              await getDoc(userRef);
+
+            // =====================================
+            // CREATE PROFILE IF MISSING
+            // =====================================
+
+            if (!userSnap.exists()) {
+
+              const isAdmin =
+                normalizedEmail ===
+                'realmswebs@gmail.com';
+
+              const newProfile = {
+
+                uid:
+                  currentUser.uid,
+
+                displayName:
+                  currentUser.displayName ||
+                  'Hema User',
+
+                email:
+                  normalizedEmail,
+
+                photoURL:
+                  currentUser.photoURL || '',
+
+                phoneNumber:
+                  currentUser.phoneNumber || '',
+
+                roles:
+                  isAdmin
+                    ? [
+                        'buyer',
+                        'seller',
+                        'admin'
+                      ]
+                    : ['buyer'],
+
+                isAdmin,
+
+                verificationStatus:
+                  isAdmin
+                    ? 'verified'
+                    : 'unverified',
+
+                totalTrades:
+                  isAdmin
+                    ? 100
+                    : 0,
+
+                averageRating:
+                  isAdmin
+                    ? 5
+                    : 0,
+
+                badge:
+                  isAdmin
+                    ? 'Elite Producer'
+                    : null,
+
+                followersCount: 0,
+
+                followingCount: 0,
+
+                createdAt:
+                  serverTimestamp(),
+
+                updatedAt:
+                  serverTimestamp(),
+
+                lastActiveAt:
+                  serverTimestamp()
+              };
+
+              await setDoc(
+                userRef,
+                newProfile
               );
 
-              const userDoc =
-                await getDoc(
-                  userDocRef
-                );
+              setProfile(
+                newProfile
+              );
 
-              // =====================================
-              // USER EXISTS
-              // =====================================
-
-              if (userDoc.exists()) {
-                const userData =
-                  userDoc.data();
-
-                // ADMIN AUTO SYNC
-                if (
-                  currentUser.email ===
-                  'realmswebs@gmail.com'
-                ) {
-                  const isAdminData =
-                    userData.roles?.includes(
-                      'admin'
-                    ) &&
-                    userData.isAdmin ===
-                      true;
-
-                  const isFullyVerified =
-                    userData.verificationStatus ===
-                      'verified' &&
-                    userData.badge ===
-                      'Elite Producer';
-
-                  if (
-                    !isAdminData ||
-                    !isFullyVerified
-                  ) {
-                    const adminUpdates =
-                      {
-                        verificationStatus:
-                          'verified',
-
-                        averageRating:
-                          5.0,
-
-                        totalTrades:
-                          100,
-
-                        badge:
-                          'Elite Producer',
-
-                        isAdmin: true,
-
-                        roles: [
-                          'buyer',
-                          'seller',
-                          'admin'
-                        ],
-
-                        updatedAt:
-                          serverTimestamp(),
-
-                        lastActiveAt:
-                          serverTimestamp()
-                      };
-
-                    await updateDoc(
-                      userDocRef,
-                      adminUpdates
-                    );
-
-                    setProfile({
-                      ...userData,
-                      ...adminUpdates
-                    });
-                  } else {
-                    setProfile(
-                      userData
-                    );
-                  }
-                } else {
-                  setProfile(
-                    userData
-                  );
-
-                  if (
-                    userData.roles?.includes(
-                      'seller'
-                    )
-                  ) {
-                    setViewMode(
-                      'seller'
-                    );
-                  }
-                }
-              }
-
-              // =====================================
-              // CREATE USER
-              // =====================================
-
-              else {
-                const isAdminEmail =
-                  currentUser.email ===
-                  'realmswebs@gmail.com';
-
-                const newProfile = {
-                  userId:
-                    currentUser.uid,
-
-                  displayName:
-                    currentUser.displayName ||
-                    (isAdminEmail
-                      ? 'Admin Farmer'
-                      : 'Hema User'),
-
-                  email:
-                    currentUser.email,
-
-                  phoneNumber:
-                    currentUser.phoneNumber,
-
-                  photoURL:
-                    currentUser.photoURL,
-
-                  verificationStatus:
-                    isAdminEmail
-                      ? 'verified'
-                      : 'unverified',
-
-                  totalTrades:
-                    isAdminEmail
-                      ? 100
-                      : 0,
-
-                  averageRating:
-                    isAdminEmail
-                      ? 5.0
-                      : 0,
-
-                  badge:
-                    isAdminEmail
-                      ? 'Elite Producer'
-                      : null,
-
-                  followersCount: 0,
-
-                  followingCount: 0,
-
-                  fcmToken: null,
-
-                  roles:
-                    isAdminEmail
-                      ? [
-                          'buyer',
-                          'seller',
-                          'admin'
-                        ]
-                      : [],
-
-                  isAdmin:
-                    isAdminEmail,
-
-                  createdAt:
-                    serverTimestamp(),
-
-                  lastActiveAt:
-                    serverTimestamp()
-                };
-
-                await setDoc(
-                  userDocRef,
-                  newProfile
-                );
-
-                setProfile(
-                  newProfile
-                );
-              }
-
-              setUser(currentUser);
             }
 
             // =====================================
-            // LOGGED OUT
+            // EXISTING PROFILE
             // =====================================
 
             else {
-              setUser(null);
 
-              setProfile(null);
+              const existingProfile =
+                userSnap.data();
+
+              // AUTO NORMALIZE EMAIL
+              if (
+                existingProfile.email !==
+                normalizedEmail
+              ) {
+                await updateDoc(
+                  userRef,
+                  {
+                    email:
+                      normalizedEmail
+                  }
+                );
+              }
+
+              setProfile({
+                ...existingProfile,
+                email:
+                  normalizedEmail
+              });
+
+              // AUTO VIEW MODE
+              if (
+                existingProfile.roles?.includes(
+                  'seller'
+                )
+              ) {
+                setViewMode(
+                  'seller'
+                );
+              }
             }
+
           } catch (error) {
+
             console.error(
-              'Auth State Change Error:',
+              'Auth State Error:',
               error
             );
+
           } finally {
+
             setLoading(false);
+
           }
         }
       );
 
-    return () => unsubscribe();
+    return () =>
+      unsubscribe();
 
   }, []);
 
@@ -360,52 +305,38 @@ export const AuthProvider: React.FC<{
   // =====================================
 
   useEffect(() => {
+
     if (!user) return;
-
-    const updateHeartbeat =
-      async () => {
-        try {
-          const userDocRef = doc(
-            db,
-            'users',
-            user.uid
-          );
-
-          const mockToken =
-            localStorage.getItem(
-              'fcm_token_sim'
-            ) ||
-            `token_${Math.random()
-              .toString(36)
-              .substring(7)}`;
-
-          localStorage.setItem(
-            'fcm_token_sim',
-            mockToken
-          );
-
-          await updateDoc(
-            userDocRef,
-            {
-              lastActiveAt:
-                serverTimestamp(),
-
-              fcmToken:
-                mockToken
-            }
-          );
-        } catch {
-          console.log(
-            'Heartbeat skipped'
-          );
-        }
-      };
-
-    updateHeartbeat();
 
     const interval =
       setInterval(
-        updateHeartbeat,
+        async () => {
+
+          try {
+
+            const userRef = doc(
+              db,
+              'users',
+              user.uid
+            );
+
+            await updateDoc(
+              userRef,
+              {
+                lastActiveAt:
+                  serverTimestamp()
+              }
+            );
+
+          } catch {
+
+            console.log(
+              'Heartbeat skipped'
+            );
+
+          }
+
+        },
         1000 * 60 * 5
       );
 
@@ -415,146 +346,46 @@ export const AuthProvider: React.FC<{
   }, [user]);
 
   // =====================================
-  // UPDATE LOCATION
-  // =====================================
-
-  const updateLocation =
-    async () => {
-      if (!user) return;
-
-      if (
-        'geolocation' in navigator
-      ) {
-        navigator.geolocation.getCurrentPosition(
-          async (
-            position
-          ) => {
-            const {
-              latitude,
-              longitude
-            } = position.coords;
-
-            const userDocRef =
-              doc(
-                db,
-                'users',
-                user.uid
-              );
-
-            try {
-              await setDoc(
-                userDocRef,
-                {
-                  latitude,
-                  longitude
-                },
-                {
-                  merge: true
-                }
-              );
-
-              setProfile(
-                (
-                  prev: any
-                ) => ({
-                  ...prev,
-                  latitude,
-                  longitude
-                })
-              );
-            } catch (error) {
-              handleFirestoreError(
-                error,
-                OperationType.UPDATE,
-                `users/${user.uid}`
-              );
-            }
-          }
-        );
-      }
-    };
-
-  // =====================================
-  // UPDATE ROLES
-  // =====================================
-
-  const updateRoles =
-    async (
-      roles: string[]
-    ) => {
-      if (!user) return;
-
-      const userDocRef = doc(
-        db,
-        'users',
-        user.uid
-      );
-
-      try {
-        await updateDoc(
-          userDocRef,
-          {
-            roles,
-
-            updatedAt:
-              serverTimestamp()
-          }
-        );
-
-        setProfile(
-          (prev: any) => ({
-            ...prev,
-            roles
-          })
-        );
-
-        if (
-          roles.includes(
-            'seller'
-          )
-        ) {
-          setViewMode(
-            'seller'
-          );
-        }
-      } catch (error) {
-        handleFirestoreError(
-          error,
-          OperationType.UPDATE,
-          `users/${user.uid}`
-        );
-      }
-    };
-
-  // =====================================
   // GOOGLE SIGN IN
   // =====================================
 
   const signInWithGoogle =
     async () => {
-      const provider =
-        new GoogleAuthProvider();
 
       try {
-        provider.setCustomParameters(
-          {
-            prompt:
-              'select_account'
-          }
-        );
 
-        await signInWithRedirect(
+        setLoading(true);
+
+        const provider =
+          new GoogleAuthProvider();
+
+        provider.setCustomParameters({
+          prompt:
+            'select_account'
+        });
+
+        await signInWithPopup(
           auth,
           provider
         );
 
+        console.log(
+          'Google Sign In Successful'
+        );
+
       } catch (error) {
+
         console.error(
-          'Google Sign In Error',
+          'Google Sign In Error:',
           error
         );
 
         throw error;
+
+      } finally {
+
+        setLoading(false);
+
       }
     };
 
@@ -568,24 +399,33 @@ export const AuthProvider: React.FC<{
       password: string,
       name: string
     ) => {
+
       try {
-        const userCredential =
+
+        const normalizedEmail =
+          email
+            .toLowerCase()
+            .trim();
+
+        const credential =
           await createUserWithEmailAndPassword(
             auth,
-            email,
+            normalizedEmail,
             password
           );
 
         await updateProfile(
-          userCredential.user,
+          credential.user,
           {
             displayName:
               name
           }
         );
+
       } catch (error) {
+
         console.error(
-          'Email Sign Up Error',
+          'Email Sign Up Error:',
           error
         );
 
@@ -602,15 +442,24 @@ export const AuthProvider: React.FC<{
       email: string,
       password: string
     ) => {
+
       try {
+
+        const normalizedEmail =
+          email
+            .toLowerCase()
+            .trim();
+
         await signInWithEmailAndPassword(
           auth,
-          email,
+          normalizedEmail,
           password
         );
+
       } catch (error) {
+
         console.error(
-          'Email Sign In Error',
+          'Email Sign In Error:',
           error
         );
 
@@ -626,17 +475,15 @@ export const AuthProvider: React.FC<{
     async (
       containerId: string
     ) => {
-      const verifier =
-        new RecaptchaVerifier(
-          auth,
-          containerId,
-          {
-            size:
-              'invisible'
-          }
-        );
 
-      return verifier;
+      return new RecaptchaVerifier(
+        auth,
+        containerId,
+        {
+          size:
+            'invisible'
+        }
+      );
     };
 
   // =====================================
@@ -648,15 +495,19 @@ export const AuthProvider: React.FC<{
       phoneNumber: string,
       verifier: RecaptchaVerifier
     ) => {
+
       try {
+
         return await signInWithPhoneNumber(
           auth,
           phoneNumber,
           verifier
         );
+
       } catch (error) {
+
         console.error(
-          'Phone Sign In Error',
+          'Phone Sign In Error:',
           error
         );
 
@@ -665,19 +516,138 @@ export const AuthProvider: React.FC<{
     };
 
   // =====================================
+  // UPDATE LOCATION
+  // =====================================
+
+  const updateLocation =
+    async () => {
+
+      if (!user) return;
+
+      if (
+        'geolocation' in navigator
+      ) {
+
+        navigator.geolocation.getCurrentPosition(
+          async (
+            position
+          ) => {
+
+            try {
+
+              const {
+                latitude,
+                longitude
+              } =
+                position.coords;
+
+              const userRef =
+                doc(
+                  db,
+                  'users',
+                  user.uid
+                );
+
+              await updateDoc(
+                userRef,
+                {
+                  latitude,
+                  longitude,
+                  updatedAt:
+                    serverTimestamp()
+                }
+              );
+
+              setProfile(
+                (
+                  prev: any
+                ) => ({
+                  ...prev,
+                  latitude,
+                  longitude
+                })
+              );
+
+            } catch (error) {
+
+              handleFirestoreError(
+                error,
+                OperationType.UPDATE,
+                `users/${user.uid}`
+              );
+
+            }
+          }
+        );
+      }
+    };
+
+  // =====================================
+  // UPDATE ROLES
+  // =====================================
+
+  const updateRoles =
+    async (
+      roles: string[]
+    ) => {
+
+      if (!user) return;
+
+      try {
+
+        const userRef = doc(
+          db,
+          'users',
+          user.uid
+        );
+
+        await updateDoc(
+          userRef,
+          {
+            roles,
+            updatedAt:
+              serverTimestamp()
+          }
+        );
+
+        setProfile(
+          (
+            prev: any
+          ) => ({
+            ...prev,
+            roles
+          })
+        );
+
+      } catch (error) {
+
+        handleFirestoreError(
+          error,
+          OperationType.UPDATE,
+          `users/${user.uid}`
+        );
+      }
+    };
+
+  // =====================================
   // LOGOUT
   // =====================================
 
-  const logout = async () => {
-    try {
-      await signOut(auth);
-    } catch (error) {
-      console.error(
-        'Logout Error',
-        error
-      );
-    }
-  };
+  const logout =
+    async () => {
+
+      try {
+
+        await signOut(auth);
+
+      } catch (error) {
+
+        console.error(
+          'Logout Error:',
+          error
+        );
+      }
+    };
 
   // =====================================
   // PROVIDER
@@ -711,14 +681,14 @@ export const AuthProvider: React.FC<{
 // =====================================
 
 export const useAuth = () => {
+
   const context =
     useContext(AuthContext);
 
-  if (
-    context === undefined
-  ) {
+  if (!context) {
+
     throw new Error(
-      'useAuth must be used within an AuthProvider'
+      'useAuth must be used within AuthProvider'
     );
   }
 
