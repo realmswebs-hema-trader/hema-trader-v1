@@ -1,4 +1,4 @@
-```tsx
+```tsx id="ebvx52"
 import React, {
   createContext,
   useContext,
@@ -42,10 +42,16 @@ interface AuthContextType {
   profile: any | null;
   loading: boolean;
 
-  viewMode: 'buyer' | 'seller' | 'driver';
+  viewMode:
+    | 'buyer'
+    | 'seller'
+    | 'driver';
 
   setViewMode: (
-    mode: 'buyer' | 'seller' | 'driver'
+    mode:
+      | 'buyer'
+      | 'seller'
+      | 'driver'
   ) => void;
 
   signInWithGoogle: () => Promise<void>;
@@ -84,9 +90,9 @@ interface AuthContextType {
 // =====================================
 
 const AuthContext =
-  createContext<AuthContextType | undefined>(
-    undefined
-  );
+  createContext<
+    AuthContextType | undefined
+  >(undefined);
 
 // =====================================
 // PROVIDER
@@ -106,9 +112,9 @@ export const AuthProvider: React.FC<{
     useState(true);
 
   const [viewMode, setViewMode] =
-    useState<'buyer' | 'seller' | 'driver'>(
-      'buyer'
-    );
+    useState<
+      'buyer' | 'seller' | 'driver'
+    >('buyer');
 
   // =====================================
   // AUTH STATE
@@ -124,6 +130,10 @@ export const AuthProvider: React.FC<{
           try {
 
             setLoading(true);
+
+            // =====================================
+            // LOGGED OUT
+            // =====================================
 
             if (!currentUser) {
 
@@ -186,9 +196,7 @@ export const AuthProvider: React.FC<{
                         'driver',
                         'admin'
                       ]
-                    : [
-                        'buyer'
-                      ],
+                    : ['buyer'],
 
                 isAdmin,
 
@@ -245,6 +253,10 @@ export const AuthProvider: React.FC<{
 
             } else {
 
+              // =====================================
+              // EXISTING PROFILE
+              // =====================================
+
               const existingProfile =
                 userSnap.data();
 
@@ -269,7 +281,7 @@ export const AuthProvider: React.FC<{
                   normalizedEmail
               });
 
-              // Auto mode
+              // Auto view mode
               if (
                 existingProfile.roles?.includes(
                   'seller'
@@ -661,7 +673,6 @@ export const AuthProvider: React.FC<{
   // =====================================
 
   return (
-
     <AuthContext.Provider
       value={{
         user,
@@ -679,9 +690,7 @@ export const AuthProvider: React.FC<{
         updateRoles
       }}
     >
-
       {children}
-
     </AuthContext.Provider>
   );
 };
@@ -690,12 +699,12 @@ export const AuthProvider: React.FC<{
 // HOOK
 // =====================================
 
-export const useAuth = () => {
+export const useAuth = (): AuthContextType => {
 
   const context =
     useContext(AuthContext);
 
-  if (!context) {
+  if (context === undefined) {
 
     throw new Error(
       'useAuth must be used within AuthProvider'
