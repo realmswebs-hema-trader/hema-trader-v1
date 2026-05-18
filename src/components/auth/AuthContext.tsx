@@ -1,3 +1,4 @@
+```tsx
 import React, {
   createContext,
   useContext,
@@ -22,10 +23,6 @@ import {
 
 import { auth, db } from '../../lib/firebase';
 
-// ============================
-// TYPES
-// ============================
-
 interface AuthContextType {
   user: User | null;
   profile: any | null;
@@ -35,145 +32,123 @@ interface AuthContextType {
   logout: () => Promise<void>;
 }
 
-// ============================
-// CONTEXT
-// ============================
-
-const AuthContext = createContext<AuthContextType | undefined>(
-  undefined
-);
-
-// ============================
-// PROVIDER
-// ============================
+const AuthContext = createContext<
+  AuthContextType | undefined
+>(undefined);
 
 export const AuthProvider = ({
   children
 }: {
   children: React.ReactNode;
 }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] =
+    useState<User | null>(null);
 
-  const [profile, setProfile] = useState<any | null>(null);
+  const [profile, setProfile] =
+    useState<any | null>(null);
 
-  const [loading, setLoading] = useState(true);
-
-  // ============================
-  // GOOGLE LOGIN
-  // ============================
+  const [loading, setLoading] =
+    useState(true);
 
   const signInWithGoogle = async () => {
     try {
-      const provider = new GoogleAuthProvider();
+      const provider =
+        new GoogleAuthProvider();
 
-      const result = await signInWithPopup(
-        auth,
-        provider
-      );
+      const result =
+        await signInWithPopup(
+          auth,
+          provider
+        );
 
       const firebaseUser = result.user;
 
-      const userRef = doc(db, 'users', firebaseUser.uid);
+      const userRef = doc(
+        db,
+        'users',
+        firebaseUser.uid
+      );
 
-      const userSnap = await getDoc(userRef);
+      const userSnap =
+        await getDoc(userRef);
 
-      // Create profile if new user
       if (!userSnap.exists()) {
         await setDoc(userRef, {
           uid: firebaseUser.uid,
           email: firebaseUser.email,
-          name: firebaseUser.displayName || '',
-          photoURL: firebaseUser.photoURL || '',
+          name:
+            firebaseUser.displayName || '',
+          photoURL:
+            firebaseUser.photoURL || '',
 
           createdAt: serverTimestamp(),
 
           roles:
             firebaseUser.email ===
             'realmswebs@gmail.com'
-              ? ['buyer', 'seller', 'admin']
-              : ['buyer'],
-
-          verificationStatus:
-            firebaseUser.email ===
-            'realmswebs@gmail.com'
-              ? 'verified'
-              : 'unverified',
-
-          averageRating:
-            firebaseUser.email ===
-            'realmswebs@gmail.com'
-              ? 5
-              : 0,
-
-          totalTrades:
-            firebaseUser.email ===
-            'realmswebs@gmail.com'
-              ? 100
-              : 0,
-
-          badge:
-            firebaseUser.email ===
-            'realmswebs@gmail.com'
-              ? 'Elite Producer'
-              : ''
+              ? [
+                  'buyer',
+                  'seller',
+                  'admin'
+                ]
+              : ['buyer']
         });
       }
     } catch (error) {
       console.error(
-        'Google sign in error:',
+        'Google sign in failed:',
         error
       );
     }
   };
 
-  // ============================
-  // LOGOUT
-  // ============================
-
   const logout = async () => {
     try {
       await signOut(auth);
     } catch (error) {
-      console.error('Logout error:', error);
+      console.error(
+        'Logout failed:',
+        error
+      );
     }
   };
 
-  // ============================
-  // AUTH STATE
-  // ============================
-
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      async firebaseUser => {
-        try {
-          setUser(firebaseUser);
+    const unsubscribe =
+      onAuthStateChanged(
+        auth,
+        async firebaseUser => {
+          try {
+            setUser(firebaseUser);
 
-          if (firebaseUser) {
-            const userRef = doc(
-              db,
-              'users',
-              firebaseUser.uid
-            );
+            if (firebaseUser) {
+              const userRef = doc(
+                db,
+                'users',
+                firebaseUser.uid
+              );
 
-            const userSnap = await getDoc(userRef);
+              const userSnap =
+                await getDoc(userRef);
 
-            if (userSnap.exists()) {
-              setProfile(userSnap.data());
+              if (userSnap.exists()) {
+                setProfile(
+                  userSnap.data()
+                );
+              }
+            } else {
+              setProfile(null);
             }
-          } else {
-            setProfile(null);
+          } catch (error) {
+            console.error(
+              'Auth listener failed:',
+              error
+            );
+          } finally {
+            setLoading(false);
           }
-        } catch (error) {
-          console.error(
-            'Auth state error:',
-            error
-          );
-        } finally {
-          setLoading(false);
         }
-      }
-    );
+      );
 
     return () => unsubscribe();
   }, []);
@@ -193,14 +168,11 @@ export const AuthProvider = ({
   );
 };
 
-// ============================
-// CUSTOM HOOK
-// ============================
-
 export const useAuth = () => {
-  const context = useContext(AuthContext);
+  const context =
+    useContext(AuthContext);
 
-  if (!context) {
+  if (context === undefined) {
     throw new Error(
       'useAuth must be used within AuthProvider'
     );
@@ -208,3 +180,4 @@ export const useAuth = () => {
 
   return context;
 };
+```
