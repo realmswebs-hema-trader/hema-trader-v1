@@ -1,83 +1,34 @@
-import { initializeApp } from 'firebase/app';
-
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
-  getAuth
-} from 'firebase/auth';
-
-import {
-  getFirestore
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
 } from 'firebase/firestore';
 
-import {
-  getStorage
-} from 'firebase/storage';
-
-// =====================================
-// FIREBASE CONFIG
-// =====================================
+import { getAuth } from 'firebase/auth';
+import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey:
-    import.meta.env
-      .VITE_FIREBASE_API_KEY,
-
-  authDomain:
-    import.meta.env
-      .VITE_FIREBASE_AUTH_DOMAIN,
-
-  projectId:
-    import.meta.env
-      .VITE_FIREBASE_PROJECT_ID,
-
-  storageBucket:
-    import.meta.env
-      .VITE_FIREBASE_STORAGE_BUCKET,
-
-  messagingSenderId:
-    import.meta.env
-      .VITE_FIREBASE_MESSAGING_SENDER_ID,
-
-  appId:
-    import.meta.env
-      .VITE_FIREBASE_APP_ID
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-// =====================================
-// INITIALIZE FIREBASE
-// =====================================
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-export const app =
-  initializeApp(firebaseConfig);
+/*
+  STABLE FIRESTORE INITIALIZATION
+  Prevents transport loops and aggressive reconnect spam
+*/
+const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({}),
+  experimentalForceLongPolling: true,
+});
 
-export const auth =
-  getAuth(app);
+const auth = getAuth(app);
+const storage = getStorage(app);
 
-export const db =
-  getFirestore(app);
-
-export const storage =
-  getStorage(app);
-
-// =====================================
-// FIRESTORE ERROR HANDLER
-// =====================================
-
-export enum OperationType {
-  READ = 'READ',
-  WRITE = 'WRITE',
-  UPDATE = 'UPDATE',
-  DELETE = 'DELETE'
-}
-
-export const handleFirestoreError =
-  (
-    error: any,
-    operation: OperationType,
-    path?: string
-  ) => {
-    console.error(
-      `[FIRESTORE ${operation}]`,
-      path || '',
-      error
-    );
-  };
+export { app, db, auth, storage };
