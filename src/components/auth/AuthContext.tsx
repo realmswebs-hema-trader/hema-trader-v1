@@ -1,3 +1,4 @@
+```tsx
 import React, {
   createContext,
   useContext,
@@ -29,9 +30,7 @@ import {
 
 import {
   auth,
-  db,
-  handleFirestoreError,
-  OperationType
+  db
 } from '../../lib/firebase';
 
 // =====================================
@@ -40,15 +39,13 @@ import {
 
 interface AuthContextType {
   user: User | null;
-
   profile: any | null;
-
   loading: boolean;
 
-  viewMode: 'buyer' | 'seller';
+  viewMode: 'buyer' | 'seller' | 'driver';
 
   setViewMode: (
-    mode: 'buyer' | 'seller'
+    mode: 'buyer' | 'seller' | 'driver'
   ) => void;
 
   signInWithGoogle: () => Promise<void>;
@@ -87,9 +84,9 @@ interface AuthContextType {
 // =====================================
 
 const AuthContext =
-  createContext<
-    AuthContextType | undefined
-  >(undefined);
+  createContext<AuthContextType | undefined>(
+    undefined
+  );
 
 // =====================================
 // PROVIDER
@@ -109,7 +106,7 @@ export const AuthProvider: React.FC<{
     useState(true);
 
   const [viewMode, setViewMode] =
-    useState<'buyer' | 'seller'>(
+    useState<'buyer' | 'seller' | 'driver'>(
       'buyer'
     );
 
@@ -128,14 +125,12 @@ export const AuthProvider: React.FC<{
 
             setLoading(true);
 
-            // =====================================
-            // NO USER
-            // =====================================
-
             if (!currentUser) {
+
               setUser(null);
               setProfile(null);
               setLoading(false);
+
               return;
             }
 
@@ -156,7 +151,7 @@ export const AuthProvider: React.FC<{
               await getDoc(userRef);
 
             // =====================================
-            // CREATE PROFILE IF MISSING
+            // CREATE PROFILE
             // =====================================
 
             if (!userSnap.exists()) {
@@ -188,9 +183,12 @@ export const AuthProvider: React.FC<{
                     ? [
                         'buyer',
                         'seller',
+                        'driver',
                         'admin'
                       ]
-                    : ['buyer'],
+                    : [
+                        'buyer'
+                      ],
 
                 isAdmin,
 
@@ -201,22 +199,30 @@ export const AuthProvider: React.FC<{
 
                 totalTrades:
                   isAdmin
-                    ? 100
+                    ? 127
                     : 0,
 
                 averageRating:
                   isAdmin
-                    ? 5
+                    ? 4.9
                     : 0,
 
                 badge:
                   isAdmin
-                    ? 'Elite Producer'
-                    : null,
+                    ? 'Verified Seller'
+                    : 'Unverified Trader',
 
                 followersCount: 0,
 
                 followingCount: 0,
+
+                completedTrades:
+                  isAdmin
+                    ? 127
+                    : 0,
+
+                memberSince:
+                  new Date().getFullYear(),
 
                 createdAt:
                   serverTimestamp(),
@@ -237,22 +243,17 @@ export const AuthProvider: React.FC<{
                 newProfile
               );
 
-            }
-
-            // =====================================
-            // EXISTING PROFILE
-            // =====================================
-
-            else {
+            } else {
 
               const existingProfile =
                 userSnap.data();
 
-              // AUTO NORMALIZE EMAIL
+              // Normalize email
               if (
                 existingProfile.email !==
                 normalizedEmail
               ) {
+
                 await updateDoc(
                   userRef,
                   {
@@ -268,14 +269,25 @@ export const AuthProvider: React.FC<{
                   normalizedEmail
               });
 
-              // AUTO VIEW MODE
+              // Auto mode
               if (
                 existingProfile.roles?.includes(
                   'seller'
                 )
               ) {
+
                 setViewMode(
                   'seller'
+                );
+
+              } else if (
+                existingProfile.roles?.includes(
+                  'driver'
+                )
+              ) {
+
+                setViewMode(
+                  'driver'
                 );
               }
             }
@@ -283,14 +295,13 @@ export const AuthProvider: React.FC<{
           } catch (error) {
 
             console.error(
-              'Auth State Error:',
+              'AUTH STATE ERROR:',
               error
             );
 
           } finally {
 
             setLoading(false);
-
           }
         }
       );
@@ -328,12 +339,12 @@ export const AuthProvider: React.FC<{
               }
             );
 
-          } catch {
+          } catch (error) {
 
             console.log(
-              'Heartbeat skipped'
+              'Heartbeat skipped',
+              error
             );
-
           }
 
         },
@@ -385,7 +396,6 @@ export const AuthProvider: React.FC<{
       } finally {
 
         setLoading(false);
-
       }
     };
 
@@ -570,12 +580,10 @@ export const AuthProvider: React.FC<{
 
             } catch (error) {
 
-              handleFirestoreError(
-                error,
-                OperationType.UPDATE,
-                `users/${user.uid}`
+              console.error(
+                'Location Update Error:',
+                error
               );
-
             }
           }
         );
@@ -621,10 +629,9 @@ export const AuthProvider: React.FC<{
 
       } catch (error) {
 
-        handleFirestoreError(
-          error,
-          OperationType.UPDATE,
-          `users/${user.uid}`
+        console.error(
+          'Role Update Error:',
+          error
         );
       }
     };
@@ -654,6 +661,7 @@ export const AuthProvider: React.FC<{
   // =====================================
 
   return (
+
     <AuthContext.Provider
       value={{
         user,
@@ -671,7 +679,9 @@ export const AuthProvider: React.FC<{
         updateRoles
       }}
     >
+
       {children}
+
     </AuthContext.Provider>
   );
 };
@@ -694,3 +704,4 @@ export const useAuth = () => {
 
   return context;
 };
+```
