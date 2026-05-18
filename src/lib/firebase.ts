@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
+
 import {
-  getFirestore,
   initializeFirestore,
   persistentLocalCache,
 } from 'firebase/firestore';
@@ -20,12 +20,10 @@ const firebaseConfig = {
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 /*
-  STABLE FIRESTORE INITIALIZATION
-  Prevents transport loops and aggressive reconnect spam
+  Stable Firestore initialization
 */
 const db = initializeFirestore(app, {
-  localCache: persistentLocalCache({}),
-  experimentalForceLongPolling: true,
+  localCache: persistentLocalCache({})
 });
 
 const auth = getAuth(app);
