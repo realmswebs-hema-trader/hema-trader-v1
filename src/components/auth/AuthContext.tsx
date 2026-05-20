@@ -1,4 +1,3 @@
-```tsx
 import React, {
   createContext,
   useContext,
