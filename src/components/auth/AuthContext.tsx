@@ -27,6 +27,9 @@ interface AuthProfile {
   activeRole?: string;
   latitude?: number;
   longitude?: number;
+  isOnline?: boolean;
+  online?: boolean;
+  lastActiveAt?: unknown;
   [key: string]: any;
 }
 
@@ -85,6 +88,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         photoURL: firebaseUser.photoURL || '',
         roles,
         activeRole: roles[0],
+        isOnline: true,
+        online: true,
+        lastActiveAt: serverTimestamp(),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
@@ -93,7 +99,31 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return buildProfile(firebaseUser, newProfile);
     }
 
-    return buildProfile(firebaseUser, userSnap.data());
+    const existingProfile = buildProfile(firebaseUser, userSnap.data());
+
+    await updateDoc(userRef, {
+      isOnline: true,
+      online: true,
+      lastActiveAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    return {
+      ...existingProfile,
+      isOnline: true,
+      online: true
+    };
+  };
+
+  const markUserOffline = async (firebaseUser: User | null = user) => {
+    if (!firebaseUser) return;
+
+    await updateDoc(doc(db, 'users', firebaseUser.uid), {
+      isOnline: false,
+      online: false,
+      lastActiveAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
   };
 
   const signInWithGoogle = async () => {
@@ -107,7 +137,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   const logout = async () => {
-    await signOut(auth);
+    try {
+      await markUserOffline();
+    } finally {
+      await signOut(auth);
+    }
   };
 
   const updateRoles = async (roles: string[]) => {
@@ -213,6 +247,58 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const userRef = doc(db, 'users', user.uid);
+
+    const markOnline = async () => {
+      await updateDoc(userRef, {
+        isOnline: true,
+        online: true,
+        lastActiveAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      setProfile(prev =>
+        prev
+          ? {
+              ...prev,
+              isOnline: true,
+              online: true
+            }
+          : prev
+      );
+    };
+
+    const markOffline = () => {
+      updateDoc(userRef, {
+        isOnline: false,
+        online: false,
+        lastActiveAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      }).catch(() => {});
+    };
+
+    markOnline().catch(error => {
+      console.error('Failed to mark user online:', error);
+    });
+
+    const interval = window.setInterval(() => {
+      markOnline().catch(error => {
+        console.error('Failed to refresh online status:', error);
+      });
+    }, 60000);
+
+    window.addEventListener('beforeunload', markOffline);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('beforeunload', markOffline);
+      markOffline();
+    };
+  }, [user]);
 
   return (
     <AuthContext.Provider
