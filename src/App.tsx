@@ -1,4 +1,5 @@
-import { ReactNode, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   BrowserRouter as Router,
   Routes,
@@ -55,19 +56,9 @@ import RoleSelection from './components/auth/RoleSelection';
 // PRIVATE ROUTE
 // =====================================
 
-const PrivateRoute = ({
-  children
-}: {
-  children: ReactNode;
-}) => {
-  const {
-    user,
-    profile,
-    loading
-  } = useAuth();
-
-  const location =
-    useLocation();
+const PrivateRoute = ({ children }: { children: ReactNode }) => {
+  const { user, profile, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -84,21 +75,13 @@ const PrivateRoute = ({
     return (
       <Navigate
         to="/auth"
-        state={{
-          from: location
-        }}
+        state={{ from: location }}
         replace
       />
     );
   }
 
-  if (
-    profile &&
-    (
-      !profile.roles ||
-      profile.roles.length === 0
-    )
-  ) {
+  if (profile && (!profile.roles || profile.roles.length === 0)) {
     return <RoleSelection />;
   }
 
@@ -109,16 +92,8 @@ const PrivateRoute = ({
 // ADMIN ROUTE
 // =====================================
 
-const AdminRoute = ({
-  children
-}: {
-  children: ReactNode;
-}) => {
-  const {
-    user,
-    profile,
-    loading
-  } = useAuth();
+const AdminRoute = ({ children }: { children: ReactNode }) => {
+  const { user, profile, loading } = useAuth();
 
   if (loading) {
     return (
@@ -132,22 +107,16 @@ const AdminRoute = ({
   }
 
   const hasAdminRole =
-    profile?.roles?.includes(
-      'admin'
-    ) ||
+    profile?.roles?.includes('admin') ||
     profile?.isAdmin === true;
 
   const isAdminEmail =
-    user?.email ===
-    'realmswebs@gmail.com';
+    user?.email === 'realmswebs@gmail.com';
 
-  return (
-    hasAdminRole ||
-    isAdminEmail
-  ) ? (
+  return hasAdminRole || isAdminEmail ? (
     <>{children}</>
   ) : (
-    <Navigate to="/" />
+    <Navigate to="/" replace />
   );
 };
 
@@ -156,36 +125,18 @@ const AdminRoute = ({
 // =====================================
 
 const OfflineBanner = () => {
-  const [isOffline, setIsOffline] =
-    useState(!navigator.onLine);
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   useEffect(() => {
-    const onOnline = () =>
-      setIsOffline(false);
+    const onOnline = () => setIsOffline(false);
+    const onOffline = () => setIsOffline(true);
 
-    const onOffline = () =>
-      setIsOffline(true);
-
-    window.addEventListener(
-      'online',
-      onOnline
-    );
-
-    window.addEventListener(
-      'offline',
-      onOffline
-    );
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
 
     return () => {
-      window.removeEventListener(
-        'online',
-        onOnline
-      );
-
-      window.removeEventListener(
-        'offline',
-        onOffline
-      );
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
     };
   }, []);
 
@@ -193,7 +144,7 @@ const OfflineBanner = () => {
 
   return (
     <div className="bg-amber-500 py-2 text-center text-[10px] font-bold uppercase tracking-wider text-black">
-      <WifiOff className="inline-block mr-2 h-3 w-3 mb-0.5" />
+      <WifiOff className="mr-2 mb-0.5 inline-block h-3 w-3" />
       You're currently offline. Some features may be limited until you reconnect.
     </div>
   );
@@ -204,21 +155,10 @@ const OfflineBanner = () => {
 // =====================================
 
 function AppRoutes() {
-  const {
-    user,
-    loading
-  } = useAuth();
+  const { user, profile, loading } = useAuth();
+  const location = useLocation();
 
-  const location =
-    useLocation();
-
-  const isPublicRoute =
-    [
-      '/privacy',
-      '/terms'
-    ].includes(
-      location.pathname
-    );
+  const isPublicRoute = ['/privacy', '/terms'].includes(location.pathname);
 
   if (loading) {
     return (
@@ -231,11 +171,22 @@ function AppRoutes() {
     );
   }
 
+  if (!user && !isPublicRoute) {
+    return <AuthScreen />;
+  }
+
   if (
-    !user &&
+    user &&
+    profile &&
+    (!profile.roles || profile.roles.length === 0) &&
     !isPublicRoute
   ) {
-    return <AuthScreen />;
+    return (
+      <div className="min-h-screen bg-brand-bg font-sans text-slate-200">
+        <OfflineBanner />
+        <RoleSelection />
+      </div>
+    );
   }
 
   return (
@@ -246,30 +197,21 @@ function AppRoutes() {
 
       <main className="flex-1 px-4 py-6">
         <Routes>
-          {/* HOME */}
           <Route
             path="/"
             element={<Home />}
           />
 
-          {/* AUTH */}
           <Route
             path="/auth"
-            element={
-              <Navigate
-                to="/"
-                replace
-              />
-            }
+            element={<Navigate to="/" replace />}
           />
 
-          {/* LISTINGS */}
           <Route
             path="/listing/:id"
             element={<ListingDetail />}
           />
 
-          {/* CREATE LISTING */}
           <Route
             path="/create"
             element={
@@ -288,7 +230,6 @@ function AppRoutes() {
             }
           />
 
-          {/* PROFILE */}
           <Route
             path="/profile"
             element={
@@ -303,7 +244,6 @@ function AppRoutes() {
             element={<Profile />}
           />
 
-          {/* TRADES */}
           <Route
             path="/trades"
             element={
@@ -331,7 +271,6 @@ function AppRoutes() {
             }
           />
 
-          {/* MESSAGES */}
           <Route
             path="/messages/:id"
             element={
@@ -341,7 +280,6 @@ function AppRoutes() {
             }
           />
 
-          {/* DRIVERS */}
           <Route
             path="/driver"
             element={
@@ -365,13 +303,11 @@ function AppRoutes() {
             }
           />
 
-          {/* LEGACY DRIVER DISCOVERY */}
           <Route
             path="/driver-discovery"
             element={<DriverDiscovery />}
           />
 
-          {/* DELIVERY */}
           <Route
             path="/delivery/:id"
             element={
@@ -381,7 +317,6 @@ function AppRoutes() {
             }
           />
 
-          {/* ADMIN */}
           <Route
             path="/admin"
             element={
@@ -391,7 +326,6 @@ function AppRoutes() {
             }
           />
 
-          {/* LEGAL */}
           <Route
             path="/privacy"
             element={<PrivacyPolicy />}
@@ -402,15 +336,9 @@ function AppRoutes() {
             element={<TermsOfService />}
           />
 
-          {/* FALLBACK */}
           <Route
             path="*"
-            element={
-              <Navigate
-                to="/"
-                replace
-              />
-            }
+            element={<Navigate to="/" replace />}
           />
         </Routes>
       </main>
