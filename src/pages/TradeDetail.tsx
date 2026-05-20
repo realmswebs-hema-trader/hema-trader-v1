@@ -20,7 +20,6 @@ import {
   CreditCard,
   Loader2,
   MessageCircle,
-  MessageSquare,
   Package,
   Scale,
   Send,
@@ -36,6 +35,11 @@ import { useNotifications } from '../components/notifications/NotificationContex
 import RatingModal from '../components/trade/RatingModal';
 import DriverRatingModal from '../components/trade/DriverRatingModal';
 import { findOptimalDrivers } from '../services/matchingService';
+import {
+  sendTradeMessage,
+  sendSystemTradeMessage,
+  setTradeTyping
+} from '../services/chatService';
 
 declare global {
   interface Window {
@@ -106,7 +110,13 @@ interface Trade {
   buyerId: string;
   sellerId: string;
   amount: number;
-  status: 'pending' | 'funded' | 'shipped' | 'completed' | 'disputed' | 'cancelled';
+  status:
+    | 'pending'
+    | 'funded'
+    | 'shipped'
+    | 'completed'
+    | 'disputed'
+    | 'cancelled';
   createdAt: any;
   platformFee?: number;
   deliveryFee?: number;
@@ -127,7 +137,11 @@ interface Listing {
 interface Message {
   id: string;
   senderId: string;
+  senderName?: string;
+  senderPhotoURL?: string;
   text: string;
+  type?: 'user' | 'system';
+  readBy?: string[];
   createdAt: any;
 }
 
@@ -145,6 +159,7 @@ interface AppProfile {
   phoneNumber?: string;
   latitude?: number;
   longitude?: number;
+  photoURL?: string;
 }
 
 export default function TradeDetail() {
@@ -153,7 +168,9 @@ export default function TradeDetail() {
   const profileData = profile as AppProfile | null;
   const { sendNotification } = useNotifications();
 
-  const [trade, setTrade] = useState<(Trade & { typing?: Record<string, boolean> }) | null>(null);
+  const [trade, setTrade] = useState<
+    (Trade & { typing?: Record<string, boolean> }) | null
+  >(null);
   const [listing, setListing] = useState<Listing | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
@@ -176,6 +193,10 @@ export default function TradeDetail() {
   const isSeller = Boolean(user?.uid && trade?.sellerId && user.uid === trade.sellerId);
   const isDriver = Boolean(user?.uid && trade?.driverId && user.uid === trade.driverId);
 
+  const tradeRecipientIds = trade
+    ? [trade.buyerId, trade.sellerId, trade.driverId || ''].filter(Boolean)
+    : [];
+
   useEffect(() => {
     const script = document.createElement('script');
     script.src = 'https://checkout.flutterwave.com/v3.js';
@@ -195,9 +216,32 @@ export default function TradeDetail() {
     };
   }, []);
 
+  const setTypingStatus = async (isTyping: boolean) => {
+    if (!id || !user) return;
+
+    try {
+      await setTradeTyping(id, user.uid, isTyping);
+    } catch {
+      // Typing indicators should never block chat usage.
+    }
+  };
+
+  const handleTyping = () => {
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    } else {
+      setTypingStatus(true);
+    }
+
+    typingTimeoutRef.current = setTimeout(() => {
+      setTypingStatus(false);
+      typingTimeoutRef.current = null;
+    }, 3000);
+  };
+
   const verifyPaymentOnServer = async (transactionId: string) => {
     const activeTradeId = trade?.id || id;
-    if (!activeTradeId) return;
+    if (!activeTradeId || !trade) return;
 
     setUpdating(true);
 
@@ -215,11 +259,12 @@ export default function TradeDetail() {
       const result = await response.json();
 
       if (result.success) {
-        sendNotification(trade?.sellerId || '', {
-          title: 'Payment Received',
-          body: `The buyer has funded the escrow for ${listing?.title || 'this order'}. Please proceed with fulfillment.`,
-          type: 'trade_update',
-          targetId: activeTradeId
+        await sendSystemTradeMessage({
+          tradeId: activeTradeId,
+          text: `Payment secured in escrow for ${listing?.title || 'this order'}. Seller: please prepare the items and update once shipped.`,
+          recipientIds: [trade.buyerId, trade.sellerId],
+          sendNotification,
+          title: 'Payment Secured'
         });
       } else {
         alert(`Payment verification failed: ${result.message || 'Please contact support.'}`);
@@ -276,31 +321,6 @@ export default function TradeDetail() {
     });
   };
 
-  const setTypingStatus = async (isTyping: boolean) => {
-    if (!id || !user) return;
-
-    try {
-      await updateDoc(doc(db, 'trades', id), {
-        [`typing.${user.uid}`]: isTyping
-      });
-    } catch {
-      // Typing indicators should never block chat usage.
-    }
-  };
-
-  const handleTyping = () => {
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    } else {
-      setTypingStatus(true);
-    }
-
-    typingTimeoutRef.current = setTimeout(() => {
-      setTypingStatus(false);
-      typingTimeoutRef.current = null;
-    }, 3000);
-  };
-
   useEffect(() => {
     if (!id) return;
 
@@ -348,9 +368,8 @@ export default function TradeDetail() {
       }
     );
 
-    const chatRef = collection(db, 'trades', id, 'messages');
     const unsubscribeChat = onSnapshot(
-      query(chatRef, orderBy('createdAt', 'asc')),
+      query(collection(db, 'trades', id, 'messages'), orderBy('createdAt', 'asc')),
       snapshot => {
         if (isMounted) {
           setMessages(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message)));
@@ -359,9 +378,8 @@ export default function TradeDetail() {
       err => handleFirestoreError(err, OperationType.SUBSCRIBE, `trades/${id}/messages`)
     );
 
-    const offersRef = collection(db, 'trades', id, 'offers');
     const unsubscribeOffers = onSnapshot(
-      query(offersRef, orderBy('createdAt', 'desc')),
+      query(collection(db, 'trades', id, 'offers'), orderBy('createdAt', 'desc')),
       snapshot => {
         if (isMounted) {
           setOffers(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Offer)));
@@ -370,9 +388,8 @@ export default function TradeDetail() {
       err => handleFirestoreError(err, OperationType.SUBSCRIBE, `trades/${id}/offers`)
     );
 
-    const driversRef = collection(db, 'users');
     const unsubscribeDrivers = onSnapshot(
-      query(driversRef, where('roles', 'array-contains', 'driver')),
+      query(collection(db, 'users'), where('roles', 'array-contains', 'driver')),
       snapshot => {
         if (isMounted) {
           setDrivers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -402,6 +419,11 @@ export default function TradeDetail() {
     if (!id || !newMessage.trim() || !user || !trade) return;
 
     const text = newMessage.trim();
+    const senderName =
+      profileData?.displayName ||
+      profileData?.name ||
+      user.displayName ||
+      'Marketplace User';
 
     setNewMessage('');
     setTypingStatus(false);
@@ -412,26 +434,24 @@ export default function TradeDetail() {
     }
 
     try {
-      await addDoc(collection(db, 'trades', id, 'messages'), {
+      await sendTradeMessage({
+        tradeId: id,
         senderId: user.uid,
+        senderName,
+        senderPhotoURL: profileData?.photoURL || user.photoURL || '',
         text,
-        createdAt: serverTimestamp()
-      });
-
-      const recipientId = user.uid === trade.buyerId ? trade.sellerId : trade.buyerId;
-
-      sendNotification(recipientId, {
-        title: `Message from ${profileData?.displayName || profileData?.name || 'Peer'}`,
-        body: text,
-        type: 'message',
-        targetId: id
+        recipientIds: [trade.buyerId, trade.sellerId, trade.driverId || ''],
+        sendNotification
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `trades/${id}/messages`);
     }
   };
 
-  const updateStatus = async (newStatus: Trade['status'], extras: Record<string, any> = {}) => {
+  const updateStatus = async (
+    newStatus: Trade['status'],
+    extras: Record<string, any> = {}
+  ) => {
     if (!id || !trade || !user) return;
 
     setUpdating(true);
@@ -447,25 +467,25 @@ export default function TradeDetail() {
         updates.platformFee = trade.amount * 0.02;
       }
 
+      if (newStatus === 'completed') {
+        updates.escrowStatus = 'release_pending_server_payout';
+        updates.buyerConfirmedAt = serverTimestamp();
+      }
+
       await updateDoc(doc(db, 'trades', id), updates);
 
-      const recipientId = user.uid === trade.buyerId ? trade.sellerId : trade.buyerId;
       let notificationTitle = 'Order Update';
-      let notificationBody = '';
       let systemMessage = '';
 
       if (newStatus === 'funded') {
-        systemMessage = 'Payment secured in escrow. Seller: please prepare the items and update once shipped.';
         notificationTitle = 'Payment Secured';
-        notificationBody = 'Buyer has paid. Please prepare for shipment.';
+        systemMessage = 'Payment secured in escrow. Seller: please prepare the items and update once shipped.';
       } else if (newStatus === 'shipped') {
-        systemMessage = 'Items are on the way. Buyer: please confirm here once they arrive so we can release the funds.';
         notificationTitle = 'Package Shipped';
-        notificationBody = 'Items are on the way. Please confirm once received.';
+        systemMessage = 'Items are on the way. Buyer: please confirm here once they arrive so we can release the funds.';
       } else if (newStatus === 'completed') {
-        systemMessage = 'Transaction finalized. Thank you for using Hema Trader.';
         notificationTitle = 'Trade Completed';
-        notificationBody = 'Transaction finalized. Thank you for using Hema Trader.';
+        systemMessage = 'Buyer confirmed delivery. Escrow is now marked for secure server payout.';
         setShowRating(true);
 
         try {
@@ -478,25 +498,17 @@ export default function TradeDetail() {
           console.error('Server finalization failed:', err);
         }
       } else if (newStatus === 'disputed') {
-        systemMessage = 'A dispute has been opened. Our support team is joining the conversation to help.';
         notificationTitle = 'Dispute Opened';
-        notificationBody = 'A dispute has been opened for your trade.';
-      }
-
-      if (notificationBody) {
-        sendNotification(recipientId, {
-          title: notificationTitle,
-          body: notificationBody,
-          type: 'trade_update',
-          targetId: id
-        });
+        systemMessage = 'A dispute has been opened. Our support team is joining the conversation to help.';
       }
 
       if (systemMessage) {
-        await addDoc(collection(db, 'trades', id, 'messages'), {
-          senderId: 'system',
+        await sendSystemTradeMessage({
+          tradeId: id,
           text: systemMessage,
-          createdAt: serverTimestamp()
+          recipientIds: tradeRecipientIds,
+          sendNotification,
+          title: notificationTitle
         });
       }
     } catch (err) {
@@ -523,19 +535,23 @@ export default function TradeDetail() {
         createdAt: serverTimestamp()
       });
 
-      await addDoc(collection(db, 'trades', id, 'messages'), {
-        senderId: 'system',
+      await sendSystemTradeMessage({
+        tradeId: id,
         text: `New offer submitted: $${amount.toLocaleString()}. Awaiting peer response.`,
-        createdAt: serverTimestamp()
+        recipientIds: [trade.buyerId, trade.sellerId],
+        sendNotification,
+        title: 'New Price Offer'
       });
 
       const recipientId = user.uid === trade.buyerId ? trade.sellerId : trade.buyerId;
 
-      sendNotification(recipientId, {
+      await sendNotification(recipientId, {
         title: 'New Price Offer',
         body: `${profileData?.displayName || profileData?.name || 'User'} proposed $${amount.toLocaleString()}`,
         type: 'offer',
-        targetId: id
+        targetId: id,
+        targetType: 'trade',
+        actionUrl: `/trade/${id}`
       });
 
       setNewOfferAmount('');
@@ -579,18 +595,22 @@ export default function TradeDetail() {
       }
 
       if (offerSenderId && offerSenderId !== user.uid) {
-        sendNotification(offerSenderId, {
+        await sendNotification(offerSenderId, {
           title: `Offer ${status === 'accepted' ? 'Accepted' : 'Declined'}`,
           body: `Your $${amount.toLocaleString()} offer has been ${status}.`,
           type: 'offer',
-          targetId: id
+          targetId: id,
+          targetType: 'trade',
+          actionUrl: `/trade/${id}`
         });
       }
 
-      await addDoc(collection(db, 'trades', id, 'messages'), {
-        senderId: 'system',
+      await sendSystemTradeMessage({
+        tradeId: id,
         text: `Offer for $${amount.toLocaleString()} ${status}. Order updated.`,
-        createdAt: serverTimestamp()
+        recipientIds: [trade.buyerId, trade.sellerId],
+        sendNotification,
+        title: `Offer ${status === 'accepted' ? 'Accepted' : 'Declined'}`
       });
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `trades/${id}/offers/${offerId}`);
@@ -624,20 +644,26 @@ export default function TradeDetail() {
         updatedAt: serverTimestamp()
       });
 
-      await addDoc(collection(db, 'trades', id, 'messages'), {
-        senderId: 'system',
+      await sendSystemTradeMessage({
+        tradeId: id,
         text: `Delivery broadcast sent to ${bestDrivers.length} top-rated nearby drivers. First to accept will be assigned.`,
-        createdAt: serverTimestamp()
+        recipientIds: [trade.buyerId, trade.sellerId],
+        sendNotification,
+        title: 'Delivery Broadcast Sent'
       });
 
-      bestDrivers.forEach(driver => {
-        sendNotification(driver.id, {
-          title: 'New Delivery Opportunity',
-          body: `Nearby delivery request for ${listing?.title || 'an order'}. Earn ${driverCommission} CFA.`,
-          type: 'trade_update',
-          targetId: id
-        });
-      });
+      await Promise.all(
+        bestDrivers.map(driver =>
+          sendNotification(driver.id, {
+            title: 'New Delivery Opportunity',
+            body: `Nearby delivery request for ${listing?.title || 'an order'}. Earn ${driverCommission} CFA.`,
+            type: 'delivery',
+            targetId: id,
+            targetType: 'trade',
+            actionUrl: `/trade/${id}`
+          })
+        )
+      );
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, `trades/${id}/delivery-broadcast`);
     } finally {
@@ -662,17 +688,21 @@ export default function TradeDetail() {
         updatedAt: serverTimestamp()
       });
 
-      await addDoc(collection(db, 'trades', id, 'messages'), {
-        senderId: 'system',
+      await sendSystemTradeMessage({
+        tradeId: id,
         text: `Driver assigned for delivery. Delivery fee of ${deliveryFee.toLocaleString()} CFA applied.`,
-        createdAt: serverTimestamp()
+        recipientIds: [trade.buyerId, trade.sellerId, driverId],
+        sendNotification,
+        title: 'Driver Assigned'
       });
 
-      sendNotification(driverId, {
+      await sendNotification(driverId, {
         title: 'Delivery Assigned',
         body: `You have been assigned delivery for ${listing?.title || 'an order'}.`,
         type: 'delivery',
-        targetId: id
+        targetId: id,
+        targetType: 'trade',
+        actionUrl: `/trade/${id}`
       });
 
       setShowDriverSelection(false);
@@ -713,24 +743,12 @@ export default function TradeDetail() {
       }
 
       if (message) {
-        await addDoc(collection(db, 'trades', tradeId, 'messages'), {
-          senderId: 'system',
+        await sendSystemTradeMessage({
+          tradeId,
           text: message,
-          createdAt: serverTimestamp()
-        });
-
-        sendNotification(trade.buyerId, {
-          title: 'Delivery Update',
-          body: message,
-          type: 'delivery',
-          targetId: tradeId
-        });
-
-        sendNotification(trade.sellerId, {
-          title: 'Delivery Update',
-          body: message,
-          type: 'delivery',
-          targetId: tradeId
+          recipientIds: [trade.buyerId, trade.sellerId, trade.driverId || ''],
+          sendNotification,
+          title: 'Delivery Update'
         });
       }
 
@@ -759,7 +777,9 @@ export default function TradeDetail() {
     return (
       <div className="mx-auto mt-20 max-w-xl rounded-[3rem] border border-white/5 bg-brand-card p-6 py-32 text-center shadow-2xl">
         <AlertCircle className="mx-auto mb-8 h-20 w-20 text-red-500/20" />
-        <h2 className="mb-4 font-serif text-3xl text-white">Order details unavailable</h2>
+        <h2 className="mb-4 font-serif text-3xl text-white">
+          Order details unavailable
+        </h2>
         <p className="mb-10 font-serif italic leading-relaxed text-slate-500">
           {error || 'This order could not be found or has been completed.'}
         </p>
@@ -809,9 +829,14 @@ export default function TradeDetail() {
     });
   }
 
-  const rawStep = trade.status === 'disputed' ? 4 : steps.findIndex(step => step.key === trade.status);
+  const rawStep =
+    trade.status === 'disputed'
+      ? 4
+      : steps.findIndex(step => step.key === trade.status);
+
   const currentStep = rawStep >= 0 ? rawStep : 0;
-  const stepProgress = steps.length > 1 ? (currentStep / (steps.length - 1)) * 100 : 0;
+  const stepProgress =
+    steps.length > 1 ? (currentStep / (steps.length - 1)) * 100 : 0;
 
   return (
     <div className="mx-auto flex h-[calc(100vh-6rem)] max-w-6xl flex-col gap-6 md:h-[calc(100vh-8rem)]">
@@ -986,9 +1011,28 @@ export default function TradeDetail() {
 
             {messages.map(message => {
               const isMine = message.senderId === user?.uid;
+              const isSystem = message.senderId === 'system' || message.type === 'system';
+
+              if (isSystem) {
+                return (
+                  <div key={message.id} className="flex justify-center">
+                    <div className="max-w-[85%] rounded-2xl border border-amber-500/10 bg-amber-500/5 px-5 py-3 text-center">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500">
+                        Hema Trader
+                      </p>
+                      <p className="mt-1 font-serif text-[11px] italic leading-relaxed text-slate-400">
+                        {message.text}
+                      </p>
+                    </div>
+                  </div>
+                );
+              }
 
               return (
-                <div key={message.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  key={message.id}
+                  className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}
+                >
                   <div
                     className={`max-w-[75%] rounded-2xl border px-5 py-3 shadow-2xl ${
                       isMine
@@ -996,7 +1040,14 @@ export default function TradeDetail() {
                         : 'rounded-tl-none border-white/5 bg-white/5 text-slate-300'
                     }`}
                   >
-                    <p className="font-serif text-sm leading-relaxed">{message.text}</p>
+                    {!isMine && message.senderName && (
+                      <p className="mb-1 text-[8px] font-black uppercase tracking-widest text-slate-500">
+                        {message.senderName}
+                      </p>
+                    )}
+                    <p className="font-serif text-sm leading-relaxed">
+                      {message.text}
+                    </p>
                     <p
                       className={`mt-2 text-[8px] font-black uppercase tracking-widest opacity-40 ${
                         isMine ? 'text-right' : 'text-left'
