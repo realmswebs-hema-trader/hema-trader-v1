@@ -4,7 +4,8 @@ import {
   User,
   onAuthStateChanged,
   signInWithPopup,
-  signOut
+  signOut,
+  updateProfile
 } from 'firebase/auth';
 import {
   doc,
@@ -13,8 +14,13 @@ import {
   setDoc,
   updateDoc
 } from 'firebase/firestore';
+import {
+  ref,
+  uploadBytes,
+  getDownloadURL
+} from 'firebase/storage';
 
-import { auth, db } from '../../lib/firebase';
+import { auth, db, storage } from '../../lib/firebase';
 
 interface AuthProfile {
   userId: string;
@@ -29,7 +35,14 @@ interface AuthProfile {
   longitude?: number;
   isOnline?: boolean;
   online?: boolean;
-  lastActiveAt?: unknown;
+  driverStatus?: 'online' | 'offline' | 'available' | 'on_trip';
+  totalDeliveries?: number;
+  completedDeliveries?: number;
+  deliveriesCount?: number;
+  totalEarnings?: number;
+  averageRating?: number;
+  avgDriverRating?: number;
+  ratingCount?: number;
   [key: string]: any;
 }
 
@@ -42,13 +55,39 @@ interface AuthContextType {
   logout: () => Promise<void>;
   updateRoles: (roles: string[]) => Promise<void>;
   updateLocation: () => Promise<void>;
+  updateProfilePhoto: (file: File) => Promise<string>;
   switchRole: (role: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const normalizeRoles = (roles: unknown): string[] => {
+  if (!Array.isArray(roles)) return ['buyer'];
+
+  const cleanRoles = roles.filter(role => typeof role === 'string');
+
+  return cleanRoles.length > 0 ? cleanRoles : ['buyer'];
+};
+
+const buildRoleDefaults = (roles: string[]) => {
+  if (!roles.includes('driver')) return {};
+
+  return {
+    driverStatus: 'available',
+    totalDeliveries: 0,
+    completedDeliveries: 0,
+    deliveriesCount: 0,
+    totalEarnings: 0,
+    averageRating: 0,
+    avgDriverRating: 0,
+    ratingCount: 0,
+    reliabilityScore: 100,
+    warningCount: 0
+  };
+};
+
 const buildProfile = (firebaseUser: User, data: any = {}): AuthProfile => {
-  const roles = Array.isArray(data.roles) ? data.roles : ['buyer'];
+  const roles = normalizeRoles(data.roles);
 
   return {
     ...data,
@@ -92,10 +131,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         online: true,
         lastActiveAt: serverTimestamp(),
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        ...buildRoleDefaults(roles)
       };
 
       await setDoc(userRef, newProfile);
+
       return buildProfile(firebaseUser, newProfile);
     }
 
@@ -108,22 +149,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       updatedAt: serverTimestamp()
     });
 
-    return {
-      ...existingProfile,
-      isOnline: true,
-      online: true
-    };
-  };
-
-  const markUserOffline = async (firebaseUser: User | null = user) => {
-    if (!firebaseUser) return;
-
-    await updateDoc(doc(db, 'users', firebaseUser.uid), {
-      isOnline: false,
-      online: false,
-      lastActiveAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
+    return existingProfile;
   };
 
   const signInWithGoogle = async () => {
@@ -136,37 +162,57 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setActiveRole(nextProfile.activeRole || nextProfile.roles[0] || 'buyer');
   };
 
-  const logout = async () => {
+  const markUserOffline = async (currentUser: User | null) => {
+    if (!currentUser) return;
+
     try {
-      await markUserOffline();
-    } finally {
-      await signOut(auth);
+      await updateDoc(doc(db, 'users', currentUser.uid), {
+        isOnline: false,
+        online: false,
+        driverStatus: profile?.roles?.includes('driver') ? 'offline' : profile?.driverStatus,
+        lastActiveAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error('Failed to mark user offline:', error);
     }
+  };
+
+  const logout = async () => {
+    await markUserOffline(user);
+    await signOut(auth);
+
+    setUser(null);
+    setProfile(null);
+    setActiveRole('buyer');
   };
 
   const updateRoles = async (roles: string[]) => {
     if (!user) return;
 
-    const userRef = doc(db, 'users', user.uid);
-    const nextActiveRole = roles[0] || '';
+    const safeRoles = normalizeRoles(roles);
+    const nextActiveRole = safeRoles[0] || 'buyer';
+    const roleDefaults = buildRoleDefaults(safeRoles);
 
-    await updateDoc(userRef, {
-      roles,
+    await updateDoc(doc(db, 'users', user.uid), {
+      roles: safeRoles,
       activeRole: nextActiveRole,
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(),
+      ...roleDefaults
     });
 
     setProfile(prev =>
       prev
         ? {
             ...prev,
-            roles,
-            activeRole: nextActiveRole
+            roles: safeRoles,
+            activeRole: nextActiveRole,
+            ...roleDefaults
           }
         : prev
     );
 
-    setActiveRole(nextActiveRole || 'buyer');
+    setActiveRole(nextActiveRole);
   };
 
   const switchRole = async (role: string) => {
@@ -222,6 +268,29 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     );
   };
 
+  const updateProfilePhoto = async (file: File) => {
+    if (!user) {
+      throw new Error('You must be signed in to update your profile photo.');
+    }
+
+    const fileRef = ref(storage, `profilePhotos/${user.uid}/${Date.now()}_${file.name}`);
+    const uploadResult = await uploadBytes(fileRef, file);
+    const photoURL = await getDownloadURL(uploadResult.ref);
+
+    await updateProfile(user, {
+      photoURL
+    });
+
+    await updateDoc(doc(db, 'users', user.uid), {
+      photoURL,
+      updatedAt: serverTimestamp()
+    });
+
+    setProfile(prev => (prev ? { ...prev, photoURL } : prev));
+
+    return photoURL;
+  };
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async firebaseUser => {
       try {
@@ -253,50 +322,42 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const userRef = doc(db, 'users', user.uid);
 
-    const markOnline = async () => {
-      await updateDoc(userRef, {
-        isOnline: true,
-        online: true,
-        lastActiveAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
+    const sendHeartbeat = async () => {
+      try {
+        await updateDoc(userRef, {
+          isOnline: true,
+          online: true,
+          lastActiveAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
 
-      setProfile(prev =>
-        prev
-          ? {
-              ...prev,
-              isOnline: true,
-              online: true
-            }
-          : prev
-      );
+        setProfile(prev =>
+          prev
+            ? {
+                ...prev,
+                isOnline: true,
+                online: true
+              }
+            : prev
+        );
+      } catch (error) {
+        console.error('Online heartbeat failed:', error);
+      }
     };
 
-    const markOffline = () => {
-      updateDoc(userRef, {
-        isOnline: false,
-        online: false,
-        lastActiveAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      }).catch(() => {});
+    sendHeartbeat();
+
+    const heartbeatId = window.setInterval(sendHeartbeat, 60000);
+
+    const handleBeforeUnload = () => {
+      markUserOffline(user);
     };
 
-    markOnline().catch(error => {
-      console.error('Failed to mark user online:', error);
-    });
-
-    const interval = window.setInterval(() => {
-      markOnline().catch(error => {
-        console.error('Failed to refresh online status:', error);
-      });
-    }, 60000);
-
-    window.addEventListener('beforeunload', markOffline);
+    window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('beforeunload', markOffline);
-      markOffline();
+      window.clearInterval(heartbeatId);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [user]);
 
@@ -311,6 +372,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         logout,
         updateRoles,
         updateLocation,
+        updateProfilePhoto,
         switchRole
       }}
     >
