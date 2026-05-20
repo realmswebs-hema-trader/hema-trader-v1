@@ -1,4 +1,4 @@
-import { ReactNode, useState, useEffect } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import {
   BrowserRouter as Router,
   Routes,
@@ -35,6 +35,9 @@ import Trades from './pages/Trades';
 import TradeDetail from './pages/TradeDetail';
 import DriverDashboard from './pages/DriverDashboard';
 import DriverDiscovery from './pages/DriverDiscovery';
+import Drivers from './pages/Drivers';
+import DriverProfile from './pages/DriverProfile';
+import DeliveryDetail from './pages/DeliveryDetail';
 import Admin from './pages/Admin';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
@@ -57,7 +60,6 @@ const PrivateRoute = ({
 }: {
   children: ReactNode;
 }) => {
-
   const {
     user,
     profile,
@@ -112,7 +114,6 @@ const AdminRoute = ({
 }: {
   children: ReactNode;
 }) => {
-
   const {
     user,
     profile,
@@ -155,12 +156,10 @@ const AdminRoute = ({
 // =====================================
 
 const OfflineBanner = () => {
-
   const [isOffline, setIsOffline] =
     useState(!navigator.onLine);
 
   useEffect(() => {
-
     const onOnline = () =>
       setIsOffline(false);
 
@@ -188,7 +187,6 @@ const OfflineBanner = () => {
         onOffline
       );
     };
-
   }, []);
 
   if (!isOffline) return null;
@@ -206,7 +204,6 @@ const OfflineBanner = () => {
 // =====================================
 
 function AppRoutes() {
-
   const {
     user,
     loading
@@ -243,15 +240,12 @@ function AppRoutes() {
 
   return (
     <div className="flex min-h-screen flex-col bg-brand-bg pb-20 font-sans text-slate-200">
-
       <OfflineBanner />
 
       <Header />
 
       <main className="flex-1 px-4 py-6">
-
         <Routes>
-
           {/* HOME */}
           <Route
             path="/"
@@ -275,7 +269,7 @@ function AppRoutes() {
             element={<ListingDetail />}
           />
 
-          {/* FIXED CREATE LISTING ROUTE */}
+          {/* CREATE LISTING */}
           <Route
             path="/create"
             element={
@@ -285,7 +279,6 @@ function AppRoutes() {
             }
           />
 
-          {/* ADDED MISSING ROUTE */}
           <Route
             path="/create-listing"
             element={
@@ -329,6 +322,25 @@ function AppRoutes() {
             }
           />
 
+          <Route
+            path="/trades/:id"
+            element={
+              <PrivateRoute>
+                <TradeDetail />
+              </PrivateRoute>
+            }
+          />
+
+          {/* MESSAGES */}
+          <Route
+            path="/messages/:id"
+            element={
+              <PrivateRoute>
+                <TradeDetail />
+              </PrivateRoute>
+            }
+          />
+
           {/* DRIVERS */}
           <Route
             path="/driver"
@@ -341,7 +353,32 @@ function AppRoutes() {
 
           <Route
             path="/drivers"
+            element={<Drivers />}
+          />
+
+          <Route
+            path="/drivers/:id"
+            element={
+              <PrivateRoute>
+                <DriverProfile />
+              </PrivateRoute>
+            }
+          />
+
+          {/* LEGACY DRIVER DISCOVERY */}
+          <Route
+            path="/driver-discovery"
             element={<DriverDiscovery />}
+          />
+
+          {/* DELIVERY */}
+          <Route
+            path="/delivery/:id"
+            element={
+              <PrivateRoute>
+                <DeliveryDetail />
+              </PrivateRoute>
+            }
           />
 
           {/* ADMIN */}
@@ -375,13 +412,10 @@ function AppRoutes() {
               />
             }
           />
-
         </Routes>
-
       </main>
 
       <BottomNav />
-
     </div>
   );
 }
@@ -391,22 +425,14 @@ function AppRoutes() {
 // =====================================
 
 export default function App() {
-
   return (
     <Router>
-
       <AuthProvider>
-
         <NotificationProvider>
-
           <RetentionManager />
-
           <AppRoutes />
-
         </NotificationProvider>
-
       </AuthProvider>
-
     </Router>
   );
 }
