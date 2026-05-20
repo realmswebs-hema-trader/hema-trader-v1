@@ -28,7 +28,9 @@ import {
   Star,
   Truck,
   AlertTriangle,
-  ChevronLeft
+  ChevronLeft,
+  UserCog,
+  KeyRound
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -44,6 +46,9 @@ export default function Profile() {
     logout,
     updateLocation,
     updateRoles,
+    updateProfilePhoto,
+    updateDisplayName,
+    updateAccountPassword,
     loading: authLoading
   } = useAuth();
 
@@ -55,6 +60,10 @@ export default function Profile() {
   const [targetProfile, setTargetProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState('');
+  const [displayNameInput, setDisplayNameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
   const [isFollowing, setIsFollowing] = useState(false);
   const [followingLoading, setFollowingLoading] = useState(false);
   const [locating, setLocating] = useState(false);
@@ -65,6 +74,7 @@ export default function Profile() {
 
   const idInputRef = useRef<HTMLInputElement>(null);
   const selfieInputRef = useRef<HTMLInputElement>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!targetUserId) {
@@ -135,12 +145,16 @@ export default function Profile() {
           authUser.email?.split('@')[0] ||
           'Profile',
         photoURL: authUser.photoURL || '',
-        roles: ['buyer'],
+        roles: [],
         ...(myProfile || {})
       }
     : null;
 
   const profile = isOwnProfile ? fallbackOwnProfile : targetProfile;
+
+  const passwordProviderEnabled =
+    authUser?.providerData?.some(provider => provider.providerId === 'password') ||
+    false;
 
   const handleReport = async () => {
     if (!authUser || !targetUserId || !reportReason) return;
@@ -281,6 +295,59 @@ export default function Profile() {
     }
   };
 
+  const handleAvatarUpload = async (file: File) => {
+    setSettingsLoading(true);
+    setSettingsMessage('');
+
+    try {
+      await updateProfilePhoto(file);
+      setSettingsMessage('Profile photo updated successfully.');
+    } catch (error) {
+      console.error('Profile photo update failed:', error);
+      setSettingsMessage('Could not update profile photo. Please try again.');
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const handleDisplayNameUpdate = async () => {
+    if (!displayNameInput.trim()) return;
+
+    setSettingsLoading(true);
+    setSettingsMessage('');
+
+    try {
+      await updateDisplayName(displayNameInput.trim());
+      setDisplayNameInput('');
+      setSettingsMessage('Display name updated successfully.');
+    } catch (error) {
+      console.error('Display name update failed:', error);
+      setSettingsMessage('Could not update display name. Please try again.');
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const handlePasswordUpdate = async () => {
+    if (passwordInput.length < 6) return;
+
+    setSettingsLoading(true);
+    setSettingsMessage('');
+
+    try {
+      await updateAccountPassword(passwordInput);
+      setPasswordInput('');
+      setSettingsMessage('Password updated successfully.');
+    } catch (error) {
+      console.error('Password update failed:', error);
+      setSettingsMessage(
+        'Could not update password. Please sign out, sign back in, and try again.'
+      );
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-xl space-y-10">
       <section className="text-center">
@@ -300,9 +367,12 @@ export default function Profile() {
         <h2 className="mt-6 font-serif text-3xl tracking-tight text-white">
           {profile?.displayName || profile?.name || 'Hema User'}
         </h2>
-        <p className="mt-1 text-xs uppercase tracking-widest text-slate-500">
-          {profile?.email}
-        </p>
+
+        {isOwnProfile && (
+          <p className="mt-1 text-xs uppercase tracking-widest text-slate-500">
+            {profile?.email}
+          </p>
+        )}
 
         <div className="mt-4 flex flex-wrap justify-center gap-2">
           {profile?.badges?.map((badge: string) => (
@@ -395,6 +465,93 @@ export default function Profile() {
           </section>
         )}
       </section>
+
+      {isOwnProfile && (
+        <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
+          <div className="flex items-center gap-3">
+            <UserCog className="h-6 w-6 text-amber-500" />
+            <h3 className="font-serif text-xl text-white">Profile Settings</h3>
+          </div>
+
+          <button
+            onClick={() => avatarInputRef.current?.click()}
+            disabled={settingsLoading}
+            className="flex w-full items-center justify-center gap-3 rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-widest text-black transition hover:bg-amber-500 disabled:opacity-50"
+          >
+            {settingsLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Camera className="h-4 w-4" />
+            )}
+            Upload New Profile Photo
+          </button>
+
+          <input
+            ref={avatarInputRef}
+            hidden
+            type="file"
+            accept="image/*"
+            onChange={event =>
+              event.target.files?.[0] && handleAvatarUpload(event.target.files[0])
+            }
+          />
+
+          <div className="space-y-2">
+            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+              Change Display Name
+            </label>
+            <input
+              value={displayNameInput}
+              onChange={event => setDisplayNameInput(event.target.value)}
+              placeholder={profile?.displayName || profile?.name || 'Your name'}
+              className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
+            />
+            <button
+              onClick={handleDisplayNameUpdate}
+              disabled={!displayNameInput.trim() || settingsLoading}
+              className="w-full rounded-xl bg-white/10 py-3 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white/20 disabled:opacity-40"
+            >
+              Save Name
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+              <KeyRound className="h-3 w-3" />
+              Change Password
+            </label>
+
+            {passwordProviderEnabled ? (
+              <>
+                <input
+                  value={passwordInput}
+                  onChange={event => setPasswordInput(event.target.value)}
+                  type="password"
+                  placeholder="New password"
+                  className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
+                />
+                <button
+                  onClick={handlePasswordUpdate}
+                  disabled={passwordInput.length < 6 || settingsLoading}
+                  className="w-full rounded-xl bg-white/10 py-3 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white/20 disabled:opacity-40"
+                >
+                  Update Password
+                </button>
+              </>
+            ) : (
+              <p className="rounded-xl border border-white/5 bg-black/40 p-4 text-[10px] uppercase leading-relaxed tracking-widest text-slate-500">
+                Your password is managed by your Google account.
+              </p>
+            )}
+          </div>
+
+          {settingsMessage && (
+            <p className="rounded-xl border border-white/5 bg-black/40 p-4 text-center text-[10px] font-bold uppercase tracking-widest text-amber-500">
+              {settingsMessage}
+            </p>
+          )}
+        </section>
+      )}
 
       {!isOwnProfile && profile?.roles?.includes('driver') && (
         <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
