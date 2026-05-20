@@ -238,7 +238,9 @@ function MerchantCard({
         <div className="mt-2 flex items-center gap-1 text-[11px] font-bold text-amber-500">
           <Star className="h-3 w-3 fill-amber-500" />
           {rating.toFixed(1)}
-          <span className="font-normal text-slate-500">({merchant.ratingCount || merchant.totalTrades || 0})</span>
+          <span className="font-normal text-slate-500">
+            ({merchant.ratingCount || merchant.totalTrades || 0})
+          </span>
         </div>
 
         <div
@@ -316,7 +318,9 @@ function DriverCard({ driver }: { driver: UserProfile }) {
         <div className="mt-2 flex items-center gap-1 text-[11px] font-bold text-amber-500">
           <Star className="h-3 w-3 fill-amber-500" />
           {rating.toFixed(1)}
-          <span className="font-normal text-slate-500">({driver.ratingCount || driver.deliveriesCount || 0})</span>
+          <span className="font-normal text-slate-500">
+            ({driver.ratingCount || driver.deliveriesCount || 0})
+          </span>
         </div>
 
         <p className="mt-2 text-[10px] text-slate-400">
@@ -334,7 +338,7 @@ function DriverCard({ driver }: { driver: UserProfile }) {
       </div>
 
       <Link
-        to={`/profile/${driver.id}`}
+        to={`/drivers/${driver.id}`}
         className="rounded-lg border border-green-500/30 bg-green-500/10 px-2 py-2 text-center text-[9px] font-bold text-green-400 transition hover:bg-green-500 hover:text-black"
       >
         Hire Driver
