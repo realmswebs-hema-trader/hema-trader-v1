@@ -11,46 +11,54 @@ import { Link, useSearchParams } from 'react-router-dom';
 import NotificationTray from '../notifications/NotificationTray';
 
 export default function Header() {
-  const { user, profile, viewMode, setViewMode } = useAuth();
+  const { user, profile, activeRole, switchRole } = useAuth();
   const [searchParams] = useSearchParams();
 
-  const selectedRole = searchParams.get('role') || 'all';
-
+  const selectedRole = searchParams.get('role') || activeRole || 'all';
   const roles = Array.isArray(profile?.roles) ? profile.roles : [];
 
-  const canUseBuyer = roles.includes('buyer') || roles.length === 0;
-  const canUseSeller = roles.includes('seller');
-  const canUseDriver = roles.includes('driver');
+  const visibleRoles = ['buyer', 'seller', 'driver'].filter(role =>
+    roles.includes(role)
+  );
 
   const roleLinks = [
     {
       key: 'buyer',
       label: 'Buyer',
       icon: ShoppingBag,
-      enabled: canUseBuyer,
-      viewMode: 'buyer'
+      accent: 'white'
     },
     {
       key: 'seller',
       label: 'Seller',
       icon: Store,
-      enabled: canUseSeller,
-      viewMode: 'seller'
+      accent: 'amber'
     },
     {
       key: 'driver',
       label: 'Driver',
       icon: Truck,
-      enabled: canUseDriver,
-      viewMode: 'driver'
+      accent: 'green'
     }
-  ];
+  ].filter(item => visibleRoles.includes(item.key));
 
-  const handleRoleClick = (mode: string, enabled: boolean) => {
-    if (!enabled) return;
+  const getActiveClass = (key: string) => {
+    if (key === 'driver') {
+      return 'bg-green-500 text-black shadow-lg';
+    }
 
-    if (typeof setViewMode === 'function') {
-      setViewMode(mode);
+    if (key === 'seller') {
+      return 'bg-amber-500 text-black shadow-lg';
+    }
+
+    return 'bg-white text-black shadow-lg';
+  };
+
+  const handleRoleClick = async (role: string) => {
+    try {
+      await switchRole(role);
+    } catch (error) {
+      console.error('Failed to switch role:', error);
     }
   };
 
@@ -65,44 +73,37 @@ export default function Header() {
           >
             H
           </motion.div>
+
           <h1 className="text-xl font-serif font-semibold tracking-tight text-white">
             Hema Trader
           </h1>
         </Link>
 
-        <div className="hidden items-center rounded-xl border border-white/5 bg-black/40 p-1 sm:flex">
-          {roleLinks.map(item => {
-            const Icon = item.icon;
-            const active = selectedRole === item.key || viewMode === item.viewMode;
+        {roleLinks.length > 0 && (
+          <div className="hidden items-center rounded-xl border border-white/5 bg-black/40 p-1 sm:flex">
+            {roleLinks.map(item => {
+              const Icon = item.icon;
+              const active = selectedRole === item.key || activeRole === item.key;
 
-            return (
-              <Link
-                key={item.key}
-                to={`/?role=${item.key}`}
-                onClick={() => handleRoleClick(item.viewMode, item.enabled)}
-                className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-[8px] font-black uppercase tracking-wider transition-all ${
-                  active
-                    ? item.key === 'seller'
-                      ? 'bg-amber-500 text-black shadow-lg'
-                      : item.key === 'driver'
-                        ? 'bg-green-500 text-black shadow-lg'
-                        : 'bg-white text-black shadow-lg'
-                    : item.enabled
-                      ? 'text-slate-500 hover:text-slate-300'
-                      : 'text-slate-700 opacity-70'
-                }`}
-                title={
-                  item.enabled
-                    ? `View ${item.label.toLowerCase()}s`
-                    : `You have not enabled ${item.label.toLowerCase()} mode yet`
-                }
-              >
-                <Icon className="h-3 w-3" />
-                {item.label}
-              </Link>
-            );
-          })}
-        </div>
+              return (
+                <Link
+                  key={item.key}
+                  to={`/?role=${item.key}`}
+                  onClick={() => handleRoleClick(item.key)}
+                  className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-[8px] font-black uppercase tracking-wider transition-all ${
+                    active
+                      ? getActiveClass(item.key)
+                      : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                  title={`Switch to ${item.label}`}
+                >
+                  <Icon className="h-3 w-3" />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div>
