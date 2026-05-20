@@ -3,122 +3,145 @@ import { useAuth } from './AuthContext';
 import { Shield, ShoppingBag, Store, Check, Loader2, Truck } from 'lucide-react';
 import { motion } from 'motion/react';
 
+const ROLE_OPTIONS = [
+  {
+    id: 'buyer',
+    title: 'Buyer',
+    description: 'I want to discover and trade for local goods',
+    icon: ShoppingBag
+  },
+  {
+    id: 'seller',
+    title: 'Seller',
+    description: 'I want to list my products and grow my reach',
+    icon: Store
+  },
+  {
+    id: 'driver',
+    title: 'Driver',
+    description: 'I want to deliver goods and earn commissions',
+    icon: Truck
+  }
+];
+
 export default function RoleSelection() {
   const { profile, updateRoles } = useAuth();
-  const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
+
+  const [selectedRoles, setSelectedRoles] = useState<string[]>(
+    Array.isArray(profile?.roles) ? profile.roles : []
+  );
   const [loading, setLoading] = useState(false);
 
   const toggleRole = (role: string) => {
-    setSelectedRoles(prev => 
-      prev.includes(role) 
-        ? prev.filter(r => r !== role) 
+    setSelectedRoles(prev =>
+      prev.includes(role)
+        ? prev.filter(existingRole => existingRole !== role)
         : [...prev, role]
     );
   };
 
   const handleSave = async () => {
-    if (selectedRoles.length === 0) return;
+    if (selectedRoles.length === 0 || loading) return;
+
     setLoading(true);
+
     try {
-      await updateRoles(selectedRoles);
+      const safeRoles = Array.from(
+        new Set(
+          selectedRoles.includes('buyer')
+            ? selectedRoles
+            : ['buyer', ...selectedRoles]
+        )
+      );
+
+      await updateRoles(safeRoles);
     } catch (error) {
-      console.error('Failed to save roles', error);
+      console.error('Failed to save roles:', error);
+      alert('Unable to save your roles. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md p-6">
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.9 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-lg rounded-[2.5rem] bg-brand-card p-10 border border-white/5 shadow-2xl space-y-8"
-      >
-        <div className="text-center space-y-3">
-          <div className="mx-auto w-16 h-16 rounded-3xl bg-amber-500/10 flex items-center justify-center border border-amber-500/20 mb-4">
-            <Shield className="h-8 w-8 text-amber-500" />
-          </div>
-          <h2 className="font-serif text-3xl text-white">Choose Your Role</h2>
-          <p className="text-xs uppercase tracking-widest text-slate-500 leading-relaxed max-w-sm mx-auto">
-            Welcome to Hema Trader. How would you like to use the marketplace? You can always change this later.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 gap-4">
-          <button
-            onClick={() => toggleRole('buyer')}
-            className={`flex items-center gap-6 p-6 rounded-3xl border-2 transition-all text-left group ${
-              selectedRoles.includes('buyer') 
-                ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/10' 
-                : 'bg-black/40 border-white/5 hover:border-white/10'
-            }`}
-          >
-            <div className={`p-4 rounded-2xl transition-colors ${
-              selectedRoles.includes('buyer') ? 'bg-amber-500 text-black' : 'bg-white/5 text-slate-400 group-hover:text-white'
-            }`}>
-              <ShoppingBag className="h-6 w-6" />
-            </div>
-            <div className="flex-1">
-              <h4 className={`font-serif text-xl ${selectedRoles.includes('buyer') ? 'text-white' : 'text-slate-400'}`}>Buyer</h4>
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 mt-1">I want to discover and trade for local goods</p>
-            </div>
-            {selectedRoles.includes('buyer') && <Check className="h-6 w-6 text-amber-500" />}
-          </button>
-
-          <button
-            onClick={() => toggleRole('seller')}
-            className={`flex items-center gap-6 p-6 rounded-3xl border-2 transition-all text-left group ${
-              selectedRoles.includes('seller') 
-                ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/10' 
-                : 'bg-black/40 border-white/5 hover:border-white/10'
-            }`}
-          >
-            <div className={`p-4 rounded-2xl transition-colors ${
-              selectedRoles.includes('seller') ? 'bg-amber-500 text-black' : 'bg-white/5 text-slate-400 group-hover:text-white'
-            }`}>
-              <Store className="h-6 w-6" />
-            </div>
-            <div className="flex-1">
-              <h4 className={`font-serif text-xl ${selectedRoles.includes('seller') ? 'text-white' : 'text-slate-400'}`}>Seller</h4>
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 mt-1">I want to list my products and grow my reach</p>
-            </div>
-            {selectedRoles.includes('seller') && <Check className="h-6 w-6 text-amber-500" />}
-          </button>
-
-          <button
-            onClick={() => toggleRole('driver')}
-            className={`flex items-center gap-6 p-6 rounded-3xl border-2 transition-all text-left group ${
-              selectedRoles.includes('driver') 
-                ? 'bg-amber-500/10 border-amber-500 shadow-lg shadow-amber-500/10' 
-                : 'bg-black/40 border-white/5 hover:border-white/10'
-            }`}
-          >
-            <div className={`p-4 rounded-2xl transition-colors ${
-              selectedRoles.includes('driver') ? 'bg-amber-500 text-black' : 'bg-white/5 text-slate-400 group-hover:text-white'
-            }`}>
-              <Truck className="h-6 w-6" />
-            </div>
-            <div className="flex-1">
-              <h4 className={`font-serif text-xl ${selectedRoles.includes('driver') ? 'text-white' : 'text-slate-400'}`}>Driver</h4>
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 mt-1">I want to deliver goods and earn commissions</p>
-            </div>
-            {selectedRoles.includes('driver') && <Check className="h-6 w-6 text-amber-500" />}
-          </button>
-        </div>
-
-        <button
-          onClick={handleSave}
-          disabled={selectedRoles.length === 0 || loading}
-          className="w-full bg-white text-black font-black uppercase tracking-[0.2em] py-5 rounded-2xl hover:bg-amber-500 transition-all flex items-center justify-center gap-3 shadow-xl active:scale-95 disabled:bg-slate-800 disabled:text-slate-600"
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/90 p-4 pb-28 backdrop-blur-md sm:p-6">
+      <div className="flex min-h-full items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.94 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="w-full max-w-lg space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-6 shadow-2xl sm:p-10"
         >
-          {loading ? (
-            <Loader2 className="h-5 w-5 animate-spin" />
-          ) : (
-            'Enter Marketplace'
-          )}
-        </button>
-      </motion.div>
+          <div className="space-y-3 text-center">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-3xl border border-amber-500/20 bg-amber-500/10">
+              <Shield className="h-8 w-8 text-amber-500" />
+            </div>
+
+            <h2 className="font-serif text-3xl text-white">
+              Choose Your Role
+            </h2>
+
+            <p className="mx-auto max-w-sm text-xs uppercase leading-relaxed tracking-widest text-slate-500">
+              Welcome to Hema Trader. How would you like to use the marketplace?
+              You can always change this later.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4">
+            {ROLE_OPTIONS.map(role => {
+              const Icon = role.icon;
+              const selected = selectedRoles.includes(role.id);
+
+              return (
+                <button
+                  key={role.id}
+                  type="button"
+                  onClick={() => toggleRole(role.id)}
+                  className={`group flex items-center gap-5 rounded-3xl border-2 p-5 text-left transition-all sm:gap-6 sm:p-6 ${
+                    selected
+                      ? 'border-amber-500 bg-amber-500/10 shadow-lg shadow-amber-500/10'
+                      : 'border-white/5 bg-black/40 hover:border-white/10'
+                  }`}
+                >
+                  <div
+                    className={`rounded-2xl p-4 transition-colors ${
+                      selected
+                        ? 'bg-amber-500 text-black'
+                        : 'bg-white/5 text-slate-400 group-hover:text-white'
+                    }`}
+                  >
+                    <Icon className="h-6 w-6" />
+                  </div>
+
+                  <div className="min-w-0 flex-1">
+                    <h4
+                      className={`font-serif text-xl ${
+                        selected ? 'text-white' : 'text-slate-400'
+                      }`}
+                    >
+                      {role.title}
+                    </h4>
+
+                    <p className="mt-1 text-[10px] uppercase tracking-wider text-slate-500">
+                      {role.description}
+                    </p>
+                  </div>
+
+                  {selected && <Check className="h-6 w-6 shrink-0 text-amber-500" />}
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={selectedRoles.length === 0 || loading}
+            className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white py-5 font-black uppercase tracking-[0.2em] text-black shadow-xl transition-all hover:bg-amber-500 active:scale-95 disabled:bg-slate-800 disabled:text-slate-600"
+          >
+            {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Enter Marketplace'}
+          </button>
+        </motion.div>
+      </div>
     </div>
   );
 }
