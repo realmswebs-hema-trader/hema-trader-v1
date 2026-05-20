@@ -1,15 +1,10 @@
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useState
-} from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 
 import {
   User,
+  GoogleAuthProvider,
   onAuthStateChanged,
   signInWithPopup,
-  GoogleAuthProvider,
   signOut
 } from 'firebase/auth';
 
@@ -22,82 +17,54 @@ import {
 
 import { auth, db } from '../../lib/firebase';
 
+interface UserProfile {
+  uid: string;
+  email: string | null;
+  name: string;
+  photoURL: string;
+  roles: string[];
+  createdAt?: unknown;
+}
+
 interface AuthContextType {
   user: User | null;
-  profile: any | null;
+  profile: UserProfile | null;
   loading: boolean;
-
   signInWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
-const AuthContext = createContext<
-  AuthContextType | undefined
->(undefined);
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const AuthProvider = ({
-  children
-}: {
-  children: React.ReactNode;
-}) => {
-  const [user, setUser] =
-    useState<User | null>(null);
-
-  const [profile, setProfile] =
-    useState<any | null>(null);
-
-  const [loading, setLoading] =
-    useState(true);
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const signInWithGoogle = async () => {
     try {
-      const provider =
-        new GoogleAuthProvider();
-
-      const result =
-        await signInWithPopup(
-          auth,
-          provider
-        );
-
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
       const firebaseUser = result.user;
 
-      const userRef = doc(
-        db,
-        'users',
-        firebaseUser.uid
-      );
-
-      const userSnap =
-        await getDoc(userRef);
+      const userRef = doc(db, 'users', firebaseUser.uid);
+      const userSnap = await getDoc(userRef);
 
       if (!userSnap.exists()) {
         await setDoc(userRef, {
           uid: firebaseUser.uid,
           email: firebaseUser.email,
-          name:
-            firebaseUser.displayName || '',
-          photoURL:
-            firebaseUser.photoURL || '',
-
+          name: firebaseUser.displayName || '',
+          photoURL: firebaseUser.photoURL || '',
           createdAt: serverTimestamp(),
-
           roles:
-            firebaseUser.email ===
-            'realmswebs@gmail.com'
-              ? [
-                  'buyer',
-                  'seller',
-                  'admin'
-                ]
+            firebaseUser.email === 'realmswebs@gmail.com'
+              ? ['buyer', 'seller', 'admin']
               : ['buyer']
         });
       }
     } catch (error) {
-      console.error(
-        'Google sign in failed:',
-        error
-      );
+      console.error('Google sign in failed:', error);
     }
   };
 
@@ -105,49 +72,31 @@ export const AuthProvider = ({
     try {
       await signOut(auth);
     } catch (error) {
-      console.error(
-        'Logout failed:',
-        error
-      );
+      console.error('Logout failed:', error);
     }
   };
 
   useEffect(() => {
-    const unsubscribe =
-      onAuthStateChanged(
-        auth,
-        async firebaseUser => {
-          try {
-            setUser(firebaseUser);
+    const unsubscribe = onAuthStateChanged(auth, async firebaseUser => {
+      try {
+        setUser(firebaseUser);
 
-            if (firebaseUser) {
-              const userRef = doc(
-                db,
-                'users',
-                firebaseUser.uid
-              );
-
-              const userSnap =
-                await getDoc(userRef);
-
-              if (userSnap.exists()) {
-                setProfile(
-                  userSnap.data()
-                );
-              }
-            } else {
-              setProfile(null);
-            }
-          } catch (error) {
-            console.error(
-              'Auth listener failed:',
-              error
-            );
-          } finally {
-            setLoading(false);
-          }
+        if (!firebaseUser) {
+          setProfile(null);
+          return;
         }
-      );
+
+        const userRef = doc(db, 'users', firebaseUser.uid);
+        const userSnap = await getDoc(userRef);
+
+        setProfile(userSnap.exists() ? (userSnap.data() as UserProfile) : null);
+      } catch (error) {
+        console.error('Auth listener failed:', error);
+        setProfile(null);
+      } finally {
+        setLoading(false);
+      }
+    });
 
     return () => unsubscribe();
   }, []);
@@ -168,15 +117,11 @@ export const AuthProvider = ({
 };
 
 export const useAuth = () => {
-  const context =
-    useContext(AuthContext);
+  const context = useContext(AuthContext);
 
   if (context === undefined) {
-    throw new Error(
-      'useAuth must be used within an AuthProvider'
-    );
+    throw new Error('useAuth must be used within an AuthProvider');
   }
 
   return context;
 };
-```
