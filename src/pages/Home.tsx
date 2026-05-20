@@ -97,7 +97,6 @@ const normalizeUser = (user: any): UserProfile => ({
 
 const isActive = (profile: UserProfile) => {
   if (profile.isOnline) return true;
-
   const lastActive = getMillis(profile.lastActiveAt);
   return lastActive > 0 && Date.now() - lastActive < 15 * 60 * 1000;
 };
@@ -142,12 +141,12 @@ const profileMatchesSearch = (profile: UserProfile, searchTerm: string) => {
 
 function OnlineDot({ active }: { active: boolean }) {
   return (
-    <span className="relative flex h-4 w-4">
+    <span className="relative flex h-3 w-3">
       {active && (
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
       )}
       <span
-        className={`relative inline-flex h-4 w-4 rounded-full border-2 border-brand-card ${
+        className={`relative inline-flex h-3 w-3 rounded-full border-2 border-brand-card ${
           active ? 'bg-green-500' : 'bg-slate-500'
         }`}
       />
@@ -206,82 +205,76 @@ function MerchantCard({
 }) {
   const active = isActive(merchant);
   const rating = merchant.averageRating || 0;
-  const ratingCount = merchant.ratingCount || merchant.totalTrades || 0;
   const roleText = merchant.roles.map(titleCase).join(' • ');
 
   return (
     <motion.article
-      whileHover={{ y: -4 }}
-      className="relative flex w-60 shrink-0 flex-col rounded-lg border border-white/10 bg-brand-card/80 p-5 shadow-2xl"
+      whileHover={{ y: -3 }}
+      className="relative flex aspect-square w-44 shrink-0 flex-col justify-between rounded-2xl border border-white/10 bg-brand-card/80 p-4 shadow-2xl sm:w-48"
     >
-      <div className="flex flex-col items-center text-center">
-        <div className="relative">
-          <img
-            src={
-              merchant.photoURL ||
-              `https://api.dicebear.com/7.x/avataaars/svg?seed=${merchant.id}`
-            }
-            alt={displayName(merchant)}
-            referrerPolicy="no-referrer"
-            className="h-24 w-24 rounded-full border border-white/10 object-cover"
-          />
-          <div className="absolute right-1 top-1">
-            <OnlineDot active={active} />
-          </div>
-        </div>
+      <div className="absolute right-4 top-4">
+        <OnlineDot active={active} />
+      </div>
 
-        <h3 className="mt-4 max-w-full truncate font-serif text-xl text-white">
+      <div className="flex flex-col items-center text-center">
+        <img
+          src={
+            merchant.photoURL ||
+            `https://api.dicebear.com/7.x/avataaars/svg?seed=${merchant.id}`
+          }
+          alt={displayName(merchant)}
+          referrerPolicy="no-referrer"
+          className="h-14 w-14 rounded-full border border-white/10 object-cover sm:h-16 sm:w-16"
+        />
+
+        <h3 className="mt-3 max-w-full truncate font-serif text-base text-white sm:text-lg">
           {displayName(merchant)}
         </h3>
 
-        <p className={`text-[10px] font-bold ${active ? 'text-green-500' : 'text-slate-500'}`}>
+        <p className={`text-[9px] font-bold ${active ? 'text-green-500' : 'text-slate-500'}`}>
           {active ? 'Active' : 'Offline'}
         </p>
 
-        <div className="mt-3 flex items-center gap-1 text-sm font-bold text-amber-500">
-          <Star className="h-4 w-4 fill-amber-500" />
+        <div className="mt-2 flex items-center gap-1 text-[11px] font-bold text-amber-500">
+          <Star className="h-3 w-3 fill-amber-500" />
           {rating.toFixed(1)}
-          <span className="font-normal text-slate-400">({ratingCount})</span>
+          <span className="font-normal text-slate-500">({merchant.ratingCount || merchant.totalTrades || 0})</span>
         </div>
 
         <div
-          className={`mt-3 rounded-md px-3 py-1 text-[10px] font-bold ${
+          className={`mt-2 rounded-md px-2 py-1 text-[8px] font-bold ${
             verified
               ? 'bg-green-500/15 text-green-400'
               : 'bg-white/10 text-slate-300'
           }`}
         >
-          {verified ? 'Verified Member' : 'Unverified'}
+          {verified ? 'Verified' : 'Unverified'}
         </div>
 
-        <p className="mt-4 text-sm text-slate-400">
-          {merchant.totalTrades || 0} Trades
-          <span className="px-2 text-slate-600">•</span>
-          {rating > 0 ? `${rating.toFixed(1)} Rating` : 'New'}
+        <p className="mt-2 w-full truncate text-[10px] text-slate-400">
+          {merchant.totalTrades || 0} Trades • {roleText}
         </p>
 
-        <p className="mt-3 text-sm text-slate-400">{roleText}</p>
-
-        <div className="mt-5 flex items-center gap-2 text-xs text-slate-400">
-          <MapPin className="h-4 w-4 text-slate-500" />
-          {displayLocation(merchant)}
+        <div className="mt-2 flex max-w-full items-center gap-1 text-[9px] text-slate-500">
+          <MapPin className="h-3 w-3 shrink-0" />
+          <span className="truncate">{displayLocation(merchant)}</span>
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <Link
           to={`/profile/${merchant.id}`}
-          className="rounded-lg border border-white/10 px-3 py-3 text-center text-[10px] font-bold text-white transition hover:bg-white hover:text-black"
+          className="rounded-lg border border-white/10 px-2 py-2 text-center text-[9px] font-bold text-white transition hover:bg-white hover:text-black"
         >
-          View Profile
+          Profile
         </Link>
 
         <Link
           to={`/profile/${merchant.id}`}
-          className="flex items-center justify-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-[10px] font-bold text-amber-500 transition hover:bg-amber-500 hover:text-black"
+          className="flex items-center justify-center gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-[9px] font-bold text-amber-500 transition hover:bg-amber-500 hover:text-black"
         >
           <MessageCircle className="h-3 w-3" />
-          Message
+          Msg
         </Link>
       </div>
     </motion.article>
@@ -291,62 +284,58 @@ function MerchantCard({
 function DriverCard({ driver }: { driver: UserProfile }) {
   const available = isActive(driver) || driver.driverStatus === 'available';
   const rating = driver.avgDriverRating || driver.averageRating || 0;
-  const ratingCount = driver.ratingCount || driver.deliveriesCount || 0;
 
   return (
     <motion.article
-      whileHover={{ y: -4 }}
-      className="relative flex w-60 shrink-0 flex-col rounded-lg border border-white/10 bg-brand-card/80 p-5 shadow-2xl"
+      whileHover={{ y: -3 }}
+      className="relative flex aspect-square w-44 shrink-0 flex-col justify-between rounded-2xl border border-white/10 bg-brand-card/80 p-4 shadow-2xl sm:w-48"
     >
-      <div className="flex flex-col items-center text-center">
-        <div className="relative">
-          <img
-            src={
-              driver.photoURL ||
-              `https://api.dicebear.com/7.x/avataaars/svg?seed=${driver.id}`
-            }
-            alt={displayName(driver)}
-            referrerPolicy="no-referrer"
-            className="h-24 w-24 rounded-full border border-white/10 object-cover"
-          />
-          <div className="absolute right-1 top-1">
-            <OnlineDot active={available} />
-          </div>
-        </div>
+      <div className="absolute right-4 top-4">
+        <OnlineDot active={available} />
+      </div>
 
-        <h3 className="mt-4 max-w-full truncate font-serif text-xl text-white">
+      <div className="flex flex-col items-center text-center">
+        <img
+          src={
+            driver.photoURL ||
+            `https://api.dicebear.com/7.x/avataaars/svg?seed=${driver.id}`
+          }
+          alt={displayName(driver)}
+          referrerPolicy="no-referrer"
+          className="h-14 w-14 rounded-full border border-white/10 object-cover sm:h-16 sm:w-16"
+        />
+
+        <h3 className="mt-3 max-w-full truncate font-serif text-base text-white sm:text-lg">
           {displayName(driver)}
         </h3>
 
-        <p className={`text-[10px] font-bold ${available ? 'text-green-500' : 'text-slate-500'}`}>
+        <p className={`text-[9px] font-bold ${available ? 'text-green-500' : 'text-slate-500'}`}>
           {available ? 'Available' : 'Offline'}
         </p>
 
-        <div className="mt-3 flex items-center gap-1 text-sm font-bold text-amber-500">
-          <Star className="h-4 w-4 fill-amber-500" />
+        <div className="mt-2 flex items-center gap-1 text-[11px] font-bold text-amber-500">
+          <Star className="h-3 w-3 fill-amber-500" />
           {rating.toFixed(1)}
-          <span className="font-normal text-slate-400">({ratingCount})</span>
+          <span className="font-normal text-slate-500">({driver.ratingCount || driver.deliveriesCount || 0})</span>
         </div>
 
-        <p className="mt-3 text-sm text-slate-400">
+        <p className="mt-2 text-[10px] text-slate-400">
           {driver.deliveriesCount || 0} Deliveries
         </p>
 
-        <p className="mt-3 text-sm text-slate-400">
-          {driver.vehicleType || 'Vehicle'}
-          <span className="px-2 text-slate-600">•</span>
-          {driver.vehicleSize || 'Medium'}
+        <p className="mt-2 w-full truncate text-[10px] text-slate-400">
+          {driver.vehicleType || 'Vehicle'} • {driver.vehicleSize || 'Medium'}
         </p>
 
-        <div className="mt-5 flex items-center gap-2 text-xs text-slate-400">
-          <MapPin className="h-4 w-4 text-slate-500" />
-          {displayLocation(driver)}
+        <div className="mt-2 flex max-w-full items-center gap-1 text-[9px] text-slate-500">
+          <MapPin className="h-3 w-3 shrink-0" />
+          <span className="truncate">{displayLocation(driver)}</span>
         </div>
       </div>
 
       <Link
         to={`/profile/${driver.id}`}
-        className="mt-6 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-3 text-center text-[10px] font-bold text-green-400 transition hover:bg-green-500 hover:text-black"
+        className="rounded-lg border border-green-500/30 bg-green-500/10 px-2 py-2 text-center text-[9px] font-bold text-green-400 transition hover:bg-green-500 hover:text-black"
       >
         Hire Driver
       </Link>
