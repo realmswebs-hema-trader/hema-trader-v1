@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import {
   collection,
   getDocs,
@@ -22,7 +23,6 @@ import {
   Star,
   Tag,
   Truck,
-  CheckCircle2,
   Radio,
   Lock,
   Flag
@@ -47,6 +47,10 @@ interface Listing {
   isBoosted?: boolean;
 }
 
+interface ListingWithDistance extends Listing {
+  distance: number | null;
+}
+
 interface UserProfile {
   id: string;
   uid?: string;
@@ -54,7 +58,7 @@ interface UserProfile {
   name?: string;
   email?: string;
   photoURL?: string;
-  roles?: string[];
+  roles: string[];
   averageRating?: number;
   avgDriverRating?: number;
   ratingCount?: number;
@@ -80,8 +84,20 @@ const getMillis = (value: any) => {
   return 0;
 };
 
+const normalizeRoles = (roles: unknown): string[] => {
+  if (!Array.isArray(roles) || roles.length === 0) return ['buyer'];
+  return roles.filter(role => typeof role === 'string');
+};
+
+const normalizeUser = (user: any): UserProfile => ({
+  ...user,
+  roles: normalizeRoles(user.roles),
+  verificationStatus: user.verificationStatus || 'unverified'
+});
+
 const isActive = (profile: UserProfile) => {
   if (profile.isOnline) return true;
+
   const lastActive = getMillis(profile.lastActiveAt);
   return lastActive > 0 && Date.now() - lastActive < 15 * 60 * 1000;
 };
@@ -94,6 +110,9 @@ const displayLocation = (profile: UserProfile) =>
   [profile.city, profile.country].filter(Boolean).join(', ') ||
   'Cameroon';
 
+const titleCase = (value: string) =>
+  value.charAt(0).toUpperCase() + value.slice(1);
+
 const sortProfiles = (a: UserProfile, b: UserProfile) => {
   const activeDelta = Number(isActive(b)) - Number(isActive(a));
   if (activeDelta !== 0) return activeDelta;
@@ -105,9 +124,25 @@ const sortProfiles = (a: UserProfile, b: UserProfile) => {
   return getMillis(b.lastActiveAt) - getMillis(a.lastActiveAt);
 };
 
+const profileMatchesSearch = (profile: UserProfile, searchTerm: string) => {
+  if (!searchTerm) return true;
+
+  const searchable = [
+    displayName(profile),
+    profile.email,
+    displayLocation(profile),
+    ...profile.roles
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return searchable.includes(searchTerm);
+};
+
 function OnlineDot({ active }: { active: boolean }) {
   return (
-    <span className="absolute right-12 top-5 flex h-4 w-4">
+    <span className="relative flex h-4 w-4">
       {active && (
         <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
       )}
@@ -127,7 +162,7 @@ function SectionHeader({
   action,
   tone = 'amber'
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   subtitle: string;
   action: string;
@@ -135,17 +170,19 @@ function SectionHeader({
 }) {
   const toneClass =
     tone === 'green'
-      ? 'text-green-500 bg-green-500/10'
+      ? 'bg-green-500/10 text-green-500'
       : tone === 'red'
-        ? 'text-amber-500 bg-amber-500/10'
-        : 'text-amber-500 bg-amber-500/10';
+        ? 'bg-red-500/10 text-red-500'
+        : 'bg-amber-500/10 text-amber-500';
 
   return (
     <div className="flex items-end justify-between gap-4 px-2">
       <div className="flex items-start gap-3">
         <div className={`mt-1 rounded-full p-2 ${toneClass}`}>{icon}</div>
         <div>
-          <h2 className="font-serif text-2xl text-white md:text-3xl">{title}</h2>
+          <h2 className="font-serif text-2xl text-white md:text-3xl">
+            {title}
+          </h2>
           <p className="mt-1 text-[10px] uppercase tracking-wider text-slate-500">
             {subtitle}
           </p>
@@ -170,21 +207,28 @@ function MerchantCard({
   const active = isActive(merchant);
   const rating = merchant.averageRating || 0;
   const ratingCount = merchant.ratingCount || merchant.totalTrades || 0;
+  const roleText = merchant.roles.map(titleCase).join(' • ');
 
   return (
     <motion.article
       whileHover={{ y: -4 }}
       className="relative flex w-60 shrink-0 flex-col rounded-lg border border-white/10 bg-brand-card/80 p-5 shadow-2xl"
     >
-      <OnlineDot active={active} />
-
       <div className="flex flex-col items-center text-center">
-        <img
-          src={merchant.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${merchant.id}`}
-          alt={displayName(merchant)}
-          referrerPolicy="no-referrer"
-          className="h-24 w-24 rounded-full border border-white/10 object-cover"
-        />
+        <div className="relative">
+          <img
+            src={
+              merchant.photoURL ||
+              `https://api.dicebear.com/7.x/avataaars/svg?seed=${merchant.id}`
+            }
+            alt={displayName(merchant)}
+            referrerPolicy="no-referrer"
+            className="h-24 w-24 rounded-full border border-white/10 object-cover"
+          />
+          <div className="absolute right-1 top-1">
+            <OnlineDot active={active} />
+          </div>
+        </div>
 
         <h3 className="mt-4 max-w-full truncate font-serif text-xl text-white">
           {displayName(merchant)}
@@ -207,18 +251,16 @@ function MerchantCard({
               : 'bg-white/10 text-slate-300'
           }`}
         >
-          {verified ? 'Verified Seller' : 'Unverified'}
+          {verified ? 'Verified Member' : 'Unverified'}
         </div>
 
         <p className="mt-4 text-sm text-slate-400">
           {merchant.totalTrades || 0} Trades
           <span className="px-2 text-slate-600">•</span>
-          {verified ? `${rating.toFixed(1)} Rating` : 'New'}
+          {rating > 0 ? `${rating.toFixed(1)} Rating` : 'New'}
         </p>
 
-        <p className="mt-3 text-sm text-slate-400">
-          {(merchant.roles || []).filter(role => role !== 'buyer').join(' • ') || 'Seller'}
-        </p>
+        <p className="mt-3 text-sm text-slate-400">{roleText}</p>
 
         <div className="mt-5 flex items-center gap-2 text-xs text-slate-400">
           <MapPin className="h-4 w-4 text-slate-500" />
@@ -233,6 +275,7 @@ function MerchantCard({
         >
           View Profile
         </Link>
+
         <Link
           to={`/profile/${merchant.id}`}
           className="flex items-center justify-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-[10px] font-bold text-amber-500 transition hover:bg-amber-500 hover:text-black"
@@ -246,7 +289,7 @@ function MerchantCard({
 }
 
 function DriverCard({ driver }: { driver: UserProfile }) {
-  const active = isActive(driver);
+  const available = isActive(driver) || driver.driverStatus === 'available';
   const rating = driver.avgDriverRating || driver.averageRating || 0;
   const ratingCount = driver.ratingCount || driver.deliveriesCount || 0;
 
@@ -255,22 +298,28 @@ function DriverCard({ driver }: { driver: UserProfile }) {
       whileHover={{ y: -4 }}
       className="relative flex w-60 shrink-0 flex-col rounded-lg border border-white/10 bg-brand-card/80 p-5 shadow-2xl"
     >
-      <OnlineDot active={active} />
-
       <div className="flex flex-col items-center text-center">
-        <img
-          src={driver.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${driver.id}`}
-          alt={displayName(driver)}
-          referrerPolicy="no-referrer"
-          className="h-24 w-24 rounded-full border border-white/10 object-cover"
-        />
+        <div className="relative">
+          <img
+            src={
+              driver.photoURL ||
+              `https://api.dicebear.com/7.x/avataaars/svg?seed=${driver.id}`
+            }
+            alt={displayName(driver)}
+            referrerPolicy="no-referrer"
+            className="h-24 w-24 rounded-full border border-white/10 object-cover"
+          />
+          <div className="absolute right-1 top-1">
+            <OnlineDot active={available} />
+          </div>
+        </div>
 
         <h3 className="mt-4 max-w-full truncate font-serif text-xl text-white">
           {displayName(driver)}
         </h3>
 
-        <p className={`text-[10px] font-bold ${active ? 'text-green-500' : 'text-slate-500'}`}>
-          {active ? 'Available' : 'Offline'}
+        <p className={`text-[10px] font-bold ${available ? 'text-green-500' : 'text-slate-500'}`}>
+          {available ? 'Available' : 'Offline'}
         </p>
 
         <div className="mt-3 flex items-center gap-1 text-sm font-bold text-amber-500">
@@ -284,7 +333,7 @@ function DriverCard({ driver }: { driver: UserProfile }) {
         </p>
 
         <p className="mt-3 text-sm text-slate-400">
-          {driver.vehicleType || 'Truck'}
+          {driver.vehicleType || 'Vehicle'}
           <span className="px-2 text-slate-600">•</span>
           {driver.vehicleSize || 'Medium'}
         </p>
@@ -310,7 +359,7 @@ export default function Home() {
 
   const [listings, setListings] = useState<Listing[]>([]);
   const [followedListings, setFollowedListings] = useState<Listing[]>([]);
-  const [sellers, setSellers] = useState<UserProfile[]>([]);
+  const [marketUsers, setMarketUsers] = useState<UserProfile[]>([]);
   const [drivers, setDrivers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -320,7 +369,10 @@ export default function Home() {
   const [recentAlert, setRecentAlert] = useState<string | null>(null);
 
   useEffect(() => {
-    const qActiveUsers = query(collection(db, 'users'), where('isOnline', '==', true));
+    const qActiveUsers = query(
+      collection(db, 'users'),
+      where('isOnline', '==', true)
+    );
 
     const unsubscribe = onSnapshot(
       qActiveUsers,
@@ -376,22 +428,24 @@ export default function Home() {
     setError(null);
 
     const unsubscribeUsers = onSnapshot(
-      query(collection(db, 'users'), limit(150)),
+      query(collection(db, 'users')),
       snap => {
-        const allUsers = snap.docs.map(docSnap => ({
-          id: docSnap.id,
-          ...docSnap.data()
-        })) as UserProfile[];
+        if (!isMounted) return;
 
-        setSellers(
-          allUsers
-            .filter(item => item.roles?.includes('seller'))
-            .sort(sortProfiles)
-        );
+        const allUsers = snap.docs
+          .map(docSnap =>
+            normalizeUser({
+              id: docSnap.id,
+              ...docSnap.data()
+            })
+          )
+          .sort(sortProfiles);
+
+        setMarketUsers(allUsers);
 
         setDrivers(
           allUsers
-            .filter(item => item.roles?.includes('driver'))
+            .filter(item => item.roles.includes('driver') || Boolean(item.driverStatus))
             .sort(sortProfiles)
         );
 
@@ -399,6 +453,7 @@ export default function Home() {
         finishLoading();
       },
       err => {
+        if (!isMounted) return;
         setError(handleFirestoreError(err, OperationType.SUBSCRIBE, 'users'));
         usersReady = true;
         finishLoading();
@@ -427,7 +482,11 @@ export default function Home() {
 
         if (user) {
           const followSnap = await getDocs(
-            query(collection(db, 'follows'), where('followerId', '==', user.uid), limit(100))
+            query(
+              collection(db, 'follows'),
+              where('followerId', '==', user.uid),
+              limit(100)
+            )
           );
 
           const followingIds = followSnap.docs.map(docSnap => docSnap.data().followingId);
@@ -443,6 +502,8 @@ export default function Home() {
               )
             );
 
+            if (!isMounted) return;
+
             setFollowedListings(
               followedListingsSnap.docs.map(docSnap => ({
                 id: docSnap.id,
@@ -452,9 +513,13 @@ export default function Home() {
           } else {
             setFollowedListings([]);
           }
+        } else {
+          setFollowedListings([]);
         }
       } catch (err) {
-        setError(handleFirestoreError(err, OperationType.READ, 'home/listings'));
+        if (isMounted) {
+          setError(handleFirestoreError(err, OperationType.READ, 'home/listings'));
+        }
       } finally {
         listingsReady = true;
         finishLoading();
@@ -469,20 +534,34 @@ export default function Home() {
     };
   }, [user]);
 
-  const verifiedMerchants = sellers.filter(
-    seller => seller.verificationStatus === 'verified'
+  const searchTerm = searchQuery.trim().toLowerCase();
+
+  const searchedUsers = marketUsers.filter(profileItem =>
+    profileMatchesSearch(profileItem, searchTerm)
   );
 
-  const unverifiedMerchants = sellers.filter(
-    seller => seller.verificationStatus !== 'verified'
+  const verifiedMerchants = searchedUsers.filter(
+    profileItem => profileItem.verificationStatus === 'verified'
   );
 
-  const availableDrivers = drivers.filter(
-    driver => isActive(driver) || driver.driverStatus === 'available'
+  const unverifiedMerchants = searchedUsers.filter(
+    profileItem => profileItem.verificationStatus !== 'verified'
   );
 
-  const filteredListings = listings
-    .filter(listing => listing.title.toLowerCase().includes(searchQuery.toLowerCase()))
+  const availableDrivers = drivers
+    .filter(driver => profileMatchesSearch(driver, searchTerm))
+    .filter(driver => isActive(driver) || driver.driverStatus === 'available');
+
+  const filteredListings: ListingWithDistance[] = listings
+    .filter(listing => {
+      if (!searchTerm) return true;
+
+      return [listing.title, listing.category, listing.location]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(searchTerm);
+    })
     .map(listing => {
       const hasDistance =
         typeof profile?.latitude === 'number' &&
@@ -493,7 +572,12 @@ export default function Home() {
       return {
         ...listing,
         distance: hasDistance
-          ? calculateDistance(profile.latitude, profile.longitude, listing.latitude, listing.longitude)
+          ? calculateDistance(
+              profile.latitude,
+              profile.longitude,
+              listing.latitude,
+              listing.longitude
+            )
           : null
       };
     })
@@ -566,7 +650,7 @@ export default function Home() {
             <SectionHeader
               icon={<ShieldCheck className="h-5 w-5" />}
               title="Verified Merchants"
-              subtitle="Background-checked sellers with proven history"
+              subtitle="Verified users appear first for safer trading"
               action="View All Verified"
               tone="green"
             />
@@ -578,7 +662,7 @@ export default function Home() {
                 ))
               ) : (
                 <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
-                  No verified merchants yet.
+                  No verified users yet.
                 </div>
               )}
             </div>
@@ -588,7 +672,7 @@ export default function Home() {
             <SectionHeader
               icon={<ShieldAlert className="h-5 w-5" />}
               title="Unverified Merchants"
-              subtitle="New sellers building their reputation"
+              subtitle="All other registered users building their reputation"
               action="View All Unverified"
             />
 
@@ -599,7 +683,7 @@ export default function Home() {
                 ))
               ) : (
                 <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
-                  No unverified merchants yet.
+                  No unverified users found.
                 </div>
               )}
             </div>
@@ -609,14 +693,16 @@ export default function Home() {
             <SectionHeader
               icon={<Truck className="h-5 w-5" />}
               title="Available Drivers"
-              subtitle="Drivers online and ready for delivery"
+              subtitle="Drivers online or marked available for delivery"
               action="View All Drivers"
               tone="green"
             />
 
             <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
               {availableDrivers.length > 0 ? (
-                availableDrivers.map(driver => <DriverCard key={driver.id} driver={driver} />)
+                availableDrivers.map(driver => (
+                  <DriverCard key={driver.id} driver={driver} />
+                ))
               ) : (
                 <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
                   No available drivers right now.
@@ -638,7 +724,11 @@ export default function Home() {
 
           <div className="flex gap-6 overflow-x-auto px-2 pb-6 scrollbar-hide">
             {followedListings.map(listing => (
-              <Link key={listing.id} to={`/listing/${listing.id}`} className="group w-64 shrink-0 space-y-4">
+              <Link
+                key={listing.id}
+                to={`/listing/${listing.id}`}
+                className="group w-64 shrink-0 space-y-4"
+              >
                 <div className="relative aspect-[4/3] overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card">
                   {listing.images?.[0] ? (
                     <img
@@ -676,13 +766,36 @@ export default function Home() {
 
       <section className="grid grid-cols-1 gap-3 border-t border-white/5 pt-8 sm:grid-cols-2 lg:grid-cols-5">
         {[
-          { icon: ShieldCheck, title: 'Verified & Trusted', text: 'All verified sellers are background checked' },
-          { icon: Radio, title: 'Live Status', text: 'See who is online and active in real time' },
-          { icon: Lock, title: 'Safe Transactions', text: 'Our escrow system protects every trade' },
-          { icon: Star, title: 'Rate & Review', text: 'Rate your experience and build trust' },
-          { icon: Flag, title: 'Report Misconduct', text: 'Help keep our community safe' }
+          {
+            icon: ShieldCheck,
+            title: 'Verified & Trusted',
+            text: 'Verified users appear first'
+          },
+          {
+            icon: Radio,
+            title: 'Live Status',
+            text: 'See who is online in real time'
+          },
+          {
+            icon: Lock,
+            title: 'Safe Transactions',
+            text: 'Escrow protects every trade'
+          },
+          {
+            icon: Star,
+            title: 'Rate & Review',
+            text: 'Rate your experience and build trust'
+          },
+          {
+            icon: Flag,
+            title: 'Report Misconduct',
+            text: 'Help keep the community safe'
+          }
         ].map(item => (
-          <div key={item.title} className="flex items-center gap-4 rounded-xl border border-white/5 bg-brand-card p-4">
+          <div
+            key={item.title}
+            className="flex items-center gap-4 rounded-xl border border-white/5 bg-brand-card p-4"
+          >
             <div className="rounded-full bg-white/5 p-3 text-amber-500">
               <item.icon className="h-5 w-5" />
             </div>
@@ -712,7 +825,9 @@ export default function Home() {
         {filteredListings.length === 0 ? (
           <div className="rounded-[3rem] border border-white/5 bg-brand-card py-24 text-center">
             <Search className="mx-auto h-10 w-10 text-slate-700" />
-            <h3 className="mt-4 font-serif text-2xl text-white">No matches found</h3>
+            <h3 className="mt-4 font-serif text-2xl text-white">
+              No matches found
+            </h3>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
