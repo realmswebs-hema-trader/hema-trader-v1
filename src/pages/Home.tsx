@@ -5,7 +5,6 @@ import {
   getDocs,
   limit,
   onSnapshot,
-  orderBy,
   query,
   where
 } from 'firebase/firestore';
@@ -18,8 +17,8 @@ import {
   MapPin,
   MessageCircle,
   Search,
-  ShieldCheck,
   ShieldAlert,
+  ShieldCheck,
   Star,
   Tag,
   Truck,
@@ -45,6 +44,7 @@ interface Listing {
   longitude?: number;
   status: string;
   isBoosted?: boolean;
+  createdAt?: any;
 }
 
 interface ListingWithDistance extends Listing {
@@ -384,26 +384,28 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const qLatestListing = query(
-      collection(db, 'listings'),
-      where('status', '==', 'active'),
-      orderBy('createdAt', 'desc'),
-      limit(1)
-    );
-
     let initial = true;
 
     const unsubscribe = onSnapshot(
-      qLatestListing,
+      query(collection(db, 'listings'), limit(25)),
       snap => {
         if (initial) {
           initial = false;
           return;
         }
 
-        if (!snap.empty) {
-          const item = snap.docs[0].data();
-          setRecentAlert(`Live: ${item.title} just posted`);
+        const activeListings = snap.docs
+          .map(docSnap => ({
+            id: docSnap.id,
+            ...docSnap.data()
+          })) as Listing[];
+
+        const newest = activeListings
+          .filter(item => item.status === 'active')
+          .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt))[0];
+
+        if (newest) {
+          setRecentAlert(`Live: ${newest.title} just posted`);
           window.setTimeout(() => setRecentAlert(null), 5000);
         }
       },
@@ -463,22 +465,22 @@ export default function Home() {
     async function fetchListings() {
       try {
         const listingSnap = await getDocs(
-          query(
-            collection(db, 'listings'),
-            where('status', '==', 'active'),
-            orderBy('createdAt', 'desc'),
-            limit(20)
-          )
+          query(collection(db, 'listings'), limit(100))
         );
 
         if (!isMounted) return;
 
-        setListings(
-          listingSnap.docs.map(docSnap => ({
-            id: docSnap.id,
-            ...docSnap.data()
-          })) as Listing[]
-        );
+        const allListings = listingSnap.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        })) as Listing[];
+
+        const activeListings = allListings
+          .filter(listing => listing.status === 'active')
+          .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt))
+          .slice(0, 20);
+
+        setListings(activeListings);
 
         if (user) {
           const followSnap = await getDocs(
@@ -492,23 +494,15 @@ export default function Home() {
           const followingIds = followSnap.docs.map(docSnap => docSnap.data().followingId);
 
           if (followingIds.length > 0) {
-            const followedListingsSnap = await getDocs(
-              query(
-                collection(db, 'listings'),
-                where('ownerId', 'in', followingIds.slice(0, 10)),
-                where('status', '==', 'active'),
-                orderBy('createdAt', 'desc'),
-                limit(10)
-              )
-            );
-
-            if (!isMounted) return;
-
             setFollowedListings(
-              followedListingsSnap.docs.map(docSnap => ({
-                id: docSnap.id,
-                ...docSnap.data()
-              })) as Listing[]
+              allListings
+                .filter(
+                  listing =>
+                    listing.status === 'active' &&
+                    followingIds.includes(listing.ownerId)
+                )
+                .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt))
+                .slice(0, 10)
             );
           } else {
             setFollowedListings([]);
