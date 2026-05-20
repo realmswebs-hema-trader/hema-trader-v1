@@ -4,7 +4,6 @@ import {
   doc,
   increment,
   onSnapshot,
-  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -26,6 +25,7 @@ import { AnimatePresence, motion } from 'motion/react';
 
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../components/auth/AuthContext';
+import PendingDeliveryRequests from '../components/delivery/PendingDeliveryRequests';
 import { updateReliability } from '../services/matchingService';
 
 interface DeliveryTrade {
@@ -47,6 +47,17 @@ interface DriverProfile {
   deliveriesCount?: number;
   warningCount?: number;
 }
+
+const getMillis = (value: any) => {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  return 0;
+};
+
+const sortByUpdatedAt = (items: DeliveryTrade[]) =>
+  [...items].sort((a, b) => getMillis(b.updatedAt) - getMillis(a.updatedAt));
 
 export default function DriverDashboard() {
   const { user, profile } = useAuth();
@@ -70,19 +81,18 @@ export default function DriverDashboard() {
 
     const qDeliveries = query(
       tradesRef,
-      where('driverId', '==', user.uid),
-      orderBy('updatedAt', 'desc')
+      where('driverId', '==', user.uid)
     );
 
     const unsubscribeDeliveries = onSnapshot(
       qDeliveries,
       snapshot => {
-        setDeliveries(
-          snapshot.docs.map(docSnap => ({
-            id: docSnap.id,
-            ...docSnap.data()
-          })) as DeliveryTrade[]
-        );
+        const nextDeliveries = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        })) as DeliveryTrade[];
+
+        setDeliveries(sortByUpdatedAt(nextDeliveries));
         setLoading(false);
       },
       error => {
@@ -93,19 +103,18 @@ export default function DriverDashboard() {
 
     const qPool = query(
       tradesRef,
-      where('deliveryRequestStatus', '==', 'open'),
-      orderBy('updatedAt', 'desc')
+      where('deliveryRequestStatus', '==', 'open')
     );
 
     const unsubscribePool = onSnapshot(
       qPool,
       snapshot => {
-        setPoolRequests(
-          snapshot.docs.map(docSnap => ({
-            id: docSnap.id,
-            ...docSnap.data()
-          })) as DeliveryTrade[]
-        );
+        const nextPoolRequests = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        })) as DeliveryTrade[];
+
+        setPoolRequests(sortByUpdatedAt(nextPoolRequests));
       },
       error => {
         handleFirestoreError(error, OperationType.SUBSCRIBE, 'delivery pool');
@@ -222,7 +231,9 @@ export default function DriverDashboard() {
         <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-slate-900">
           <Truck className="h-8 w-8 text-slate-700" />
         </div>
-        <h1 className="mt-6 font-serif text-3xl text-white">Driver access required</h1>
+        <h1 className="mt-6 font-serif text-3xl text-white">
+          Driver access required
+        </h1>
         <p className="mt-3 text-sm text-slate-500">
           Please sign in to view your fleet dashboard.
         </p>
@@ -278,6 +289,8 @@ export default function DriverDashboard() {
           </button>
         </div>
       </div>
+
+      <PendingDeliveryRequests />
 
       {filter === 'completed' && (
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
