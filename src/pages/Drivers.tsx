@@ -9,12 +9,14 @@ import {
   ShieldCheck,
   Star,
   Truck,
-  WifiOff,
-  Zap
+  WifiOff
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 import { db } from '../lib/firebase';
+import { useAuth } from '../components/auth/AuthContext';
+import DriverMap from '../components/maps/DriverMap';
+import { toGeoPoint } from '../utils/geoUtils';
 
 interface Driver {
   id: string;
@@ -111,15 +113,22 @@ const driverRank = (driver: Driver) => {
   const verifiedBoost = driver.driverVerified ? 50 : 0;
   const trustBoost = safeNumber(driver.trustScore);
   const ratingBoost = safeNumber(driver.avgDriverRating || driver.averageRating) * 10;
-  const deliveryBoost = Math.min(safeNumber(driver.completedDeliveries || driver.deliveriesCount), 100);
+  const deliveryBoost = Math.min(
+    safeNumber(driver.completedDeliveries || driver.deliveriesCount),
+    100
+  );
 
   return gpsBoost + verifiedBoost + trustBoost + ratingBoost + deliveryBoost;
 };
 
 export default function Drivers() {
+  const { profile } = useAuth();
+
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+
+  const currentLocation = useMemo(() => toGeoPoint(profile), [profile]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(
@@ -185,134 +194,145 @@ export default function Drivers() {
           <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
         </div>
       ) : filteredDrivers.length > 0 ? (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {filteredDrivers.map(driver => {
-            const rating = safeNumber(driver.avgDriverRating || driver.averageRating);
-            const deliveries = safeNumber(driver.completedDeliveries || driver.deliveriesCount);
-            const gpsFresh = isGpsFresh(driver);
-            const liveLocation = hasLiveLocation(driver);
-            const successRate = safeNumber(driver.deliverySuccessRate || driver.reliabilityScore, deliveries ? 96 : 100);
+        <>
+          <DriverMap
+            drivers={filteredDrivers}
+            currentLocation={currentLocation}
+            className="h-[460px]"
+          />
 
-            return (
-              <motion.article
-                key={driver.id}
-                whileHover={{ y: -4 }}
-                className="overflow-hidden rounded-2xl border border-white/10 bg-brand-card shadow-2xl"
-              >
-                <div className="relative h-20 bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/40">
-                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,0.2),transparent_35%)]" />
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {filteredDrivers.map(driver => {
+              const rating = safeNumber(driver.avgDriverRating || driver.averageRating);
+              const deliveries = safeNumber(driver.completedDeliveries || driver.deliveriesCount);
+              const gpsFresh = isGpsFresh(driver);
+              const liveLocation = hasLiveLocation(driver);
+              const successRate = safeNumber(
+                driver.deliverySuccessRate || driver.reliabilityScore,
+                deliveries ? 96 : 100
+              );
 
-                  <div className="absolute right-3 top-3 flex items-center gap-1 rounded-full border border-green-500/20 bg-green-500/10 px-2.5 py-1 text-[8px] font-black uppercase tracking-widest text-green-400">
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-400" />
-                    Available
-                  </div>
-                </div>
+              return (
+                <motion.article
+                  key={driver.id}
+                  whileHover={{ y: -4 }}
+                  className="overflow-hidden rounded-2xl border border-white/10 bg-brand-card shadow-2xl"
+                >
+                  <div className="relative h-20 bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/40">
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,0.2),transparent_35%)]" />
 
-                <div className="-mt-10 flex flex-col items-center px-5 pb-5 text-center">
-                  <div className="relative">
-                    <img
-                      src={
-                        driver.photoURL ||
-                        `https://api.dicebear.com/7.x/avataaars/svg?seed=${driver.id}`
-                      }
-                      alt={displayName(driver)}
-                      className="h-24 w-24 rounded-full border-4 border-brand-card bg-slate-900 object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-
-                    <span
-                      className={`absolute right-2 top-2 h-4 w-4 rounded-full border-2 border-brand-card ${
-                        gpsFresh ? 'animate-pulse bg-green-500' : 'bg-amber-500'
-                      }`}
-                    />
-                  </div>
-
-                  <h2 className="mt-4 font-serif text-xl text-white">
-                    {displayName(driver)}
-                  </h2>
-
-                  <div className="mt-2 flex flex-wrap justify-center gap-2">
-                    <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2.5 py-1 text-[8px] font-black uppercase tracking-widest text-green-400">
+                    <div className="absolute right-3 top-3 flex items-center gap-1 rounded-full border border-green-500/20 bg-green-500/10 px-2.5 py-1 text-[8px] font-black uppercase tracking-widest text-green-400">
+                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-400" />
                       Available
-                    </span>
+                    </div>
+                  </div>
 
-                    {driver.driverVerified && (
-                      <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[8px] font-black uppercase tracking-widest text-amber-400">
-                        Verified
+                  <div className="-mt-10 flex flex-col items-center px-5 pb-5 text-center">
+                    <div className="relative">
+                      <img
+                        src={
+                          driver.photoURL ||
+                          `https://api.dicebear.com/7.x/avataaars/svg?seed=${driver.id}`
+                        }
+                        alt={displayName(driver)}
+                        className="h-24 w-24 rounded-full border-4 border-brand-card bg-slate-900 object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+
+                      <span
+                        className={`absolute right-2 top-2 h-4 w-4 rounded-full border-2 border-brand-card ${
+                          gpsFresh ? 'animate-pulse bg-green-500' : 'bg-amber-500'
+                        }`}
+                      />
+                    </div>
+
+                    <h2 className="mt-4 font-serif text-xl text-white">
+                      {displayName(driver)}
+                    </h2>
+
+                    <div className="mt-2 flex flex-wrap justify-center gap-2">
+                      <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2.5 py-1 text-[8px] font-black uppercase tracking-widest text-green-400">
+                        Available
                       </span>
+
+                      {driver.driverVerified && (
+                        <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[8px] font-black uppercase tracking-widest text-amber-400">
+                          Verified
+                        </span>
+                      )}
+
+                      <span
+                        className={`rounded-full border px-2.5 py-1 text-[8px] font-black uppercase tracking-widest ${
+                          gpsFresh && liveLocation
+                            ? 'border-green-500/20 bg-green-500/10 text-green-400'
+                            : 'border-amber-500/20 bg-amber-500/10 text-amber-400'
+                        }`}
+                      >
+                        {gpsFresh && liveLocation ? 'Live GPS' : 'GPS Pending'}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid w-full grid-cols-2 gap-2">
+                      <div className="rounded-xl border border-white/5 bg-black/30 p-3">
+                        <div className="flex items-center justify-center gap-1 text-amber-500">
+                          <Star className="h-4 w-4 fill-amber-500" />
+                          <span className="text-sm font-bold">{rating.toFixed(1)}</span>
+                        </div>
+                        <p className="mt-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
+                          Rating
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl border border-white/5 bg-black/30 p-3">
+                        <div className="flex items-center justify-center gap-1 text-green-400">
+                          <ShieldCheck className="h-4 w-4" />
+                          <span className="text-sm font-bold">{successRate}%</span>
+                        </div>
+                        <p className="mt-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
+                          Success
+                        </p>
+                      </div>
+                    </div>
+
+                    <p className="mt-4 text-sm text-slate-400">
+                      {deliveries} completed deliveries
+                    </p>
+
+                    <p className="mt-2 text-xs text-slate-500">
+                      <Truck className="mr-1 inline h-3 w-3" />
+                      {driver.vehicleType || 'Vehicle'} • {driver.vehicleSize || 'Medium'}
+                    </p>
+
+                    <p className="mt-2 text-xs text-slate-500">
+                      <MapPin className="mr-1 inline h-3 w-3" />
+                      {displayLocation(driver)}
+                    </p>
+
+                    {liveLocation ? (
+                      <p className="mt-2 text-[9px] font-bold uppercase tracking-widest text-green-500">
+                        <Navigation className="mr-1 inline h-3 w-3" />
+                        Location ready
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-[9px] font-bold uppercase tracking-widest text-amber-500">
+                        <WifiOff className="mr-1 inline h-3 w-3" />
+                        Waiting for GPS
+                      </p>
                     )}
 
-                    <span
-                      className={`rounded-full border px-2.5 py-1 text-[8px] font-black uppercase tracking-widest ${
-                        gpsFresh && liveLocation
-                          ? 'border-green-500/20 bg-green-500/10 text-green-400'
-                          : 'border-amber-500/20 bg-amber-500/10 text-amber-400'
-                      }`}
+                    <Link
+                      to={`/drivers/${driver.id}`}
+                      className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-green-500/10 py-3 text-[10px] font-black uppercase tracking-widest text-green-400 hover:bg-green-500 hover:text-black"
                     >
-                      {gpsFresh && liveLocation ? 'Live GPS' : 'GPS Pending'}
-                    </span>
+                      <Truck className="h-4 w-4" />
+                      Hire Driver
+                    </Link>
                   </div>
-
-                  <div className="mt-4 grid w-full grid-cols-2 gap-2">
-                    <div className="rounded-xl border border-white/5 bg-black/30 p-3">
-                      <div className="flex items-center justify-center gap-1 text-amber-500">
-                        <Star className="h-4 w-4 fill-amber-500" />
-                        <span className="text-sm font-bold">{rating.toFixed(1)}</span>
-                      </div>
-                      <p className="mt-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
-                        Rating
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl border border-white/5 bg-black/30 p-3">
-                      <div className="flex items-center justify-center gap-1 text-green-400">
-                        <ShieldCheck className="h-4 w-4" />
-                        <span className="text-sm font-bold">{successRate}%</span>
-                      </div>
-                      <p className="mt-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
-                        Success
-                      </p>
-                    </div>
-                  </div>
-
-                  <p className="mt-4 text-sm text-slate-400">
-                    {deliveries} completed deliveries
-                  </p>
-
-                  <p className="mt-2 text-xs text-slate-500">
-                    <Truck className="mr-1 inline h-3 w-3" />
-                    {driver.vehicleType || 'Vehicle'} • {driver.vehicleSize || 'Medium'}
-                  </p>
-
-                  <p className="mt-2 text-xs text-slate-500">
-                    <MapPin className="mr-1 inline h-3 w-3" />
-                    {displayLocation(driver)}
-                  </p>
-
-                  {liveLocation ? (
-                    <p className="mt-2 text-[9px] font-bold uppercase tracking-widest text-green-500">
-                      <Navigation className="mr-1 inline h-3 w-3" />
-                      Location ready
-                    </p>
-                  ) : (
-                    <p className="mt-2 text-[9px] font-bold uppercase tracking-widest text-amber-500">
-                      <WifiOff className="mr-1 inline h-3 w-3" />
-                      Waiting for GPS
-                    </p>
-                  )}
-
-                  <Link
-                    to={`/drivers/${driver.id}`}
-                    className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-green-500/10 py-3 text-[10px] font-black uppercase tracking-widest text-green-400 hover:bg-green-500 hover:text-black"
-                  >
-                    <Truck className="h-4 w-4" />
-                    Hire Driver
-                  </Link>
-                </div>
-              </motion.article>
-            );
-          })}
-        </div>
+                </motion.article>
+              );
+            })}
+          </div>
+        </>
       ) : (
         <div className="rounded-[2rem] border border-white/5 bg-brand-card p-10 text-center shadow-2xl">
           <Truck className="mx-auto mb-4 h-12 w-12 text-slate-700" />
