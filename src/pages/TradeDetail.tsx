@@ -40,6 +40,12 @@ import {
   sendSystemTradeMessage,
   setTradeTyping
 } from '../services/chatService';
+import {
+  markEscrowPaymentStarted,
+  verifyEscrowPayment,
+  confirmDeliveryAndRequestPayout,
+  openEscrowDispute
+} from '../services/escrowService';
 
 declare global {
   interface Window {
@@ -125,6 +131,12 @@ interface Trade {
   deliveryStatus?: string;
   deliveryETA?: string;
   deliveryRequestStatus?: string;
+  escrowStatus?: string;
+  paymentStatus?: string;
+  paymentTxRef?: string;
+  paymentAmount?: number;
+  paymentCurrency?: string;
+  sellerPayout?: number;
 }
 
 interface Listing {
@@ -241,34 +253,25 @@ export default function TradeDetail() {
 
   const verifyPaymentOnServer = async (transactionId: string) => {
     const activeTradeId = trade?.id || id;
-    if (!activeTradeId || !trade) return;
+
+    if (!activeTradeId || !trade || !user) return;
 
     setUpdating(true);
 
     try {
-      const response = await fetch('/api/payments/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ transactionId, tradeId: activeTradeId })
+      await verifyEscrowPayment({
+        tradeId: activeTradeId,
+        transactionId,
+        userId: user.uid
       });
 
-      if (!response.ok) {
-        throw new Error('Payment verification failed.');
-      }
-
-      const result = await response.json();
-
-      if (result.success) {
-        await sendSystemTradeMessage({
-          tradeId: activeTradeId,
-          text: `Payment secured in escrow for ${listing?.title || 'this order'}. Seller: please prepare the items and update once shipped.`,
-          recipientIds: [trade.buyerId, trade.sellerId],
-          sendNotification,
-          title: 'Payment Secured'
-        });
-      } else {
-        alert(`Payment verification failed: ${result.message || 'Please contact support.'}`);
-      }
+      await sendSystemTradeMessage({
+        tradeId: activeTradeId,
+        text: `Payment secured in escrow for ${listing?.title || 'this order'}. Seller: please prepare the items and update once shipped.`,
+        recipientIds: [trade.buyerId, trade.sellerId],
+        sendNotification,
+        title: 'Payment Secured'
+      });
     } catch (err) {
       console.error('Verification error:', err);
       alert('Error verifying payment. Please contact support if payment was completed.');
@@ -277,7 +280,7 @@ export default function TradeDetail() {
     }
   };
 
-  const handlePayment = () => {
+  const handlePayment = async () => {
     if (!trade || !user || !profileData) return;
 
     const publicKey = import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY;
@@ -293,32 +296,51 @@ export default function TradeDetail() {
     }
 
     const amountInCFA = trade.amount * 650;
+    const txRef = `trade_${trade.id}_${Date.now()}`;
 
-    window.FlutterwaveCheckout({
-      public_key: publicKey,
-      tx_ref: `trade_${trade.id}_${Date.now()}`,
-      amount: amountInCFA,
-      currency: 'XAF',
-      payment_options: 'mobilemoneyfranco, card',
-      customer: {
-        email: user.email || '',
-        phone_number: profileData.phoneNumber || '',
-        name: profileData.displayName || profileData.name || 'Marketplace User'
-      },
-      callback: (data: any) => {
-        if (data.status === 'successful') {
-          verifyPaymentOnServer(data.transaction_id);
+    setUpdating(true);
+
+    try {
+      await markEscrowPaymentStarted({
+        tradeId: trade.id,
+        buyerId: trade.buyerId,
+        sellerId: trade.sellerId,
+        amount: amountInCFA,
+        currency: 'XAF',
+        txRef
+      });
+
+      window.FlutterwaveCheckout({
+        public_key: publicKey,
+        tx_ref: txRef,
+        amount: amountInCFA,
+        currency: 'XAF',
+        payment_options: 'mobilemoneyfranco, card',
+        customer: {
+          email: user.email || '',
+          phone_number: profileData.phoneNumber || '',
+          name: profileData.displayName || profileData.name || 'Marketplace User'
+        },
+        callback: (data: any) => {
+          if (data.status === 'successful') {
+            verifyPaymentOnServer(data.transaction_id);
+          }
+        },
+        onclose: () => {
+          console.log('Payment closed');
+        },
+        customizations: {
+          title: 'Hema Trader Escrow',
+          description: `Payment for ${listing?.title || 'trade order'}`,
+          logo: 'https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_92x30dp.png'
         }
-      },
-      onclose: () => {
-        console.log('Payment closed');
-      },
-      customizations: {
-        title: 'Hema Trader Escrow',
-        description: `Payment for ${listing?.title || 'trade order'}`,
-        logo: 'https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_92x30dp.png'
-      }
-    });
+      });
+    } catch (err) {
+      console.error('Payment start failed:', err);
+      alert('Could not start escrow payment. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
   };
 
   useEffect(() => {
@@ -448,6 +470,80 @@ export default function TradeDetail() {
     }
   };
 
+  const handleConfirmDelivery = async () => {
+    if (!trade || !user) return;
+
+    setUpdating(true);
+
+    try {
+      await confirmDeliveryAndRequestPayout({
+        tradeId: trade.id,
+        buyerId: trade.buyerId,
+        sellerId: trade.sellerId,
+        driverId: trade.driverId,
+        amount: trade.amount,
+        deliveryFee: trade.deliveryFee,
+        driverCommission: trade.driverCommission,
+        sendNotification
+      });
+
+      await sendSystemTradeMessage({
+        tradeId: trade.id,
+        text: 'Buyer confirmed delivery. Escrow is now marked for secure server payout.',
+        recipientIds: tradeRecipientIds,
+        sendNotification,
+        title: 'Trade Completed'
+      });
+
+      try {
+        await fetch('/api/trades/finalize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tradeId: trade.id, userId: user.uid })
+        });
+      } catch (err) {
+        console.error('Server finalization failed:', err);
+      }
+
+      setShowRating(true);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `trades/${trade.id}/confirm-delivery`);
+      alert('Could not confirm delivery. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const handleOpenDispute = async () => {
+    if (!trade || !user) return;
+
+    setUpdating(true);
+
+    try {
+      await openEscrowDispute({
+        tradeId: trade.id,
+        userId: user.uid,
+        buyerId: trade.buyerId,
+        sellerId: trade.sellerId,
+        reason: 'User requested support from trade page.',
+        sendNotification
+      });
+
+      await sendSystemTradeMessage({
+        tradeId: trade.id,
+        text: 'A dispute has been opened. Our support team is joining the conversation to help.',
+        recipientIds: tradeRecipientIds,
+        sendNotification,
+        title: 'Dispute Opened'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `trades/${trade.id}/dispute`);
+      alert('Could not open dispute. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   const updateStatus = async (
     newStatus: Trade['status'],
     extras: Record<string, any> = {}
@@ -465,11 +561,7 @@ export default function TradeDetail() {
 
       if (newStatus === 'funded' && !trade.platformFee) {
         updates.platformFee = trade.amount * 0.02;
-      }
-
-      if (newStatus === 'completed') {
-        updates.escrowStatus = 'release_pending_server_payout';
-        updates.buyerConfirmedAt = serverTimestamp();
+        updates.escrowStatus = 'funded';
       }
 
       await updateDoc(doc(db, 'trades', id), updates);
@@ -483,23 +575,6 @@ export default function TradeDetail() {
       } else if (newStatus === 'shipped') {
         notificationTitle = 'Package Shipped';
         systemMessage = 'Items are on the way. Buyer: please confirm here once they arrive so we can release the funds.';
-      } else if (newStatus === 'completed') {
-        notificationTitle = 'Trade Completed';
-        systemMessage = 'Buyer confirmed delivery. Escrow is now marked for secure server payout.';
-        setShowRating(true);
-
-        try {
-          await fetch('/api/trades/finalize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tradeId: id, userId: user.uid })
-          });
-        } catch (err) {
-          console.error('Server finalization failed:', err);
-        }
-      } else if (newStatus === 'disputed') {
-        notificationTitle = 'Dispute Opened';
-        systemMessage = 'A dispute has been opened. Our support team is joining the conversation to help.';
       }
 
       if (systemMessage) {
@@ -815,7 +890,10 @@ export default function TradeDetail() {
     {
       key: 'completed',
       label: 'Finalized',
-      description: 'Trade closed and funds released',
+      description:
+        trade.escrowStatus === 'release_pending_server_payout'
+          ? 'Delivery confirmed. Payout is queued securely.'
+          : 'Trade closed and funds released',
       icon: CheckCircle2
     }
   ];
@@ -859,6 +937,11 @@ export default function TradeDetail() {
             <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
               {listing ? `${listing.quantity} - ${listing.category}` : 'Listing details loading'}
             </p>
+            {trade.escrowStatus && (
+              <p className="mt-2 text-[8px] font-black uppercase tracking-widest text-amber-500">
+                Escrow: {trade.escrowStatus.replaceAll('_', ' ')}
+              </p>
+            )}
           </div>
 
           <div className="text-right">
@@ -881,7 +964,7 @@ export default function TradeDetail() {
             <button
               onClick={handlePayment}
               disabled={updating}
-              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
+              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl disabled:opacity-50"
             >
               {updating ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -908,7 +991,7 @@ export default function TradeDetail() {
             <button
               onClick={() => updateStatus('shipped')}
               disabled={updating}
-              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-amber-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
+              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-amber-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl disabled:opacity-50"
             >
               {updating ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -958,9 +1041,9 @@ export default function TradeDetail() {
 
           {trade.status === 'shipped' && isBuyer && (
             <button
-              onClick={() => updateStatus('completed')}
+              onClick={handleConfirmDelivery}
               disabled={updating}
-              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
+              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl disabled:opacity-50"
             >
               {updating ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -1403,7 +1486,7 @@ export default function TradeDetail() {
                   <button
                     onClick={handlePayment}
                     disabled={updating}
-                    className="flex w-full items-center justify-center gap-3 rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl transition-all hover:bg-slate-200 active:scale-[0.98]"
+                    className="flex w-full items-center justify-center gap-3 rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl transition-all hover:bg-slate-200 active:scale-[0.98] disabled:opacity-50"
                   >
                     {updating ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -1425,7 +1508,7 @@ export default function TradeDetail() {
                   <button
                     onClick={() => updateStatus('shipped')}
                     disabled={updating}
-                    className="w-full rounded-xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl transition-all hover:bg-amber-400 active:scale-[0.98]"
+                    className="w-full rounded-xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl transition-all hover:bg-amber-400 active:scale-[0.98] disabled:opacity-50"
                   >
                     {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Confirm Items Shipped'}
                   </button>
@@ -1488,9 +1571,9 @@ export default function TradeDetail() {
                     Your items are on the way. Confirm below only once you have received and inspected them.
                   </p>
                   <button
-                    onClick={() => updateStatus('completed')}
+                    onClick={handleConfirmDelivery}
                     disabled={updating}
-                    className="w-full rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl transition-all hover:bg-slate-200 active:scale-[0.98]"
+                    className="w-full rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl transition-all hover:bg-slate-200 active:scale-[0.98] disabled:opacity-50"
                   >
                     {updating ? <Loader2 className="h-4 w-4 animate-spin" /> : 'I Have Received My Order'}
                   </button>
@@ -1502,6 +1585,11 @@ export default function TradeDetail() {
                   <div className="space-y-4 rounded-2xl border border-green-500/20 bg-green-500/5 p-6 text-center">
                     <CheckCircle2 className="mx-auto h-10 w-10 text-green-500" />
                     <p className="font-serif text-lg text-white">Order Completed</p>
+                    {trade.escrowStatus === 'release_pending_server_payout' && (
+                      <p className="text-[9px] uppercase tracking-widest text-amber-500">
+                        Payout queued securely
+                      </p>
+                    )}
                     {!showRating && (
                       <button
                         onClick={() => setShowRating(true)}
@@ -1537,9 +1625,9 @@ export default function TradeDetail() {
               {trade.status !== 'completed' && trade.status !== 'cancelled' && trade.status !== 'disputed' && (
                 <div className="border-t border-white/5 pt-4">
                   <button
-                    onClick={() => updateStatus('disputed')}
+                    onClick={handleOpenDispute}
                     disabled={updating}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 py-3 text-[9px] font-black uppercase tracking-widest text-red-500 transition-all hover:bg-red-500/20"
+                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 py-3 text-[9px] font-black uppercase tracking-widest text-red-500 transition-all hover:bg-red-500/20 disabled:opacity-50"
                   >
                     <AlertCircle className="h-4 w-4" />
                     Need Help? Open a Dispute
