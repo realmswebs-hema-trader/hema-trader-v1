@@ -1,42 +1,159 @@
-import { useState, useRef, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
 import {
+  addDoc,
+  collection,
+  deleteDoc,
   doc,
   getDoc,
-  updateDoc,
+  increment,
+  onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
-  deleteDoc,
-  increment,
-  collection,
-  addDoc
+  updateDoc,
+  where
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
-  Shield,
-  Camera,
-  FileText,
-  CheckCircle,
+  Activity,
   AlertCircle,
-  LogOut,
+  BadgeCheck,
+  BriefcaseBusiness,
+  CalendarDays,
+  Camera,
+  CheckCircle,
+  ChevronRight,
+  Clock,
+  FileText,
+  Flag,
+  Globe2,
+  KeyRound,
+  Languages,
   Loader2,
-  UserPlus,
-  UserMinus,
-  ShieldCheck,
-  ShieldAlert,
+  LogOut,
+  Mail,
   MapPin,
+  MessageCircle,
+  Package,
+  Phone,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  ShoppingBag,
   Star,
+  Store,
   Truck,
-  AlertTriangle,
-  ChevronLeft,
+  Upload,
   UserCog,
-  KeyRound
+  UserMinus,
+  UserPlus,
+  Users,
+  Zap
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 
 import { useAuth } from '../components/auth/AuthContext';
 import { db, storage } from '../lib/firebase';
 import { useNotifications } from '../components/notifications/NotificationContext';
+
+type ProfileTab = 'listings' | 'reviews' | 'about' | 'deliveries' | 'activity';
+
+interface ListingItem {
+  id: string;
+  title?: string;
+  price?: number;
+  images?: string[];
+  status?: string;
+  category?: string;
+  deliveryAvailable?: boolean;
+  escrowProtected?: boolean;
+  verificationStatus?: string;
+  createdAt?: any;
+}
+
+interface ReviewItem {
+  id: string;
+  rating?: number;
+  comment?: string;
+  reviewerName?: string;
+  reviewerPhotoURL?: string;
+  createdAt?: any;
+}
+
+interface ActivityItem {
+  id: string;
+  type?: string;
+  title?: string;
+  body?: string;
+  createdAt?: any;
+}
+
+const getMillis = (value: any) => {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+};
+
+const formatDate = (value: any) => {
+  const millis = getMillis(value);
+  if (!millis) return 'Recently';
+
+  return new Date(millis).toLocaleDateString(undefined, {
+    month: 'short',
+    year: 'numeric'
+  });
+};
+
+const formatLastActive = (profile: any) => {
+  if (profile?.isOnline || profile?.online) return 'Active Now';
+
+  const millis = getMillis(profile?.lastActiveAt);
+  if (!millis) return 'Offline';
+
+  const diff = Date.now() - millis;
+  const minutes = Math.floor(diff / 60000);
+
+  if (minutes < 1) return 'Active recently';
+  if (minutes < 60) return `Last active ${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Last active ${hours}h ago`;
+
+  const days = Math.floor(hours / 24);
+  return `Last active ${days}d ago`;
+};
+
+const calculateTrustScore = (profile: any) => {
+  const verified = profile?.verificationStatus === 'verified' ? 30 : 8;
+  const rating = Math.min((profile?.averageRating || profile?.avgDriverRating || 0) * 10, 50);
+  const trades = Math.min((profile?.totalTrades || profile?.completedTrades || 0) / 2, 15);
+  const followers = Math.min((profile?.followersCount || 0) / 10, 5);
+
+  return Math.min(Math.round(verified + rating + trades + followers), 100);
+};
+
+const normalizeRoles = (roles: unknown) =>
+  Array.isArray(roles) ? roles.filter(role => typeof role === 'string') : [];
+
+const renderStars = (rating = 0) => (
+  <div className="flex items-center gap-0.5">
+    {[1, 2, 3, 4, 5].map(value => (
+      <Star
+        key={value}
+        className={`h-3.5 w-3.5 ${
+          value <= Math.round(rating)
+            ? 'fill-amber-500 text-amber-500'
+            : 'text-slate-700'
+        }`}
+      />
+    ))}
+  </div>
+);
 
 export default function Profile() {
   const { userId: urlUserId } = useParams();
@@ -58,12 +175,15 @@ export default function Profile() {
   const isOwnProfile = !urlUserId || urlUserId === authUser?.uid;
 
   const [targetProfile, setTargetProfile] = useState<any>(null);
+  const [profileOverlay, setProfileOverlay] = useState<any>({});
+  const [listings, setListings] = useState<ListingItem[]>([]);
+  const [reviews, setReviews] = useState<ReviewItem[]>([]);
+  const [activities, setActivities] = useState<ActivityItem[]>([]);
+  const [activeTab, setActiveTab] = useState<ProfileTab>('listings');
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState('');
-  const [displayNameInput, setDisplayNameInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
   const [isFollowing, setIsFollowing] = useState(false);
   const [followingLoading, setFollowingLoading] = useState(false);
   const [locating, setLocating] = useState(false);
@@ -72,9 +192,20 @@ export default function Profile() {
   const [reportReason, setReportReason] = useState('');
   const [reportDescription, setReportDescription] = useState('');
 
+  const [displayNameInput, setDisplayNameInput] = useState('');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [bioInput, setBioInput] = useState('');
+  const [locationInput, setLocationInput] = useState('');
+  const [phoneInput, setPhoneInput] = useState('');
+  const [businessCategoryInput, setBusinessCategoryInput] = useState('');
+  const [businessDescriptionInput, setBusinessDescriptionInput] = useState('');
+  const [languagesInput, setLanguagesInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+
   const idInputRef = useRef<HTMLInputElement>(null);
   const selfieInputRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!targetUserId) {
@@ -111,14 +242,58 @@ export default function Profile() {
 
     const checkFollow = async () => {
       const followId = `${authUser.uid}_${targetUserId}`;
-      const followRef = doc(db, 'follows', followId);
-      const followSnap = await getDoc(followRef);
-
+      const followSnap = await getDoc(doc(db, 'followers', followId));
       setIsFollowing(followSnap.exists());
     };
 
     checkFollow();
   }, [authUser, targetUserId, isOwnProfile]);
+
+  useEffect(() => {
+    if (!targetUserId) return;
+
+    const unsubListings = onSnapshot(
+      query(collection(db, 'listings'), where('ownerId', '==', targetUserId)),
+      snapshot => {
+        const next = snapshot.docs
+          .map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as ListingItem))
+          .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
+
+        setListings(next);
+      },
+      error => console.error('Profile listings sync failed:', error)
+    );
+
+    const unsubReviews = onSnapshot(
+      query(collection(db, 'reviews'), where('revieweeId', '==', targetUserId)),
+      snapshot => {
+        const next = snapshot.docs
+          .map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as ReviewItem))
+          .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
+
+        setReviews(next);
+      },
+      error => console.error('Profile reviews sync failed:', error)
+    );
+
+    const unsubActivities = onSnapshot(
+      query(collection(db, 'activities'), where('userId', '==', targetUserId)),
+      snapshot => {
+        const next = snapshot.docs
+          .map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as ActivityItem))
+          .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
+
+        setActivities(next);
+      },
+      error => console.error('Profile activities sync failed:', error)
+    );
+
+    return () => {
+      unsubListings();
+      unsubReviews();
+      unsubActivities();
+    };
+  }, [targetUserId]);
 
   if (authLoading || loading) {
     return (
@@ -150,17 +325,128 @@ export default function Profile() {
       }
     : null;
 
-  const profile = isOwnProfile ? fallbackOwnProfile : targetProfile;
+  const profileBase = isOwnProfile ? fallbackOwnProfile : targetProfile;
+  const profile = profileBase ? { ...profileBase, ...profileOverlay } : null;
+
+  const roles = normalizeRoles(profile?.roles);
+  const isVerified = profile?.verificationStatus === 'verified';
+  const isOnline = Boolean(profile?.isOnline || profile?.online);
+  const displayName = profile?.displayName || profile?.name || 'Hema User';
+  const username =
+    profile?.username ||
+    displayName.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/\.$/, '');
+  const rating = profile?.averageRating || profile?.avgDriverRating || 0;
+  const trustScore = profile?.trustScore || calculateTrustScore(profile);
+  const totalTrades = profile?.totalTrades || profile?.completedTrades || 0;
+  const totalSales = profile?.totalSales || profile?.salesCount || 0;
+  const responseRate = profile?.responseRate || 100;
+  const responseTime = profile?.responseTime || 'Usually replies fast';
+  const deliverySuccessRate =
+    profile?.deliverySuccessRate ||
+    profile?.reliabilityScore ||
+    (profile?.deliveriesCount ? 96 : 0);
+  const escrowSuccessRate = profile?.escrowSuccessRate || (totalTrades ? 98 : 0);
 
   const passwordProviderEnabled =
     authUser?.providerData?.some(provider => provider.providerId === 'password') ||
     false;
+
+  if (!profile) {
+    return (
+      <div className="mx-auto max-w-md rounded-[3rem] border border-white/5 bg-brand-card p-8 py-32 text-center">
+        <ShieldAlert className="mx-auto mb-6 h-16 w-16 text-red-500/20" />
+        <h2 className="mb-2 font-serif text-2xl text-white">
+          {isOwnProfile ? 'Please sign in again' : 'User not found'}
+        </h2>
+        <p className="text-[10px] font-bold uppercase leading-relaxed tracking-wider text-slate-500">
+          {isOwnProfile
+            ? "We couldn't verify your session. Please try logging back in."
+            : 'The user you are looking for does not exist or has been removed.'}
+        </p>
+      </div>
+    );
+  }
+
+  const toggleFollow = async () => {
+    if (!authUser || !targetUserId || isOwnProfile) return;
+
+    setFollowingLoading(true);
+
+    const followId = `${authUser.uid}_${targetUserId}`;
+
+    try {
+      if (isFollowing) {
+        await deleteDoc(doc(db, 'followers', followId));
+
+        await updateDoc(doc(db, 'users', authUser.uid), {
+          followingCount: increment(-1),
+          updatedAt: serverTimestamp()
+        });
+
+        await updateDoc(doc(db, 'users', targetUserId), {
+          followersCount: increment(-1),
+          updatedAt: serverTimestamp()
+        });
+
+        setIsFollowing(false);
+        setTargetProfile((prev: any) => ({
+          ...prev,
+          followersCount: Math.max((prev?.followersCount || 1) - 1, 0)
+        }));
+      } else {
+        await setDoc(doc(db, 'followers', followId), {
+          followerId: authUser.uid,
+          followingId: targetUserId,
+          createdAt: serverTimestamp()
+        });
+
+        await updateDoc(doc(db, 'users', authUser.uid), {
+          followingCount: increment(1),
+          updatedAt: serverTimestamp()
+        });
+
+        await updateDoc(doc(db, 'users', targetUserId), {
+          followersCount: increment(1),
+          updatedAt: serverTimestamp()
+        });
+
+        setIsFollowing(true);
+        setTargetProfile((prev: any) => ({
+          ...prev,
+          followersCount: (prev?.followersCount || 0) + 1
+        }));
+
+        await addDoc(collection(db, 'activities'), {
+          userId: targetUserId,
+          type: 'follow',
+          title: 'New follower',
+          body: `${myProfile?.displayName || 'Someone'} started following this profile.`,
+          targetId: authUser.uid,
+          createdAt: serverTimestamp()
+        });
+
+        sendNotification(targetUserId, {
+          title: 'New Follower',
+          body: `${myProfile?.displayName || 'Someone'} started following you.`,
+          type: 'system',
+          targetId: authUser.uid,
+          targetType: 'profile',
+          actionUrl: `/profile/${authUser.uid}`
+        });
+      }
+    } catch (err) {
+      console.error('Follow error:', err);
+    } finally {
+      setFollowingLoading(false);
+    }
+  };
 
   const handleReport = async () => {
     if (!authUser || !targetUserId || !reportReason) return;
 
     try {
       await addDoc(collection(db, 'reports'), {
+        type: 'profile',
         reporterId: authUser.uid,
         targetId: targetUserId,
         reason: reportReason,
@@ -179,79 +465,6 @@ export default function Profile() {
     }
   };
 
-  const toggleFollow = async () => {
-    if (!authUser || !targetUserId || isOwnProfile || !targetProfile) return;
-
-    setFollowingLoading(true);
-
-    const followId = `${authUser.uid}_${targetUserId}`;
-    const followRef = doc(db, 'follows', followId);
-
-    try {
-      if (isFollowing) {
-        await deleteDoc(followRef);
-        await updateDoc(doc(db, 'users', authUser.uid), {
-          followingCount: increment(-1)
-        });
-        await updateDoc(doc(db, 'users', targetUserId), {
-          followersCount: increment(-1)
-        });
-
-        setIsFollowing(false);
-        setTargetProfile((prev: any) => ({
-          ...prev,
-          followersCount: Math.max((prev.followersCount || 1) - 1, 0)
-        }));
-      } else {
-        await setDoc(followRef, {
-          followerId: authUser.uid,
-          followingId: targetUserId,
-          createdAt: serverTimestamp()
-        });
-
-        await updateDoc(doc(db, 'users', authUser.uid), {
-          followingCount: increment(1)
-        });
-        await updateDoc(doc(db, 'users', targetUserId), {
-          followersCount: increment(1)
-        });
-
-        setIsFollowing(true);
-        setTargetProfile((prev: any) => ({
-          ...prev,
-          followersCount: (prev.followersCount || 0) + 1
-        }));
-
-        sendNotification(targetUserId, {
-          title: 'New Follower',
-          body: `${myProfile?.displayName || 'Someone'} started following you.`,
-          type: 'system',
-          targetId: authUser.uid
-        });
-      }
-    } catch (err) {
-      console.error('Follow error:', err);
-    } finally {
-      setFollowingLoading(false);
-    }
-  };
-
-  if (!profile) {
-    return (
-      <div className="mx-auto max-w-md rounded-[3rem] border border-white/5 bg-brand-card p-8 py-32 text-center">
-        <ShieldAlert className="mx-auto mb-6 h-16 w-16 text-red-500/20" />
-        <h2 className="mb-2 font-serif text-2xl text-white">
-          {isOwnProfile ? 'Please sign in again' : 'User not found'}
-        </h2>
-        <p className="text-[10px] font-bold uppercase leading-relaxed tracking-wider text-slate-500">
-          {isOwnProfile
-            ? "We couldn't verify your session. Please try logging back in."
-            : 'The user you are looking for does not exist or has been removed.'}
-        </p>
-      </div>
-    );
-  }
-
   const handleLocationUpdate = async () => {
     setLocating(true);
 
@@ -266,8 +479,6 @@ export default function Profile() {
     type: 'idFrontUrl' | 'selfieUrl',
     file: File
   ) => {
-    if (!profile) return;
-
     setUploading(true);
     setSuccess(false);
 
@@ -286,6 +497,12 @@ export default function Profile() {
         updatedAt: serverTimestamp()
       });
 
+      setProfileOverlay((prev: any) => ({
+        ...prev,
+        [type]: downloadURL,
+        verificationStatus: 'pending'
+      }));
+
       setSuccess(true);
     } catch (error) {
       console.error('Upload error', error);
@@ -300,11 +517,39 @@ export default function Profile() {
     setSettingsMessage('');
 
     try {
-      await updateProfilePhoto(file);
+      const photoURL = await updateProfilePhoto(file);
+      setProfileOverlay((prev: any) => ({ ...prev, photoURL }));
       setSettingsMessage('Profile photo updated successfully.');
     } catch (error) {
       console.error('Profile photo update failed:', error);
       setSettingsMessage('Could not update profile photo. Please try again.');
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const handleBannerUpload = async (file: File) => {
+    if (!authUser || !profile?.userId) return;
+
+    setSettingsLoading(true);
+    setSettingsMessage('');
+
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const bannerRef = ref(storage, `profileBanners/${profile.userId}/${Date.now()}_${safeName}`);
+      const uploadResult = await uploadBytes(bannerRef, file);
+      const bannerURL = await getDownloadURL(uploadResult.ref);
+
+      await updateDoc(doc(db, 'users', profile.userId), {
+        bannerURL,
+        updatedAt: serverTimestamp()
+      });
+
+      setProfileOverlay((prev: any) => ({ ...prev, bannerURL }));
+      setSettingsMessage('Profile banner updated successfully.');
+    } catch (error) {
+      console.error('Banner upload failed:', error);
+      setSettingsMessage('Could not update banner. Please try again.');
     } finally {
       setSettingsLoading(false);
     }
@@ -318,11 +563,66 @@ export default function Profile() {
 
     try {
       await updateDisplayName(displayNameInput.trim());
+
+      setProfileOverlay((prev: any) => ({
+        ...prev,
+        displayName: displayNameInput.trim(),
+        name: displayNameInput.trim()
+      }));
+
       setDisplayNameInput('');
       setSettingsMessage('Display name updated successfully.');
     } catch (error) {
       console.error('Display name update failed:', error);
       setSettingsMessage('Could not update display name. Please try again.');
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const handlePremiumSettingsUpdate = async () => {
+    if (!authUser || !profile?.userId) return;
+
+    setSettingsLoading(true);
+    setSettingsMessage('');
+
+    const languages = languagesInput
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean);
+
+    const updates: Record<string, any> = {
+      updatedAt: serverTimestamp()
+    };
+
+    if (usernameInput.trim()) updates.username = usernameInput.trim();
+    if (bioInput.trim()) updates.bio = bioInput.trim();
+    if (locationInput.trim()) updates.location = locationInput.trim();
+    if (phoneInput.trim()) updates.phoneNumber = phoneInput.trim();
+    if (businessCategoryInput.trim()) updates.businessCategory = businessCategoryInput.trim();
+    if (businessDescriptionInput.trim()) updates.businessDescription = businessDescriptionInput.trim();
+    if (languages.length > 0) updates.languages = languages;
+
+    try {
+      await updateDoc(doc(db, 'users', profile.userId), updates);
+
+      setProfileOverlay((prev: any) => ({
+        ...prev,
+        ...updates,
+        updatedAt: undefined
+      }));
+
+      setUsernameInput('');
+      setBioInput('');
+      setLocationInput('');
+      setPhoneInput('');
+      setBusinessCategoryInput('');
+      setBusinessDescriptionInput('');
+      setLanguagesInput('');
+      setSettingsMessage('Profile details updated.');
+    } catch (error) {
+      console.error('Premium profile update failed:', error);
+      setSettingsMessage('Could not update profile details.');
     } finally {
       setSettingsLoading(false);
     }
@@ -348,122 +648,444 @@ export default function Profile() {
     }
   };
 
+  const tabs: Array<{ id: ProfileTab; label: string; icon: any }> = [
+    { id: 'listings', label: 'Listings', icon: ShoppingBag },
+    { id: 'reviews', label: 'Reviews', icon: Star },
+    { id: 'about', label: 'About', icon: FileText },
+    { id: 'deliveries', label: 'Deliveries', icon: Truck },
+    { id: 'activity', label: 'Activity', icon: Activity }
+  ];
+
   return (
-    <div className="mx-auto max-w-xl space-y-10">
-      <section className="text-center">
-        <div className="relative mx-auto h-32 w-32 overflow-hidden rounded-full border-4 border-[#2A2A2E] shadow-2xl">
-          <img
-            src={
-              profile?.photoURL ||
-              `https://api.dicebear.com/7.x/avataaars/svg?seed=${profile.userId || 'Hema'}`
-            }
-            alt="Profile"
-            className="h-full w-full object-cover"
-            referrerPolicy="no-referrer"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-        </div>
+    <div className="mx-auto max-w-6xl space-y-8 pb-24">
+      <section className="overflow-hidden rounded-[2.5rem] border border-white/5 bg-brand-card shadow-2xl">
+        <div
+          className="relative h-48 bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/40 sm:h-64"
+          style={
+            profile.bannerURL
+              ? {
+                  backgroundImage: `linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0.15)), url(${profile.bannerURL})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center'
+                }
+              : undefined
+          }
+        >
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(245,158,11,0.18),transparent_35%)]" />
 
-        <h2 className="mt-6 font-serif text-3xl tracking-tight text-white">
-          {profile?.displayName || profile?.name || 'Hema User'}
-        </h2>
-
-        {isOwnProfile && (
-          <p className="mt-1 text-xs uppercase tracking-widest text-slate-500">
-            {profile?.email}
-          </p>
-        )}
-
-        <div className="mt-4 flex flex-wrap justify-center gap-2">
-          {profile?.badges?.map((badge: string) => (
-            <div
-              key={badge}
-              className="rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-[0.2em] text-amber-500 shadow-sm"
-            >
-              {badge}
-            </div>
-          ))}
-
-          {profile?.roles?.map((role: string) => (
-            <div
-              key={role}
-              className={`rounded-full border px-3 py-1 text-[8px] font-black uppercase tracking-[0.2em] shadow-sm ${
-                role === 'admin'
-                  ? 'border-red-500/20 bg-red-500/10 text-red-500'
-                  : role === 'seller'
-                    ? 'border-amber-500/20 bg-amber-500/10 text-amber-500'
-                    : role === 'driver'
-                      ? 'border-green-500/20 bg-green-500/10 text-green-500'
-                      : 'border-blue-500/20 bg-blue-500/10 text-blue-500'
-              }`}
-            >
-              {role}
-            </div>
-          ))}
-        </div>
-
-        {isOwnProfile && (
-          <button
-            onClick={() => updateRoles([])}
-            className="mt-4 text-[9px] font-black uppercase tracking-widest text-slate-600 transition-colors hover:text-amber-500"
-          >
-            Change Marketplace Roles
-          </button>
-        )}
-
-        {!isOwnProfile && authUser && (
-          <div className="mt-6 flex justify-center gap-3">
+          {isOwnProfile && (
             <button
-              onClick={() => setShowReportModal(true)}
-              className="flex h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-white/5 text-slate-500 shadow-xl transition-all hover:bg-red-500/10 hover:text-red-500"
-              title="Report User"
+              onClick={() => bannerInputRef.current?.click()}
+              className="absolute right-5 top-5 flex items-center gap-2 rounded-full border border-white/10 bg-black/50 px-4 py-2 text-[9px] font-black uppercase tracking-widest text-white backdrop-blur-md hover:border-amber-500/40"
             >
-              <AlertTriangle className="h-5 w-5" />
+              <Upload className="h-3.5 w-3.5" />
+              Banner
             </button>
+          )}
 
-            <button
-              onClick={toggleFollow}
-              disabled={followingLoading}
-              className={`flex items-center gap-2 rounded-full px-8 py-3 text-[10px] font-black uppercase tracking-widest shadow-xl transition-all ${
-                isFollowing
-                  ? 'border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
-                  : 'bg-white text-black hover:bg-amber-500'
-              }`}
-            >
-              {followingLoading ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : isFollowing ? (
+          <input
+            ref={bannerInputRef}
+            hidden
+            type="file"
+            accept="image/*"
+            onChange={event =>
+              event.target.files?.[0] && handleBannerUpload(event.target.files[0])
+            }
+          />
+        </div>
+
+        <div className="relative px-5 pb-8 sm:px-8">
+          <div className="-mt-16 flex flex-col gap-5 sm:-mt-20 sm:flex-row sm:items-end sm:justify-between">
+            <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:text-left">
+              <div className="relative">
+                <div className="h-32 w-32 overflow-hidden rounded-full border-4 border-brand-card bg-slate-900 shadow-2xl sm:h-40 sm:w-40">
+                  <img
+                    src={
+                      profile.photoURL ||
+                      `https://api.dicebear.com/7.x/avataaars/svg?seed=${profile.userId || 'Hema'}`
+                    }
+                    alt={displayName}
+                    className="h-full w-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+
+                {isVerified && (
+                  <div className="absolute bottom-4 right-2 rounded-full bg-amber-500 p-2 text-black shadow-xl">
+                    <BadgeCheck className="h-5 w-5" />
+                  </div>
+                )}
+
+                <div className="absolute right-4 top-4 flex h-4 w-4">
+                  {isOnline && (
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+                  )}
+                  <span
+                    className={`relative inline-flex h-4 w-4 rounded-full border-2 border-brand-card ${
+                      isOnline ? 'bg-green-500' : 'bg-slate-500'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <div className="flex flex-wrap items-center justify-center gap-2 sm:justify-start">
+                    <h1 className="font-serif text-4xl text-white">
+                      {displayName}
+                    </h1>
+                    {isVerified && <ShieldCheck className="h-5 w-5 text-amber-500" />}
+                  </div>
+                  <p className="mt-1 text-[11px] font-black uppercase tracking-[0.25em] text-slate-500">
+                    @{username}
+                  </p>
+                </div>
+
+                <p className="max-w-xl font-serif text-sm italic leading-relaxed text-slate-400">
+                  {profile.bio ||
+                    profile.businessDescription ||
+                    'Building trust inside the Hema Trader marketplace.'}
+                </p>
+
+                <div className="flex flex-wrap justify-center gap-2 sm:justify-start">
+                  {roles.map(role => (
+                    <span
+                      key={role}
+                      className={`rounded-full border px-3 py-1 text-[8px] font-black uppercase tracking-widest ${
+                        role === 'admin'
+                          ? 'border-red-500/20 bg-red-500/10 text-red-500'
+                          : role === 'seller'
+                            ? 'border-amber-500/20 bg-amber-500/10 text-amber-500'
+                            : role === 'driver'
+                              ? 'border-green-500/20 bg-green-500/10 text-green-500'
+                              : 'border-blue-500/20 bg-blue-500/10 text-blue-500'
+                      }`}
+                    >
+                      {role}
+                    </span>
+                  ))}
+
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                    {isVerified ? 'Verified Seller' : 'Unverified Trader'}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap justify-center gap-4 text-[10px] font-bold uppercase tracking-widest text-slate-500 sm:justify-start">
+                  <span className="flex items-center gap-1.5">
+                    <MapPin className="h-3.5 w-3.5 text-amber-500" />
+                    {profile.location || profile.city || 'Cameroon'}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <CalendarDays className="h-3.5 w-3.5 text-amber-500" />
+                    Member since {formatDate(profile.createdAt)}
+                  </span>
+                  <span className={`flex items-center gap-1.5 ${isOnline ? 'text-green-500' : ''}`}>
+                    <Clock className="h-3.5 w-3.5" />
+                    {formatLastActive(profile)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap justify-center gap-2 sm:justify-end">
+              {!isOwnProfile && authUser && (
                 <>
-                  <UserMinus className="h-4 w-4" />
-                  Unfollow
-                </>
-              ) : (
-                <>
-                  <UserPlus className="h-4 w-4" />
-                  Follow
+                  <button
+                    onClick={toggleFollow}
+                    disabled={followingLoading}
+                    className={`flex items-center gap-2 rounded-xl px-5 py-3 text-[10px] font-black uppercase tracking-widest transition ${
+                      isFollowing
+                        ? 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                        : 'bg-white text-black hover:bg-amber-500'
+                    }`}
+                  >
+                    {followingLoading ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : isFollowing ? (
+                      <>
+                        <UserMinus className="h-4 w-4" />
+                        Unfollow
+                      </>
+                    ) : (
+                      <>
+                        <UserPlus className="h-4 w-4" />
+                        Follow
+                      </>
+                    )}
+                  </button>
+
+                  <Link
+                    to={`/messages/${profile.userId}`}
+                    className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-amber-500 hover:bg-amber-500 hover:text-black"
+                  >
+                    <MessageCircle className="h-4 w-4" />
+                    Message
+                  </Link>
+
+                  {roles.includes('driver') ? (
+                    <Link
+                      to={`/drivers/${profile.userId}`}
+                      className="flex items-center gap-2 rounded-xl border border-green-500/30 bg-green-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-green-500 hover:bg-green-500 hover:text-black"
+                    >
+                      <Truck className="h-4 w-4" />
+                      Hire Driver
+                    </Link>
+                  ) : (
+                    <Link
+                      to={`/?seller=${profile.userId}`}
+                      className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-white hover:bg-white hover:text-black"
+                    >
+                      <Store className="h-4 w-4" />
+                      Start Trade
+                    </Link>
+                  )}
+
+                  <button
+                    onClick={() => setShowReportModal(true)}
+                    className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-500 hover:text-white"
+                  >
+                    <Flag className="h-4 w-4" />
+                    Report
+                  </button>
                 </>
               )}
-            </button>
-          </div>
-        )}
 
-        {isOwnProfile && (profile.totalTrades || 0) === 0 && (
-          <section className="mt-8 space-y-4 rounded-[2.5rem] bg-gradient-to-r from-amber-500 to-amber-600 p-10 shadow-2xl">
-            <h3 className="font-serif text-3xl text-black">
-              Start Your Legacy
-            </h3>
-            <p className="text-[10px] font-black uppercase leading-relaxed tracking-widest text-black/60">
-              You haven't completed any trades yet. Sellers who complete their
-              first trade in 48 hours are 4x more likely to become Elite Vendors.
+              {isOwnProfile && (
+                <button
+                  onClick={() => updateRoles([])}
+                  className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-slate-300 hover:bg-white hover:text-black"
+                >
+                  <UserCog className="h-4 w-4" />
+                  Switch Roles
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-8 grid grid-cols-2 gap-3 md:grid-cols-4">
+            {[
+              { label: 'Followers', value: profile.followersCount || 0, icon: Users },
+              { label: 'Following', value: profile.followingCount || 0, icon: UserPlus },
+              { label: 'Trades', value: totalTrades, icon: ShieldCheck },
+              { label: 'Trust Score', value: `${trustScore}%`, icon: Zap }
+            ].map(item => (
+              <div key={item.label} className="rounded-2xl border border-white/5 bg-black/30 p-4">
+                <div className="flex items-center gap-2 text-slate-500">
+                  <item.icon className="h-4 w-4 text-amber-500" />
+                  <p className="text-[9px] font-black uppercase tracking-widest">
+                    {item.label}
+                  </p>
+                </div>
+                <p className="mt-2 font-serif text-2xl text-white">{item.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="grid grid-cols-2 gap-3 md:grid-cols-6">
+        {[
+          { label: 'Rating', value: rating.toFixed(1), icon: Star },
+          { label: 'Sales', value: totalSales, icon: Store },
+          { label: 'Delivery', value: `${deliverySuccessRate}%`, icon: Truck },
+          { label: 'Escrow', value: `${escrowSuccessRate}%`, icon: Shield },
+          { label: 'Response', value: `${responseRate}%`, icon: MessageCircle },
+          { label: 'Speed', value: responseTime, icon: Clock }
+        ].map(item => (
+          <div key={item.label} className="rounded-2xl border border-white/5 bg-brand-card p-4 shadow-xl">
+            <item.icon className="mb-3 h-5 w-5 text-amber-500" />
+            <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+              {item.label}
             </p>
-            <a
-              href="/create-listing"
-              className="inline-block rounded-xl bg-black px-8 py-3 text-[10px] font-black uppercase tracking-widest text-white transition-all hover:bg-slate-900"
+            <p className="mt-1 truncate font-serif text-lg text-white">{item.value}</p>
+          </div>
+        ))}
+      </section>
+
+      <section className="overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card shadow-2xl">
+        <div className="scrollbar-hide flex gap-2 overflow-x-auto border-b border-white/5 p-2">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-3 text-[10px] font-black uppercase tracking-widest transition ${
+                activeTab === tab.id
+                  ? 'bg-amber-500 text-black'
+                  : 'text-slate-500 hover:bg-white/5 hover:text-white'
+              }`}
             >
-              Create Your First Listing
-            </a>
-          </section>
-        )}
+              <tab.icon className="h-4 w-4" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-5 sm:p-8">
+          {activeTab === 'listings' && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {listings.length > 0 ? (
+                listings.map(item => (
+                  <Link
+                    key={item.id}
+                    to={`/listing/${item.id}`}
+                    className="group overflow-hidden rounded-2xl border border-white/5 bg-black/30"
+                  >
+                    <div className="aspect-[4/3] bg-slate-900">
+                      {item.images?.[0] ? (
+                        <img
+                          src={item.images[0]}
+                          alt={item.title || 'Listing'}
+                          className="h-full w-full object-cover transition group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-slate-700">
+                          <Package className="h-10 w-10" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-3 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="truncate font-serif text-lg text-white">
+                          {item.title || 'Untitled listing'}
+                        </h3>
+                        <span className="text-[10px] font-black text-amber-500">
+                          ${(item.price || 0).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full bg-green-500/10 px-2 py-1 text-[8px] font-black uppercase text-green-500">
+                          Escrow protected
+                        </span>
+                        <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[8px] font-black uppercase text-amber-500">
+                          Verified
+                        </span>
+                        <span className="rounded-full bg-white/5 px-2 py-1 text-[8px] font-black uppercase text-slate-400">
+                          Delivery available
+                        </span>
+                      </div>
+                    </div>
+                  </Link>
+                ))
+              ) : (
+                <div className="col-span-full rounded-2xl border border-white/5 bg-black/30 p-10 text-center text-slate-500">
+                  No listings published yet.
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'reviews' && (
+            <div className="space-y-4">
+              {reviews.length > 0 ? (
+                reviews.map(review => (
+                  <div key={review.id} className="rounded-2xl border border-white/5 bg-black/30 p-5">
+                    <div className="flex items-start gap-4">
+                      <img
+                        src={
+                          review.reviewerPhotoURL ||
+                          `https://api.dicebear.com/7.x/avataaars/svg?seed=${review.id}`
+                        }
+                        alt={review.reviewerName || 'Reviewer'}
+                        className="h-12 w-12 rounded-full object-cover"
+                      />
+                      <div className="flex-1">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <p className="font-serif text-lg text-white">
+                            {review.reviewerName || 'Marketplace User'}
+                          </p>
+                          {renderStars(review.rating || 0)}
+                        </div>
+                        <p className="mt-2 font-serif text-sm italic leading-relaxed text-slate-400">
+                          {review.comment || 'No comment left.'}
+                        </p>
+                        <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
+                          {formatDate(review.createdAt)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-white/5 bg-black/30 p-10 text-center text-slate-500">
+                  No reviews yet.
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'about' && (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {[
+                { label: 'Bio', value: profile.bio || 'No bio added yet.', icon: FileText },
+                { label: 'Business', value: profile.businessDescription || 'No business description added.', icon: BriefcaseBusiness },
+                { label: 'Category', value: profile.businessCategory || 'General marketplace trader', icon: Store },
+                { label: 'Location', value: profile.location || profile.city || 'Cameroon', icon: MapPin },
+                { label: 'Languages', value: profile.languages?.join(', ') || 'Not specified', icon: Languages },
+                { label: 'Phone', value: isOwnProfile ? profile.phoneNumber || 'Not added' : profile.showPhone ? profile.phoneNumber : 'Private', icon: Phone },
+                { label: 'Email', value: isOwnProfile ? profile.email || 'Not added' : 'Private', icon: Mail },
+                { label: 'Website', value: profile.website || 'Not added', icon: Globe2 }
+              ].map(item => (
+                <div key={item.label} className="rounded-2xl border border-white/5 bg-black/30 p-5">
+                  <div className="flex items-center gap-3">
+                    <item.icon className="h-5 w-5 text-amber-500" />
+                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                      {item.label}
+                    </p>
+                  </div>
+                  <p className="mt-3 font-serif text-sm leading-relaxed text-white">
+                    {item.value}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'deliveries' && (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {[
+                { label: 'Completed Deliveries', value: profile.completedDeliveries || profile.deliveriesCount || 0 },
+                { label: 'Current Deliveries', value: profile.currentDeliveries || 0 },
+                { label: 'Success Rate', value: `${deliverySuccessRate}%` },
+                { label: 'Vehicle Type', value: profile.vehicleType || 'Not specified' },
+                { label: 'Vehicle Size', value: profile.vehicleSize || 'Medium' },
+                { label: 'Availability', value: profile.driverStatus || 'Offline' }
+              ].map(item => (
+                <div key={item.label} className="rounded-2xl border border-white/5 bg-black/30 p-5">
+                  <Truck className="mb-3 h-5 w-5 text-green-500" />
+                  <p className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                    {item.label}
+                  </p>
+                  <p className="mt-2 font-serif text-xl text-white">{item.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'activity' && (
+            <div className="space-y-4">
+              {activities.length > 0 ? (
+                activities.map(item => (
+                  <div key={item.id} className="flex items-start gap-4 rounded-2xl border border-white/5 bg-black/30 p-5">
+                    <div className="rounded-xl bg-amber-500/10 p-3 text-amber-500">
+                      <Activity className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="font-serif text-lg text-white">{item.title || 'Profile activity'}</p>
+                      <p className="mt-1 text-sm text-slate-500">{item.body || 'New activity inside Hema Trader.'}</p>
+                      <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
+                        {formatDate(item.createdAt)}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-white/5 bg-black/30 p-10 text-center text-slate-500">
+                  No public activity yet.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </section>
 
       {isOwnProfile && (
@@ -473,18 +1095,25 @@ export default function Profile() {
             <h3 className="font-serif text-xl text-white">Profile Settings</h3>
           </div>
 
-          <button
-            onClick={() => avatarInputRef.current?.click()}
-            disabled={settingsLoading}
-            className="flex w-full items-center justify-center gap-3 rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-widest text-black transition hover:bg-amber-500 disabled:opacity-50"
-          >
-            {settingsLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <button
+              onClick={() => avatarInputRef.current?.click()}
+              disabled={settingsLoading}
+              className="flex w-full items-center justify-center gap-3 rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-widest text-black transition hover:bg-amber-500 disabled:opacity-50"
+            >
               <Camera className="h-4 w-4" />
-            )}
-            Upload New Profile Photo
-          </button>
+              Upload Avatar
+            </button>
+
+            <button
+              onClick={() => bannerInputRef.current?.click()}
+              disabled={settingsLoading}
+              className="flex w-full items-center justify-center gap-3 rounded-xl border border-white/10 bg-white/5 py-4 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white hover:text-black disabled:opacity-50"
+            >
+              <Upload className="h-4 w-4" />
+              Upload Banner
+            </button>
+          </div>
 
           <input
             ref={avatarInputRef}
@@ -496,24 +1125,27 @@ export default function Profile() {
             }
           />
 
-          <div className="space-y-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-              Change Display Name
-            </label>
-            <input
-              value={displayNameInput}
-              onChange={event => setDisplayNameInput(event.target.value)}
-              placeholder={profile?.displayName || profile?.name || 'Your name'}
-              className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
-            />
-            <button
-              onClick={handleDisplayNameUpdate}
-              disabled={!displayNameInput.trim() || settingsLoading}
-              className="w-full rounded-xl bg-white/10 py-3 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white/20 disabled:opacity-40"
-            >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <input value={displayNameInput} onChange={event => setDisplayNameInput(event.target.value)} placeholder={profile.displayName || 'Display name'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <button onClick={handleDisplayNameUpdate} disabled={!displayNameInput.trim() || settingsLoading} className="rounded-xl bg-white/10 py-4 text-[10px] font-black uppercase tracking-widest text-white hover:bg-white/20 disabled:opacity-40">
               Save Name
             </button>
+            <input value={usernameInput} onChange={event => setUsernameInput(event.target.value)} placeholder={profile.username || 'Username'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <input value={bioInput} onChange={event => setBioInput(event.target.value)} placeholder={profile.bio || 'Bio'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <input value={locationInput} onChange={event => setLocationInput(event.target.value)} placeholder={profile.location || 'Location'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <input value={phoneInput} onChange={event => setPhoneInput(event.target.value)} placeholder={profile.phoneNumber || 'Phone'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <input value={businessCategoryInput} onChange={event => setBusinessCategoryInput(event.target.value)} placeholder={profile.businessCategory || 'Business category'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <input value={languagesInput} onChange={event => setLanguagesInput(event.target.value)} placeholder="Languages, comma separated" className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <textarea value={businessDescriptionInput} onChange={event => setBusinessDescriptionInput(event.target.value)} placeholder={profile.businessDescription || 'Business description'} className="min-h-28 rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none md:col-span-2" />
           </div>
+
+          <button
+            onClick={handlePremiumSettingsUpdate}
+            disabled={settingsLoading}
+            className="w-full rounded-xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-widest text-black hover:bg-amber-400 disabled:opacity-50"
+          >
+            Save Profile Details
+          </button>
 
           <div className="space-y-2">
             <label className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
@@ -522,22 +1154,22 @@ export default function Profile() {
             </label>
 
             {passwordProviderEnabled ? (
-              <>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
                 <input
                   value={passwordInput}
                   onChange={event => setPasswordInput(event.target.value)}
                   type="password"
                   placeholder="New password"
-                  className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
+                  className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
                 />
                 <button
                   onClick={handlePasswordUpdate}
                   disabled={passwordInput.length < 6 || settingsLoading}
-                  className="w-full rounded-xl bg-white/10 py-3 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white/20 disabled:opacity-40"
+                  className="rounded-xl bg-white/10 px-6 py-4 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white/20 disabled:opacity-40"
                 >
-                  Update Password
+                  Update
                 </button>
-              </>
+              </div>
             ) : (
               <p className="rounded-xl border border-white/5 bg-black/40 p-4 text-[10px] uppercase leading-relaxed tracking-widest text-slate-500">
                 Your password is managed by your Google account.
@@ -553,410 +1185,126 @@ export default function Profile() {
         </section>
       )}
 
-      {!isOwnProfile && profile?.roles?.includes('driver') && (
-        <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Truck className="h-6 w-6 text-amber-500" />
-              <h3 className="font-serif text-xl text-white">
-                Delivery Partner
-              </h3>
-            </div>
-
-            <div
-              className={`rounded-full px-4 py-1.5 text-[9px] font-black uppercase tracking-widest ${
-                profile.driverStatus === 'available'
-                  ? 'border border-green-500/20 bg-green-500/10 text-green-500'
-                  : 'border border-slate-500/20 bg-slate-500/10 text-slate-500'
-              }`}
-            >
-              {profile.driverStatus || 'Offline'}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-4">
-            <div className="rounded-2xl border border-white/5 bg-black/40 p-4 text-center">
-              <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-600">
-                Rating
-              </p>
-              <div className="flex items-center justify-center gap-1">
-                <Star className="h-4 w-4 fill-amber-500 text-amber-500" />
-                <p className="font-serif text-lg text-white">
-                  {profile.avgDriverRating?.toFixed(1) || '0.0'}
-                </p>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/5 bg-black/40 p-4 text-center">
-              <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-600">
-                Vehicle
-              </p>
-              <p className="text-xs font-black uppercase tracking-widest text-white">
-                {profile.vehicleType || 'Motorbike'}
-              </p>
-            </div>
-
-            <div className="rounded-2xl border border-white/5 bg-black/40 p-4 text-center">
-              <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-600">
-                Trips
-              </p>
-              <p className="font-serif text-lg text-white">
-                {profile.deliveriesCount || 0}
-              </p>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {isOwnProfile && profile?.roles?.includes('driver') && (
+      {isOwnProfile && roles.includes('driver') && (
         <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
           <div className="flex items-center gap-3">
             <Truck className="h-6 w-6 text-amber-500" />
             <h3 className="font-serif text-xl text-white">Driver Settings</h3>
           </div>
 
-          <div className="space-y-4">
-            <div className="flex flex-col gap-2">
-              <label className="px-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                Vehicle Type
-              </label>
-              <select
-                value={profile.vehicleType || 'motorbike'}
-                onChange={event =>
-                  updateDoc(doc(db, 'users', profile.userId), {
-                    vehicleType: event.target.value,
-                    updatedAt: serverTimestamp()
-                  })
-                }
-                className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
-              >
-                <option value="motorbike">Motorbike / Scooter</option>
-                <option value="car">Personal Car</option>
-                <option value="van">Delivery Van</option>
-                <option value="truck">Lorry / Truck</option>
-              </select>
-            </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <select
+              value={profile.vehicleType || 'motorbike'}
+              onChange={event =>
+                updateDoc(doc(db, 'users', profile.userId), {
+                  vehicleType: event.target.value,
+                  updatedAt: serverTimestamp()
+                })
+              }
+              className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
+            >
+              <option value="motorbike">Motorbike / Scooter</option>
+              <option value="car">Personal Car</option>
+              <option value="van">Delivery Van</option>
+              <option value="truck">Lorry / Truck</option>
+            </select>
 
-            <div className="flex flex-col gap-2">
-              <label className="px-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                Availability
-              </label>
-              <select
-                value={profile.driverStatus || 'available'}
-                onChange={event =>
-                  updateDoc(doc(db, 'users', profile.userId), {
-                    driverStatus: event.target.value,
-                    updatedAt: serverTimestamp()
-                  })
-                }
-                className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
-              >
-                <option value="available">Available for delivery</option>
-                <option value="on_trip">Busy (On a trip)</option>
-                <option value="offline">Offline / Off-duty</option>
-              </select>
-            </div>
+            <select
+              value={profile.driverStatus || 'available'}
+              onChange={event =>
+                updateDoc(doc(db, 'users', profile.userId), {
+                  driverStatus: event.target.value,
+                  updatedAt: serverTimestamp()
+                })
+              }
+              className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none"
+            >
+              <option value="available">Available for delivery</option>
+              <option value="on_trip">Busy on a trip</option>
+              <option value="offline">Offline</option>
+            </select>
           </div>
         </section>
       )}
-
-      <section className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
-          <div className="flex items-center gap-3">
-            <Star className="h-6 w-6 text-amber-500" />
-            <h3 className="font-serif text-xl text-white">Trust & Activity</h3>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <div className="space-y-1 rounded-2xl border border-white/5 bg-black/40 p-4 text-center">
-              <p className="text-[8px] font-bold uppercase tracking-wider text-slate-600">
-                Seller Rating
-              </p>
-              <p className="font-serif text-xl text-amber-500">
-                {profile?.averageRating?.toFixed(1) || '0.0'}
-              </p>
-            </div>
-
-            <div className="space-y-1 rounded-2xl border border-white/5 bg-black/40 p-4 text-center">
-              <p className="text-[8px] font-bold uppercase tracking-wider text-slate-600">
-                Total Trades
-              </p>
-              <p className="font-serif text-xl text-white">
-                {profile?.totalTrades || 0}
-              </p>
-            </div>
-
-            <div className="space-y-1 rounded-2xl border border-white/5 bg-black/40 p-4 text-center">
-              <p className="text-[8px] font-bold uppercase tracking-wider text-slate-600">
-                Followers
-              </p>
-              <p className="font-serif text-xl text-amber-500/80">
-                {profile?.followersCount || 0}
-              </p>
-            </div>
-
-            <div className="space-y-1 rounded-2xl border border-white/5 bg-black/40 p-4 text-center">
-              <p className="text-[8px] font-bold uppercase tracking-wider text-slate-600">
-                Following
-              </p>
-              <p className="font-serif text-xl text-white/80">
-                {profile?.followingCount || 0}
-              </p>
-            </div>
-          </div>
-
-          {profile?.badge && (
-            <div className="flex items-center justify-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
-              <ShieldCheck className="h-4 w-4 text-amber-500" />
-              <span className="text-[9px] font-black uppercase tracking-[0.2em] text-amber-500">
-                {profile.badge}
-              </span>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
-          <div className="flex items-center gap-3">
-            <MapPin className="h-6 w-6 text-amber-500" />
-            <h3 className="font-serif text-xl text-white">
-              {isOwnProfile ? 'My Location' : 'Seller Location'}
-            </h3>
-          </div>
-
-          <p className="text-[10px] uppercase leading-relaxed tracking-widest text-slate-500">
-            {isOwnProfile
-              ? 'Set your location to see trades and listings near you.'
-              : 'Approximate location of this seller.'}
-          </p>
-
-          {profile?.latitude ? (
-            <div className="flex items-center justify-between rounded-2xl border border-white/5 bg-black/40 p-5">
-              <div className="space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
-                  Coordinates
-                </p>
-                <p className="font-mono text-xs text-amber-500">
-                  {profile.latitude.toFixed(4)}°, {profile.longitude?.toFixed(4)}°
-                </p>
-              </div>
-
-              {isOwnProfile && (
-                <button
-                  onClick={handleLocationUpdate}
-                  disabled={locating}
-                  className="rounded-lg border border-white/5 bg-white/5 px-4 py-2 text-[9px] font-bold uppercase tracking-wider text-slate-400 hover:border-amber-500/30"
-                >
-                  {locating ? 'Updating...' : 'Update'}
-                </button>
-              )}
-            </div>
-          ) : isOwnProfile ? (
-            <button
-              onClick={handleLocationUpdate}
-              disabled={locating}
-              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-white py-5 font-bold uppercase tracking-wider text-black shadow-2xl transition-all hover:bg-slate-200 disabled:opacity-50"
-            >
-              {locating ? (
-                <Loader2 className="h-5 w-5 animate-spin" />
-              ) : (
-                <MapPin className="h-5 w-5" />
-              )}
-              Set Location
-            </button>
-          ) : (
-            <p className="py-4 text-center text-[10px] font-bold uppercase tracking-widest text-slate-700 italic">
-              Location Not Disclosed
-            </p>
-          )}
-        </div>
-      </section>
 
       {isOwnProfile && (
         <section className="rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
           <div className="mb-8 flex items-center gap-3">
             <Shield className="h-6 w-6 text-amber-500" />
-            <h3 className="font-serif text-xl text-white">
-              Identity Verification
-            </h3>
+            <h3 className="font-serif text-xl text-white">Identity Verification</h3>
           </div>
 
-          {profile?.verificationStatus === 'verified' ? (
+          {profile.verificationStatus === 'verified' ? (
             <div className="flex flex-col items-center justify-center space-y-4 py-12 text-center">
               <CheckCircle className="h-16 w-16 text-amber-500" />
-              <p className="font-serif text-2xl text-white">
-                Identity Verified
-              </p>
+              <p className="font-serif text-2xl text-white">Identity Verified</p>
               <p className="text-xs uppercase tracking-widest text-slate-500">
                 Your profile has been verified and you can trade freely.
               </p>
             </div>
-          ) : profile?.verificationStatus === 'pending' ? (
+          ) : profile.verificationStatus === 'pending' ? (
             <div className="flex flex-col items-center justify-center space-y-4 py-12 text-center">
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}
-              >
+              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}>
                 <AlertCircle className="h-16 w-16 text-amber-600/40" />
               </motion.div>
-              <p className="font-serif text-2xl italic text-slate-300">
-                Review in Progress
-              </p>
-              <p className="mx-auto max-w-[240px] text-xs uppercase leading-relaxed tracking-widest text-slate-500">
-                Our team is currently reviewing your documents. This usually
-                takes 24-48 hours.
-              </p>
+              <p className="font-serif text-2xl italic text-slate-300">Review in Progress</p>
             </div>
           ) : (
-            <div className="space-y-6">
-              <p className="text-center text-[11px] uppercase leading-relaxed tracking-widest text-slate-400">
-                To build trust and unlock trading, please upload your identity
-                documents.
-              </p>
+            <div className="space-y-4">
+              <button onClick={() => idInputRef.current?.click()} disabled={uploading} className="flex w-full items-center justify-between rounded-xl border border-white/5 bg-brand-item p-6 hover:border-amber-500/50">
+                <span className="flex items-center gap-4 text-white"><FileText className="h-6 w-6 text-amber-500" /> ID Document</span>
+                {profile.idFrontUrl ? <CheckCircle className="h-6 w-6 text-amber-500" /> : <div className="h-6 w-6 rounded-full border border-white/10" />}
+              </button>
+              <input hidden ref={idInputRef} type="file" accept="image/*" onChange={event => event.target.files?.[0] && handleUpload('idFrontUrl', event.target.files[0])} />
 
-              <div className="grid grid-cols-1 gap-4">
-                <button
-                  onClick={() => idInputRef.current?.click()}
-                  disabled={uploading}
-                  className="flex items-center justify-between rounded-xl border border-white/5 bg-brand-item p-6 transition-all hover:border-amber-500/50 hover:bg-white/5"
-                >
-                  <div className="flex items-center gap-5">
-                    <div className="rounded-lg bg-black/40 p-3 shadow-inner">
-                      <FileText className="h-6 w-6 text-amber-600" />
-                    </div>
-                    <div className="text-left">
-                      <p className="text-xs font-bold uppercase tracking-wider text-white">
-                        ID Document
-                      </p>
-                      <p className="mt-1 font-serif text-[10px] italic text-slate-500">
-                        Front of Passport or ID card
-                      </p>
-                    </div>
-                  </div>
+              <button onClick={() => selfieInputRef.current?.click()} disabled={uploading} className="flex w-full items-center justify-between rounded-xl border border-white/5 bg-brand-item p-6 hover:border-amber-500/50">
+                <span className="flex items-center gap-4 text-white"><Camera className="h-6 w-6 text-amber-500" /> Selfie Photo</span>
+                {profile.selfieUrl ? <CheckCircle className="h-6 w-6 text-amber-500" /> : <div className="h-6 w-6 rounded-full border border-white/10" />}
+              </button>
+              <input hidden ref={selfieInputRef} type="file" accept="image/*" onChange={event => event.target.files?.[0] && handleUpload('selfieUrl', event.target.files[0])} />
 
-                  {profile?.idFrontUrl ? (
-                    <CheckCircle className="h-6 w-6 text-amber-500" />
-                  ) : (
-                    <div className="h-6 w-6 rounded-full border border-white/10" />
-                  )}
-                </button>
-
-                <input
-                  type="file"
-                  hidden
-                  ref={idInputRef}
-                  accept="image/*"
-                  onChange={event =>
-                    event.target.files?.[0] &&
-                    handleUpload('idFrontUrl', event.target.files[0])
-                  }
-                />
-
-                <button
-                  onClick={() => selfieInputRef.current?.click()}
-                  disabled={uploading}
-                  className="flex items-center justify-between rounded-xl border border-white/5 bg-brand-item p-6 transition-all hover:border-amber-500/50 hover:bg-white/5"
-                >
-                  <div className="flex items-center gap-5">
-                    <div className="rounded-lg bg-black/40 p-3 shadow-inner">
-                      <Camera className="h-6 w-6 text-amber-600" />
-                    </div>
-                    <div className="text-left">
-                      <p className="text-xs font-bold uppercase tracking-wider text-white">
-                        Selfie Photo
-                      </p>
-                      <p className="mt-1 font-serif text-[10px] italic text-slate-500">
-                        A clear photo of your face
-                      </p>
-                    </div>
-                  </div>
-
-                  {profile?.selfieUrl ? (
-                    <CheckCircle className="h-6 w-6 text-amber-500" />
-                  ) : (
-                    <div className="h-6 w-6 rounded-full border border-white/10" />
-                  )}
-                </button>
-
-                <input
-                  type="file"
-                  hidden
-                  ref={selfieInputRef}
-                  accept="image/*"
-                  onChange={event =>
-                    event.target.files?.[0] &&
-                    handleUpload('selfieUrl', event.target.files[0])
-                  }
-                />
-              </div>
-
-              {uploading && (
-                <div className="flex items-center justify-center gap-3 py-4">
-                  <Loader2 className="h-5 w-5 animate-spin text-amber-500" />
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
-                    Uploading documents...
-                  </span>
-                </div>
-              )}
-
-              {success && (
-                <p className="text-center text-[10px] font-bold uppercase tracking-wider text-amber-500">
-                  Documents Submitted Successfully
-                </p>
-              )}
+              {uploading && <p className="text-center text-[10px] uppercase tracking-widest text-amber-500">Uploading documents...</p>}
+              {success && <p className="text-center text-[10px] uppercase tracking-widest text-amber-500">Documents submitted successfully</p>}
             </div>
           )}
         </section>
       )}
 
       {isOwnProfile && (
-        <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
-          <div className="flex items-center gap-3 text-slate-400">
-            <FileText className="h-6 w-6" />
-            <h3 className="font-serif text-xl">Legal & Support</h3>
-          </div>
+        <>
+          <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
+            <div className="flex items-center gap-3 text-slate-400">
+              <FileText className="h-6 w-6" />
+              <h3 className="font-serif text-xl">Legal & Support</h3>
+            </div>
 
-          <div className="grid grid-cols-1 gap-3">
-            <a
-              href="/privacy"
-              className="group flex items-center justify-between rounded-2xl border border-white/5 bg-black/40 p-4 text-left transition-all hover:border-amber-500/30"
-            >
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">
-                  Privacy Policy
-                </p>
-                <p className="mt-0.5 text-[9px] text-slate-500">
-                  How we handle your data
-                </p>
-              </div>
-              <ChevronLeft className="h-4 w-4 rotate-180 text-slate-600 transition-colors group-hover:text-amber-500" />
-            </a>
+            <div className="grid grid-cols-1 gap-3">
+              <a href="/privacy" className="group flex items-center justify-between rounded-2xl border border-white/5 bg-black/40 p-4 text-left hover:border-amber-500/30">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">Privacy Policy</p>
+                  <p className="mt-0.5 text-[9px] text-slate-500">How we handle your data</p>
+                </div>
+                <ChevronRight className="h-4 w-4 text-slate-600 group-hover:text-amber-500" />
+              </a>
 
-            <a
-              href="/terms"
-              className="group flex items-center justify-between rounded-2xl border border-white/5 bg-black/40 p-4 text-left transition-all hover:border-amber-500/30"
-            >
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">
-                  Terms of Service
-                </p>
-                <p className="mt-0.5 text-[9px] text-slate-500">
-                  Platform rules and escrow
-                </p>
-              </div>
-              <ChevronLeft className="h-4 w-4 rotate-180 text-slate-600 transition-colors group-hover:text-amber-500" />
-            </a>
-          </div>
-        </section>
-      )}
+              <a href="/terms" className="group flex items-center justify-between rounded-2xl border border-white/5 bg-black/40 p-4 text-left hover:border-amber-500/30">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">Terms of Service</p>
+                  <p className="mt-0.5 text-[9px] text-slate-500">Platform rules and escrow</p>
+                </div>
+                <ChevronRight className="h-4 w-4 text-slate-600 group-hover:text-amber-500" />
+              </a>
+            </div>
+          </section>
 
-      {isOwnProfile && (
-        <button
-          onClick={logout}
-          className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/5 bg-brand-card py-5 font-bold uppercase tracking-widest text-slate-500 shadow-2xl transition-all hover:border-red-500/30 hover:bg-red-950/20 hover:text-red-500"
-        >
-          <LogOut className="h-5 w-5" />
-          Sign Out
-        </button>
+          <button
+            onClick={logout}
+            className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/5 bg-brand-card py-5 font-bold uppercase tracking-widest text-slate-500 shadow-2xl hover:border-red-500/30 hover:bg-red-950/20 hover:text-red-500"
+          >
+            <LogOut className="h-5 w-5" />
+            Sign Out
+          </button>
+        </>
       )}
 
       <AnimatePresence>
@@ -969,7 +1317,7 @@ export default function Profile() {
               className="w-full max-w-lg space-y-8 rounded-[2.5rem] border border-white/5 bg-brand-card p-10 shadow-2xl"
             >
               <div className="space-y-3 text-center">
-                <AlertTriangle className="mx-auto h-10 w-10 text-red-500" />
+                <AlertCircle className="mx-auto h-10 w-10 text-red-500" />
                 <h2 className="font-serif text-3xl text-white">Report User</h2>
                 <p className="text-[10px] uppercase tracking-widest text-slate-500">
                   Help keep Hema Trader safe and trusted
@@ -977,52 +1325,23 @@ export default function Profile() {
               </div>
 
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="px-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                    Reason
-                  </label>
-                  <select
-                    value={reportReason}
-                    onChange={event => setReportReason(event.target.value)}
-                    className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none"
-                  >
-                    <option value="">Select a reason...</option>
-                    <option value="scam">Potential Scam / Fraud</option>
-                    <option value="inappropriate">Inappropriate Content</option>
-                    <option value="harassment">Harassment / Abuse</option>
-                    <option value="poor_quality">
-                      Poor Quality / Misleading
-                    </option>
-                    <option value="other">Other</option>
-                  </select>
-                </div>
+                <select value={reportReason} onChange={event => setReportReason(event.target.value)} className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none">
+                  <option value="">Select a reason...</option>
+                  <option value="fraud">Fraud</option>
+                  <option value="fake_products">Fake products</option>
+                  <option value="abuse">Abuse</option>
+                  <option value="scam">Scam</option>
+                  <option value="harassment">Harassment</option>
+                </select>
 
-                <div className="space-y-2">
-                  <label className="px-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                    Details
-                  </label>
-                  <textarea
-                    value={reportDescription}
-                    onChange={event => setReportDescription(event.target.value)}
-                    placeholder="Tell us more about what happened..."
-                    className="h-32 w-full resize-none rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none"
-                  />
-                </div>
+                <textarea value={reportDescription} onChange={event => setReportDescription(event.target.value)} placeholder="Tell us more..." className="h-32 w-full resize-none rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none" />
               </div>
 
               <div className="flex gap-3">
-                <button
-                  onClick={() => setShowReportModal(false)}
-                  className="flex-1 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white"
-                >
+                <button onClick={() => setShowReportModal(false)} className="flex-1 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white">
                   Cancel
                 </button>
-
-                <button
-                  onClick={handleReport}
-                  disabled={!reportReason}
-                  className="flex-1 rounded-xl bg-red-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl disabled:opacity-50"
-                >
+                <button onClick={handleReport} disabled={!reportReason} className="flex-1 rounded-xl bg-red-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl disabled:opacity-50">
                   Submit Report
                 </button>
               </div>
