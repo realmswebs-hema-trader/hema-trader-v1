@@ -54,17 +54,18 @@ import { AnimatePresence, motion } from 'motion/react';
 
 import { useAuth } from '../components/auth/AuthContext';
 import { db, storage } from '../lib/firebase';
-import {
-  FOUNDER_NAME,
-  isFounderIdentity,
-  isReservedPlatformName,
-  normalizeNameKey
-} from '../lib/founder';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import ProfileReviewsTab from '../components/reviews/ProfileReviewsTab';
 import TrustCenterPanel from '../components/trust/TrustCenterPanel';
 import VerificationCenterPanel from '../components/verification/VerificationCenterPanel';
-import { applyTrustPenalty } from '../services/trustScoreService';
+import {
+  FOUNDER_NAME,
+  applyTrustPenalty,
+  calculateTrustScore,
+  isFounderProfile,
+  isReservedFounderName,
+  normalizeNameKey
+} from '../services/trustScoreService';
 
 type ProfileTab = 'listings' | 'reviews' | 'about' | 'deliveries' | 'activity';
 
@@ -99,6 +100,11 @@ const getMillis = (value: any) => {
   return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
 };
 
+const safeNumber = (value: any, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 const formatDate = (value: any) => {
   const millis = getMillis(value);
   if (!millis) return 'Recently';
@@ -126,22 +132,6 @@ const formatLastActive = (profile: any) => {
 
   const days = Math.floor(hours / 24);
   return `Last active ${days}d ago`;
-};
-
-const calculateTrustScore = (profile: any) => {
-  if (isFounderIdentity(profile)) return 100;
-
-  const phone = profile?.phoneVerified ? 15 : 0;
-  const identity =
-    profile?.identityVerified || profile?.verificationStatus === 'verified'
-      ? 25
-      : 8;
-  const rating = Math.min(Number(profile?.averageRating || profile?.avgDriverRating || 0) * 10, 35);
-  const trades = Math.min(Number(profile?.totalTrades || profile?.completedTrades || 0) / 2, 10);
-  const followers = Math.min(Number(profile?.followersCount || 0) / 10, 5);
-  const deliveries = Math.min(Number(profile?.completedDeliveries || profile?.deliveriesCount || 0) / 2, 5);
-
-  return Math.min(Math.round(phone + identity + rating + trades + followers + deliveries), 100);
 };
 
 const normalizeRoles = (roles: unknown) =>
@@ -321,40 +311,81 @@ export default function Profile() {
   }
 
   const roles = normalizeRoles(profile.roles);
-  const isFounderProfile = isFounderIdentity(profile);
-  const canReportProfile = !isOwnProfile && Boolean(authUser) && !isFounderProfile;
+  const founderAccount = isFounderProfile(profile);
+  const canReportProfile = !isOwnProfile && Boolean(authUser) && !founderAccount;
+  const canUnfollowProfile = !founderAccount;
+
   const identityVerified =
-    Boolean(profile.identityVerified) || profile.verificationStatus === 'verified' || isFounderProfile;
-  const driverVerified = Boolean(profile.driverVerified) || isFounderProfile;
-  const phoneVerified = Boolean(profile.phoneVerified) || isFounderProfile;
-  const isOnline = Boolean(profile.isOnline || profile.online);
-  const displayName = isFounderProfile ? FOUNDER_NAME : profile.displayName || profile.name || 'Hema User';
+    Boolean(profile.identityVerified) ||
+    profile.verificationStatus === 'verified' ||
+    founderAccount;
+  const driverVerified = Boolean(profile.driverVerified) || founderAccount;
+  const phoneVerified = Boolean(profile.phoneVerified) || founderAccount;
+  const isOnline = Boolean(profile.isOnline || profile.online) || founderAccount;
+  const displayName = founderAccount
+    ? FOUNDER_NAME
+    : profile.displayName || profile.name || 'Hema User';
   const username =
     profile.username ||
     displayName.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/\.$/, '');
-  const rating = Number(isFounderProfile ? 5 : profile.averageRating || profile.avgDriverRating || 0);
-  const trustScore = Number(isFounderProfile ? 100 : profile.trustScore || calculateTrustScore(profile));
-  const totalTrades = profile.totalTrades || profile.completedTrades || 0;
-  const totalSales = profile.totalSales || profile.salesCount || 0;
-  const responseRate = isFounderProfile ? 100 : profile.responseRate || 100;
-  const responseTime = isFounderProfile ? 'Founder priority' : profile.responseTime || 'Usually replies fast';
-  const deliverySuccessRate =
-    isFounderProfile
-      ? 100
-      : profile.deliverySuccessRate ||
-        profile.reliabilityScore ||
-        (profile.deliveriesCount ? 96 : 0);
-  const escrowSuccessRate = isFounderProfile ? 100 : profile.escrowSuccessRate || (totalTrades ? 98 : 0);
+
+  const rating = founderAccount
+    ? 5
+    : safeNumber(profile.averageRating || profile.avgDriverRating);
+
+  const trustScore = founderAccount
+    ? 100
+    : safeNumber(profile.trustScore, calculateTrustScore(profile));
+
+  const totalTrades = founderAccount
+    ? Math.max(
+        safeNumber(profile.totalTrades || profile.completedTrades || profile.successfulTrades),
+        10
+      )
+    : profile.totalTrades || profile.completedTrades || profile.successfulTrades || 0;
+
+  const totalSales = founderAccount
+    ? Math.max(safeNumber(profile.totalSales || profile.salesCount), 10)
+    : profile.totalSales || profile.salesCount || 0;
+
+  const completedDeliveries = founderAccount
+    ? Math.max(
+        safeNumber(profile.completedDeliveries || profile.deliveriesCount),
+        10
+      )
+    : profile.completedDeliveries || profile.deliveriesCount || 0;
+
+  const responseRate = founderAccount ? 100 : profile.responseRate || 100;
+  const responseTime = founderAccount
+    ? 'Founder priority'
+    : profile.responseTime || 'Usually replies fast';
+
+  const deliverySuccessRate = founderAccount
+    ? 100
+    : profile.deliverySuccessRate ||
+      profile.deliveryCompletionRate ||
+      profile.reliabilityScore ||
+      (profile.deliveriesCount ? 96 : 0);
+
+  const escrowSuccessRate = founderAccount
+    ? 100
+    : profile.escrowSuccessRate || (totalTrades ? 98 : 0);
+
+  const communityRatingPercent = founderAccount
+    ? 100
+    : Math.round((rating / 5) * 100);
 
   const toggleFollow = async () => {
     if (!authUser || !targetUserId || isOwnProfile) return;
+
+    if (founderAccount && isFollowing) return;
 
     setFollowingLoading(true);
 
     const followId = `${authUser.uid}_${targetUserId}`;
 
     try {
-      if (isFollowing) {
+      if (isFollowing && canUnfollowProfile) {
         await deleteDoc(doc(db, 'followers', followId));
 
         await updateDoc(doc(db, 'users', authUser.uid), {
@@ -376,6 +407,7 @@ export default function Profile() {
         await setDoc(doc(db, 'followers', followId), {
           followerId: authUser.uid,
           followingId: targetUserId,
+          autoFollowedFounder: founderAccount,
           createdAt: serverTimestamp()
         });
 
@@ -421,13 +453,7 @@ export default function Profile() {
   };
 
   const handleReport = async () => {
-    if (!authUser || !targetUserId || !reportReason) return;
-
-    if (isFounderProfile) {
-      alert('The Hema Trader founder profile cannot be reported.');
-      setShowReportModal(false);
-      return;
-    }
+    if (!authUser || !targetUserId || !reportReason || !canReportProfile) return;
 
     try {
       await addDoc(collection(db, 'reports'), {
@@ -517,7 +543,7 @@ export default function Profile() {
     const nextName = displayNameInput.trim();
     if (!nextName) return;
 
-    if (isReservedPlatformName(nextName, authUser?.email)) {
+    if (isReservedFounderName(nextName, authUser?.email)) {
       setSettingsMessage(`${FOUNDER_NAME} is reserved for the platform founder.`);
       return;
     }
@@ -529,17 +555,17 @@ export default function Profile() {
       await updateDisplayName(nextName);
 
       await updateDoc(doc(db, 'users', profile.userId), {
-        displayName: nextName,
-        name: nextName,
-        displayNameKey: normalizeNameKey(nextName),
+        displayName: founderAccount ? FOUNDER_NAME : nextName,
+        name: founderAccount ? FOUNDER_NAME : nextName,
+        displayNameKey: normalizeNameKey(founderAccount ? FOUNDER_NAME : nextName),
         updatedAt: serverTimestamp()
       });
 
       setProfileOverlay((prev: any) => ({
         ...prev,
-        displayName: nextName,
-        name: nextName,
-        displayNameKey: normalizeNameKey(nextName)
+        displayName: founderAccount ? FOUNDER_NAME : nextName,
+        name: founderAccount ? FOUNDER_NAME : nextName,
+        displayNameKey: normalizeNameKey(founderAccount ? FOUNDER_NAME : nextName)
       }));
 
       setDisplayNameInput('');
@@ -555,7 +581,7 @@ export default function Profile() {
   const handlePremiumSettingsUpdate = async () => {
     if (!authUser || !profile.userId) return;
 
-    if (usernameInput.trim() && isReservedPlatformName(usernameInput, authUser.email)) {
+    if (usernameInput.trim() && isReservedFounderName(usernameInput, authUser.email)) {
       setSettingsMessage(`${FOUNDER_NAME} is reserved for the platform founder.`);
       return;
     }
@@ -725,13 +751,13 @@ export default function Profile() {
                 <p className="max-w-xl font-serif text-sm italic leading-relaxed text-slate-400">
                   {profile.bio ||
                     profile.businessDescription ||
-                    (isFounderProfile
+                    (founderAccount
                       ? 'Founder of Hema Trader.'
                       : 'Growing trust inside the Hema Trader local trade network.')}
                 </p>
 
                 <div className="flex flex-wrap justify-center gap-2 sm:justify-start">
-                  {isFounderProfile && (
+                  {founderAccount && (
                     <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-amber-500">
                       Founder
                     </span>
@@ -782,7 +808,7 @@ export default function Profile() {
                   </span>
                   <span className={`flex items-center gap-1.5 ${isOnline ? 'text-green-500' : ''}`}>
                     <Clock className="h-3.5 w-3.5" />
-                    {formatLastActive(profile)}
+                    {formatLastActive({ ...profile, isOnline })}
                   </span>
                 </div>
               </div>
@@ -793,24 +819,24 @@ export default function Profile() {
                 <>
                   <button
                     onClick={toggleFollow}
-                    disabled={followingLoading}
+                    disabled={followingLoading || (founderAccount && isFollowing)}
                     className={`flex items-center gap-2 rounded-xl px-5 py-3 text-[10px] font-black uppercase tracking-widest transition ${
                       isFollowing
                         ? 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
                         : 'bg-white text-black hover:bg-amber-500'
-                    }`}
+                    } disabled:cursor-not-allowed disabled:opacity-70`}
                   >
                     {followingLoading ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : isFollowing ? (
                       <>
                         <UserMinus className="h-4 w-4" />
-                        Unfollow
+                        {founderAccount ? 'Following Founder' : 'Unfollow'}
                       </>
                     ) : (
                       <>
                         <UserPlus className="h-4 w-4" />
-                        Follow
+                        {founderAccount ? 'Follow Founder' : 'Follow'}
                       </>
                     )}
                   </button>
@@ -853,7 +879,7 @@ export default function Profile() {
                 </>
               )}
 
-              {isOwnProfile && isFounderProfile ? (
+              {isOwnProfile && founderAccount ? (
                 <Link
                   to="/admin"
                   className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-amber-500 hover:bg-amber-500 hover:text-black"
@@ -915,7 +941,29 @@ export default function Profile() {
 
       <TrustCenterPanel
         userId={profile.userId}
-        profile={profile}
+        profile={{
+          ...profile,
+          ...(founderAccount
+            ? {
+                trustScore: 100,
+                trustLevel: 'VERIFIED ELITE',
+                averageRating: 5,
+                avgDriverRating: 5,
+                communityRatingPercent,
+                totalTrades,
+                completedTrades: totalTrades,
+                successfulTrades: totalTrades,
+                totalSales,
+                salesCount: totalSales,
+                completedDeliveries,
+                deliveriesCount: completedDeliveries,
+                escrowSuccessRate: 100,
+                deliveryCompletionRate: 100,
+                deliverySuccessRate: 100,
+                responseRate: 100
+              }
+            : {})
+        }}
         isOwnProfile={isOwnProfile}
       />
 
@@ -1010,7 +1058,7 @@ export default function Profile() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {[
                 { label: 'Bio', value: profile.bio || 'No bio added yet.', icon: FileText },
-                { label: 'Trader Story', value: profile.businessDescription || 'No trader story added.', icon: BriefcaseBusiness },
+                { label: 'Trader Story', value: profile.businessDescription || (founderAccount ? 'Founder of Hema Trader.' : 'No trader story added.'), icon: BriefcaseBusiness },
                 { label: 'Trade Category', value: profile.businessCategory || 'Agricultural marketplace trader', icon: Store },
                 { label: 'Location', value: profile.location || profile.city || 'Cameroon', icon: MapPin },
                 { label: 'Languages', value: profile.languages?.join(', ') || 'Not specified', icon: Languages },
@@ -1036,12 +1084,12 @@ export default function Profile() {
           {activeTab === 'deliveries' && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
               {[
-                { label: 'Completed Deliveries', value: profile.completedDeliveries || profile.deliveriesCount || 0 },
-                { label: 'Current Deliveries', value: profile.currentDeliveries || 0 },
+                { label: 'Completed Deliveries', value: completedDeliveries },
+                { label: 'Current Deliveries', value: founderAccount ? 0 : profile.currentDeliveries || 0 },
                 { label: 'Success Rate', value: `${deliverySuccessRate}%` },
                 { label: 'Vehicle Type', value: profile.vehicleType || 'Not specified' },
                 { label: 'Delivery Zones', value: profile.deliveryZones?.join(', ') || 'Not specified' },
-                { label: 'Availability', value: profile.driverStatus || 'Offline' }
+                { label: 'Availability', value: founderAccount ? 'Available' : profile.driverStatus || 'Offline' }
               ].map(item => (
                 <div key={item.label} className="rounded-2xl border border-white/5 bg-black/30 p-5">
                   <Truck className="mb-3 h-5 w-5 text-green-500" />
