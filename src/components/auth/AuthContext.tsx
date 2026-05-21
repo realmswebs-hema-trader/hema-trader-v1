@@ -42,6 +42,10 @@ interface AuthProfile {
   activeRole?: string;
   latitude?: number;
   longitude?: number;
+  currentLocation?: {
+    latitude?: number;
+    longitude?: number;
+  };
   isOnline?: boolean;
   online?: boolean;
   driverStatus?: 'online' | 'offline' | 'available' | 'on_trip';
@@ -73,10 +77,50 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const FOUNDER_ROLES = ['buyer', 'seller', 'driver', 'admin'];
+const FIRESTORE_TIMEOUT_MS = 8000;
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  ms = FIRESTORE_TIMEOUT_MS,
+  label = 'Firestore operation'
+): Promise<T> => {
+  let timeoutId: number | undefined;
+
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      reject(new Error(`${label} timed out`));
+    }, ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
+};
+
+const profileCacheKey = (uid: string) => `hema_profile_${uid}`;
+
+const readCachedProfile = (uid: string) => {
+  try {
+    const cached = window.localStorage.getItem(profileCacheKey(uid));
+    return cached ? JSON.parse(cached) : {};
+  } catch {
+    return {};
+  }
+};
+
+const cacheProfile = (uid: string, data: any) => {
+  try {
+    window.localStorage.setItem(profileCacheKey(uid), JSON.stringify(data));
+  } catch {
+    // Local storage can fail in private mode. Ignore safely.
+  }
+};
 
 const normalizeRoles = (roles: unknown): string[] => {
   if (!Array.isArray(roles)) return [];
-
   return roles.filter(role => typeof role === 'string');
 };
 
@@ -98,26 +142,27 @@ const getSafeDisplayName = (firebaseUser: User, data: any = {}) => {
     : fallback;
 };
 
-const buildRoleDefaults = (roles: string[]) => {
+const buildRoleDefaults = (roles: string[], existingData: any = {}) => {
   if (!roles.includes('driver')) return {};
 
   return {
-    driverStatus: 'available',
-    totalDeliveries: 0,
-    completedDeliveries: 0,
-    deliveriesCount: 0,
-    totalEarnings: 0,
-    averageRating: 0,
-    avgDriverRating: 0,
-    ratingCount: 0,
-    reliabilityScore: 100,
-    warningCount: 0
+    driverStatus: existingData.driverStatus || 'available',
+    totalDeliveries: existingData.totalDeliveries ?? 0,
+    completedDeliveries: existingData.completedDeliveries ?? 0,
+    deliveriesCount: existingData.deliveriesCount ?? 0,
+    totalEarnings: existingData.totalEarnings ?? 0,
+    averageRating: existingData.averageRating ?? 0,
+    avgDriverRating: existingData.avgDriverRating ?? 0,
+    ratingCount: existingData.ratingCount ?? 0,
+    reliabilityScore: existingData.reliabilityScore ?? 100,
+    warningCount: existingData.warningCount ?? 0
   };
 };
 
 const buildProfile = (firebaseUser: User, data: any = {}): AuthProfile => {
   const founder = isFounderEmail(firebaseUser.email);
   const founderFields = founder ? getFounderUserFields(data) : {};
+
   const mergedData = founder
     ? {
         ...data,
@@ -155,12 +200,34 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [loading, setLoading] = useState(true);
   const [activeRole, setActiveRole] = useState('');
 
+  const runFounderSyncInBackground = (firebaseUser: User) => {
+    const sessionKey = `hema_founder_sync_${firebaseUser.uid}`;
+
+    if (window.sessionStorage.getItem(sessionKey)) return;
+
+    window.sessionStorage.setItem(sessionKey, '1');
+
+    syncUserAndFounderOnAuth(firebaseUser).catch(error => {
+      console.error('Founder sync failed:', error);
+      window.sessionStorage.removeItem(sessionKey);
+    });
+  };
+
   const saveUserProfile = async (firebaseUser: User) => {
     const userRef = doc(db, 'users', firebaseUser.uid);
-    const userSnap = await getDoc(userRef);
-    const existingData = userSnap.exists() ? userSnap.data() : {};
-    const founder = isFounderEmail(firebaseUser.email);
+    const cachedData = readCachedProfile(firebaseUser.uid);
 
+    let userSnap: any = null;
+    let existingData: any = cachedData;
+
+    try {
+      userSnap = await withTimeout(getDoc(userRef), FIRESTORE_TIMEOUT_MS, 'Load user profile');
+      existingData = userSnap.exists() ? userSnap.data() : cachedData;
+    } catch (error) {
+      console.error('Profile read failed, using cached/auth fallback:', error);
+    }
+
+    const founder = isFounderEmail(firebaseUser.email);
     const roles = founder ? FOUNDER_ROLES : normalizeRoles(existingData.roles);
     const activeRole = founder
       ? getFounderActiveRole(existingData)
@@ -183,8 +250,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       online: true,
       lastActiveAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      ...(!userSnap.exists() ? { createdAt: serverTimestamp() } : {}),
-      ...buildRoleDefaults(roles),
+      ...(!userSnap?.exists?.() && !existingData.createdAt ? { createdAt: serverTimestamp() } : {}),
+      ...buildRoleDefaults(roles, existingData),
       ...(founder
         ? {
             ...getFounderUserFields(existingData),
@@ -193,18 +260,36 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         : {})
     };
 
-    await setDoc(userRef, profileUpdate, { merge: true });
-
     try {
-      await syncUserAndFounderOnAuth(firebaseUser);
+      await withTimeout(
+        setDoc(userRef, profileUpdate, { merge: true }),
+        FIRESTORE_TIMEOUT_MS,
+        'Save user profile'
+      );
     } catch (error) {
-      console.error('Founder sync failed:', error);
+      console.error('Profile write failed, continuing without blocking app:', error);
     }
 
-    const freshSnap = await getDoc(userRef);
-    const freshData = freshSnap.exists() ? freshSnap.data() : profileUpdate;
+    runFounderSyncInBackground(firebaseUser);
 
-    return buildProfile(firebaseUser, freshData);
+    let freshData = {
+      ...existingData,
+      ...profileUpdate,
+      lastActiveAt: existingData.lastActiveAt,
+      updatedAt: existingData.updatedAt
+    };
+
+    try {
+      const freshSnap = await withTimeout(getDoc(userRef), FIRESTORE_TIMEOUT_MS, 'Refresh profile');
+      freshData = freshSnap.exists() ? freshSnap.data() : freshData;
+    } catch (error) {
+      console.error('Profile refresh failed, using fallback:', error);
+    }
+
+    const nextProfile = buildProfile(firebaseUser, freshData);
+    cacheProfile(firebaseUser.uid, nextProfile);
+
+    return nextProfile;
   };
 
   const signInWithGoogle = async () => {
@@ -222,16 +307,19 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     try {
       if (isFounderEmail(currentUser.email)) {
-        await setDoc(
-          doc(db, 'users', currentUser.uid),
-          {
-            ...getFounderUserFields(profile || {}),
-            isOnline: true,
-            online: true,
-            lastActiveAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          },
-          { merge: true }
+        await withTimeout(
+          setDoc(
+            doc(db, 'users', currentUser.uid),
+            {
+              isOnline: true,
+              online: true,
+              lastActiveAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            },
+            { merge: true }
+          ),
+          5000,
+          'Founder heartbeat'
         );
         return;
       }
@@ -247,7 +335,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         offlineUpdate.driverStatus = 'offline';
       }
 
-      await updateDoc(doc(db, 'users', currentUser.uid), offlineUpdate);
+      await withTimeout(
+        updateDoc(doc(db, 'users', currentUser.uid), offlineUpdate),
+        5000,
+        'Mark offline'
+      );
     } catch (error) {
       console.error('Failed to mark user offline:', error);
     }
@@ -294,7 +386,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const safeRoles = normalizeRoles(roles);
     const nextActiveRole = safeRoles[0] || '';
-    const roleDefaults = buildRoleDefaults(safeRoles);
+    const roleDefaults = buildRoleDefaults(safeRoles, profile || {});
 
     const updates: Record<string, any> = {
       roles: safeRoles,
@@ -375,10 +467,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const latitude = position.coords.latitude;
     const longitude = position.coords.longitude;
+    const currentLocation = { latitude, longitude };
 
     await updateDoc(doc(db, 'users', user.uid), {
       latitude,
       longitude,
+      currentLocation,
       locationUpdatedAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
@@ -388,7 +482,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         ? {
             ...prev,
             latitude,
-            longitude
+            longitude,
+            currentLocation
           }
         : prev
     );
@@ -485,14 +580,29 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           return;
         }
 
+        const cachedProfile = readCachedProfile(firebaseUser.uid);
+
+        if (cachedProfile?.uid) {
+          const nextCachedProfile = buildProfile(firebaseUser, cachedProfile);
+          setProfile(nextCachedProfile);
+          setActiveRole(nextCachedProfile.activeRole || nextCachedProfile.roles[0] || '');
+        }
+
         const nextProfile = await saveUserProfile(firebaseUser);
 
         setProfile(nextProfile);
         setActiveRole(nextProfile.activeRole || nextProfile.roles[0] || '');
       } catch (error) {
         console.error('Auth listener failed:', error);
-        setProfile(null);
-        setActiveRole('');
+
+        if (firebaseUser) {
+          const fallbackProfile = buildProfile(firebaseUser, readCachedProfile(firebaseUser.uid));
+          setProfile(fallbackProfile);
+          setActiveRole(fallbackProfile.activeRole || fallbackProfile.roles[0] || '');
+        } else {
+          setProfile(null);
+          setActiveRole('');
+        }
       } finally {
         setLoading(false);
       }
@@ -508,23 +618,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const sendHeartbeat = async () => {
       try {
-        const heartbeatUpdate: Record<string, any> = isFounderEmail(user.email)
-          ? {
-              ...getFounderUserFields(profile || {}),
-              activeRole: getFounderActiveRole(profile || {}),
+        await withTimeout(
+          setDoc(
+            userRef,
+            {
               isOnline: true,
               online: true,
               lastActiveAt: serverTimestamp(),
               updatedAt: serverTimestamp()
-            }
-          : {
-              isOnline: true,
-              online: true,
-              lastActiveAt: serverTimestamp(),
-              updatedAt: serverTimestamp()
-            };
-
-        await setDoc(userRef, heartbeatUpdate, { merge: true });
+            },
+            { merge: true }
+          ),
+          5000,
+          'Online heartbeat'
+        );
 
         setProfile(prev =>
           prev
@@ -541,9 +648,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
     };
 
-    sendHeartbeat();
-
-    const heartbeatId = window.setInterval(sendHeartbeat, 60000);
+    const heartbeatId = window.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 
     const handleBeforeUnload = () => {
       markUserOffline(user);
@@ -555,7 +660,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       window.clearInterval(heartbeatId);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [user, profile?.roles, profile?.driverStatus]);
+  }, [user?.uid, user?.email]);
 
   return (
     <AuthContext.Provider
