@@ -22,7 +22,6 @@ import {
   BriefcaseBusiness,
   CalendarDays,
   Camera,
-  CheckCircle,
   ChevronRight,
   Clock,
   FileText,
@@ -58,6 +57,7 @@ import { db, storage } from '../lib/firebase';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import ProfileReviewsTab from '../components/reviews/ProfileReviewsTab';
 import TrustCenterPanel from '../components/trust/TrustCenterPanel';
+import VerificationCenterPanel from '../components/verification/VerificationCenterPanel';
 import { applyTrustPenalty } from '../services/trustScoreService';
 
 type ProfileTab = 'listings' | 'reviews' | 'about' | 'deliveries' | 'activity';
@@ -123,12 +123,17 @@ const formatLastActive = (profile: any) => {
 };
 
 const calculateTrustScore = (profile: any) => {
-  const verified = profile?.verificationStatus === 'verified' ? 30 : 8;
-  const rating = Math.min((profile?.averageRating || profile?.avgDriverRating || 0) * 10, 50);
-  const trades = Math.min((profile?.totalTrades || profile?.completedTrades || 0) / 2, 15);
-  const followers = Math.min((profile?.followersCount || 0) / 10, 5);
+  const phone = profile?.phoneVerified ? 15 : 0;
+  const identity =
+    profile?.identityVerified || profile?.verificationStatus === 'verified'
+      ? 25
+      : 8;
+  const rating = Math.min(Number(profile?.averageRating || profile?.avgDriverRating || 0) * 10, 35);
+  const trades = Math.min(Number(profile?.totalTrades || profile?.completedTrades || 0) / 2, 10);
+  const followers = Math.min(Number(profile?.followersCount || 0) / 10, 5);
+  const deliveries = Math.min(Number(profile?.completedDeliveries || profile?.deliveriesCount || 0) / 2, 5);
 
-  return Math.min(Math.round(verified + rating + trades + followers), 100);
+  return Math.min(Math.round(phone + identity + rating + trades + followers + deliveries), 100);
 };
 
 const normalizeRoles = (roles: unknown) =>
@@ -140,7 +145,6 @@ export default function Profile() {
     user: authUser,
     profile: myProfile,
     logout,
-    updateLocation,
     updateRoles,
     updateProfilePhoto,
     updateDisplayName,
@@ -159,13 +163,10 @@ export default function Profile() {
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [activeTab, setActiveTab] = useState<ProfileTab>('listings');
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState('');
   const [isFollowing, setIsFollowing] = useState(false);
   const [followingLoading, setFollowingLoading] = useState(false);
-  const [locating, setLocating] = useState(false);
-  const [success, setSuccess] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState('');
   const [reportDescription, setReportDescription] = useState('');
@@ -175,13 +176,11 @@ export default function Profile() {
   const [bioInput, setBioInput] = useState('');
   const [locationInput, setLocationInput] = useState('');
   const [phoneInput, setPhoneInput] = useState('');
-  const [businessCategoryInput, setBusinessCategoryInput] = useState('');
-  const [businessDescriptionInput, setBusinessDescriptionInput] = useState('');
+  const [tradeCategoryInput, setTradeCategoryInput] = useState('');
+  const [tradeDescriptionInput, setTradeDescriptionInput] = useState('');
   const [languagesInput, setLanguagesInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
 
-  const idInputRef = useRef<HTMLInputElement>(null);
-  const selfieInputRef = useRef<HTMLInputElement>(null);
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const bannerInputRef = useRef<HTMLInputElement>(null);
 
@@ -293,25 +292,6 @@ export default function Profile() {
   const profileBase = isOwnProfile ? fallbackOwnProfile : targetProfile;
   const profile = profileBase ? { ...profileBase, ...profileOverlay } : null;
 
-  const roles = normalizeRoles(profile?.roles);
-  const isVerified = profile?.verificationStatus === 'verified';
-  const isOnline = Boolean(profile?.isOnline || profile?.online);
-  const displayName = profile?.displayName || profile?.name || 'Hema User';
-  const username =
-    profile?.username ||
-    displayName.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/\.$/, '');
-  const rating = profile?.averageRating || profile?.avgDriverRating || 0;
-  const trustScore = profile?.trustScore || calculateTrustScore(profile);
-  const totalTrades = profile?.totalTrades || profile?.completedTrades || 0;
-  const totalSales = profile?.totalSales || profile?.salesCount || 0;
-  const responseRate = profile?.responseRate || 100;
-  const responseTime = profile?.responseTime || 'Usually replies fast';
-  const deliverySuccessRate =
-    profile?.deliverySuccessRate ||
-    profile?.reliabilityScore ||
-    (profile?.deliveriesCount ? 96 : 0);
-  const escrowSuccessRate = profile?.escrowSuccessRate || (totalTrades ? 98 : 0);
-
   const passwordProviderEnabled =
     authUser?.providerData?.some(provider => provider.providerId === 'password') ||
     false;
@@ -331,6 +311,28 @@ export default function Profile() {
       </div>
     );
   }
+
+  const roles = normalizeRoles(profile.roles);
+  const identityVerified =
+    Boolean(profile.identityVerified) || profile.verificationStatus === 'verified';
+  const driverVerified = Boolean(profile.driverVerified);
+  const phoneVerified = Boolean(profile.phoneVerified);
+  const isOnline = Boolean(profile.isOnline || profile.online);
+  const displayName = profile.displayName || profile.name || 'Hema User';
+  const username =
+    profile.username ||
+    displayName.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/\.$/, '');
+  const rating = Number(profile.averageRating || profile.avgDriverRating || 0);
+  const trustScore = Number(profile.trustScore || calculateTrustScore(profile));
+  const totalTrades = profile.totalTrades || profile.completedTrades || 0;
+  const totalSales = profile.totalSales || profile.salesCount || 0;
+  const responseRate = profile.responseRate || 100;
+  const responseTime = profile.responseTime || 'Usually replies fast';
+  const deliverySuccessRate =
+    profile.deliverySuccessRate ||
+    profile.reliabilityScore ||
+    (profile.deliveriesCount ? 96 : 0);
+  const escrowSuccessRate = profile.escrowSuccessRate || (totalTrades ? 98 : 0);
 
   const toggleFollow = async () => {
     if (!authUser || !targetUserId || isOwnProfile) return;
@@ -450,53 +452,6 @@ export default function Profile() {
     }
   };
 
-  const handleLocationUpdate = async () => {
-    setLocating(true);
-
-    try {
-      await updateLocation();
-    } finally {
-      setLocating(false);
-    }
-  };
-
-  const handleUpload = async (
-    type: 'idFrontUrl' | 'selfieUrl',
-    file: File
-  ) => {
-    setUploading(true);
-    setSuccess(false);
-
-    const storageRef = ref(
-      storage,
-      `verifications/${profile.userId}/${type}_${Date.now()}`
-    );
-
-    try {
-      const snapshot = await uploadBytes(storageRef, file);
-      const downloadURL = await getDownloadURL(snapshot.ref);
-
-      await updateDoc(doc(db, 'users', profile.userId), {
-        [type]: downloadURL,
-        verificationStatus: 'pending',
-        updatedAt: serverTimestamp()
-      });
-
-      setProfileOverlay((prev: any) => ({
-        ...prev,
-        [type]: downloadURL,
-        verificationStatus: 'pending'
-      }));
-
-      setSuccess(true);
-    } catch (error) {
-      console.error('Upload error', error);
-      alert('Failed to upload. Rules might be blocking or network error.');
-    } finally {
-      setUploading(false);
-    }
-  };
-
   const handleAvatarUpload = async (file: File) => {
     setSettingsLoading(true);
     setSettingsMessage('');
@@ -514,7 +469,7 @@ export default function Profile() {
   };
 
   const handleBannerUpload = async (file: File) => {
-    if (!authUser || !profile?.userId) return;
+    if (!authUser || !profile.userId) return;
 
     setSettingsLoading(true);
     setSettingsMessage('');
@@ -566,7 +521,7 @@ export default function Profile() {
   };
 
   const handlePremiumSettingsUpdate = async () => {
-    if (!authUser || !profile?.userId) return;
+    if (!authUser || !profile.userId) return;
 
     setSettingsLoading(true);
     setSettingsMessage('');
@@ -584,8 +539,8 @@ export default function Profile() {
     if (bioInput.trim()) updates.bio = bioInput.trim();
     if (locationInput.trim()) updates.location = locationInput.trim();
     if (phoneInput.trim()) updates.phoneNumber = phoneInput.trim();
-    if (businessCategoryInput.trim()) updates.businessCategory = businessCategoryInput.trim();
-    if (businessDescriptionInput.trim()) updates.businessDescription = businessDescriptionInput.trim();
+    if (tradeCategoryInput.trim()) updates.businessCategory = tradeCategoryInput.trim();
+    if (tradeDescriptionInput.trim()) updates.businessDescription = tradeDescriptionInput.trim();
     if (languages.length > 0) updates.languages = languages;
 
     try {
@@ -601,8 +556,8 @@ export default function Profile() {
       setBioInput('');
       setLocationInput('');
       setPhoneInput('');
-      setBusinessCategoryInput('');
-      setBusinessDescriptionInput('');
+      setTradeCategoryInput('');
+      setTradeDescriptionInput('');
       setLanguagesInput('');
       setSettingsMessage('Profile details updated.');
     } catch (error) {
@@ -695,7 +650,7 @@ export default function Profile() {
                   />
                 </div>
 
-                {isVerified && (
+                {identityVerified && (
                   <div className="absolute bottom-4 right-2 rounded-full bg-amber-500 p-2 text-black shadow-xl">
                     <BadgeCheck className="h-5 w-5" />
                   </div>
@@ -719,7 +674,7 @@ export default function Profile() {
                     <h1 className="font-serif text-4xl text-white">
                       {displayName}
                     </h1>
-                    {isVerified && <ShieldCheck className="h-5 w-5 text-amber-500" />}
+                    {identityVerified && <ShieldCheck className="h-5 w-5 text-amber-500" />}
                   </div>
                   <p className="mt-1 text-[11px] font-black uppercase tracking-[0.25em] text-slate-500">
                     @{username}
@@ -729,7 +684,7 @@ export default function Profile() {
                 <p className="max-w-xl font-serif text-sm italic leading-relaxed text-slate-400">
                   {profile.bio ||
                     profile.businessDescription ||
-                    'Building trust inside the Hema Trader marketplace.'}
+                    'Growing trust inside the Hema Trader local trade network.'}
                 </p>
 
                 <div className="flex flex-wrap justify-center gap-2 sm:justify-start">
@@ -750,8 +705,20 @@ export default function Profile() {
                     </span>
                   ))}
 
+                  {phoneVerified && (
+                    <span className="rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-green-500">
+                      Phone Verified
+                    </span>
+                  )}
+
+                  {driverVerified && (
+                    <span className="rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-green-500">
+                      Verified Driver
+                    </span>
+                  )}
+
                   <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
-                    {isVerified ? 'Verified Seller' : 'Unverified Trader'}
+                    {identityVerified ? 'Verified Identity' : 'Community Trader'}
                   </span>
                 </div>
 
@@ -893,6 +860,12 @@ export default function Profile() {
         isOwnProfile={isOwnProfile}
       />
 
+      <VerificationCenterPanel
+        userId={profile.userId}
+        profile={profile}
+        isOwnProfile={isOwnProfile}
+      />
+
       <section className="overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card shadow-2xl">
         <div className="scrollbar-hide flex gap-2 overflow-x-auto border-b border-white/5 p-2">
           {tabs.map(tab => (
@@ -948,7 +921,7 @@ export default function Profile() {
                           Escrow protected
                         </span>
                         <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[8px] font-black uppercase text-amber-500">
-                          Verified
+                          Local trader
                         </span>
                         <span className="rounded-full bg-white/5 px-2 py-1 text-[8px] font-black uppercase text-slate-400">
                           Delivery available
@@ -978,8 +951,8 @@ export default function Profile() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {[
                 { label: 'Bio', value: profile.bio || 'No bio added yet.', icon: FileText },
-                { label: 'Business', value: profile.businessDescription || 'No business description added.', icon: BriefcaseBusiness },
-                { label: 'Category', value: profile.businessCategory || 'General marketplace trader', icon: Store },
+                { label: 'Trader Story', value: profile.businessDescription || 'No trader story added.', icon: BriefcaseBusiness },
+                { label: 'Trade Category', value: profile.businessCategory || 'Agricultural marketplace trader', icon: Store },
                 { label: 'Location', value: profile.location || profile.city || 'Cameroon', icon: MapPin },
                 { label: 'Languages', value: profile.languages?.join(', ') || 'Not specified', icon: Languages },
                 { label: 'Phone', value: isOwnProfile ? profile.phoneNumber || 'Not added' : profile.showPhone ? profile.phoneNumber : 'Private', icon: Phone },
@@ -1008,7 +981,7 @@ export default function Profile() {
                 { label: 'Current Deliveries', value: profile.currentDeliveries || 0 },
                 { label: 'Success Rate', value: `${deliverySuccessRate}%` },
                 { label: 'Vehicle Type', value: profile.vehicleType || 'Not specified' },
-                { label: 'Vehicle Size', value: profile.vehicleSize || 'Medium' },
+                { label: 'Delivery Zones', value: profile.deliveryZones?.join(', ') || 'Not specified' },
                 { label: 'Availability', value: profile.driverStatus || 'Offline' }
               ].map(item => (
                 <div key={item.label} className="rounded-2xl border border-white/5 bg-black/30 p-5">
@@ -1095,9 +1068,9 @@ export default function Profile() {
             <input value={bioInput} onChange={event => setBioInput(event.target.value)} placeholder={profile.bio || 'Bio'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
             <input value={locationInput} onChange={event => setLocationInput(event.target.value)} placeholder={profile.location || 'Location'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
             <input value={phoneInput} onChange={event => setPhoneInput(event.target.value)} placeholder={profile.phoneNumber || 'Phone'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
-            <input value={businessCategoryInput} onChange={event => setBusinessCategoryInput(event.target.value)} placeholder={profile.businessCategory || 'Business category'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
+            <input value={tradeCategoryInput} onChange={event => setTradeCategoryInput(event.target.value)} placeholder={profile.businessCategory || 'Trade category, crops, livestock, delivery'} className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
             <input value={languagesInput} onChange={event => setLanguagesInput(event.target.value)} placeholder="Languages, comma separated" className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none" />
-            <textarea value={businessDescriptionInput} onChange={event => setBusinessDescriptionInput(event.target.value)} placeholder={profile.businessDescription || 'Business description'} className="min-h-28 rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none md:col-span-2" />
+            <textarea value={tradeDescriptionInput} onChange={event => setTradeDescriptionInput(event.target.value)} placeholder={profile.businessDescription || 'Tell buyers what you sell, grow, raise, or deliver'} className="min-h-28 rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-amber-500 focus:outline-none md:col-span-2" />
           </div>
 
           <button
@@ -1189,49 +1162,6 @@ export default function Profile() {
       )}
 
       {isOwnProfile && (
-        <section className="rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
-          <div className="mb-8 flex items-center gap-3">
-            <Shield className="h-6 w-6 text-amber-500" />
-            <h3 className="font-serif text-xl text-white">Identity Verification</h3>
-          </div>
-
-          {profile.verificationStatus === 'verified' ? (
-            <div className="flex flex-col items-center justify-center space-y-4 py-12 text-center">
-              <CheckCircle className="h-16 w-16 text-amber-500" />
-              <p className="font-serif text-2xl text-white">Identity Verified</p>
-              <p className="text-xs uppercase tracking-widest text-slate-500">
-                Your profile has been verified and you can trade freely.
-              </p>
-            </div>
-          ) : profile.verificationStatus === 'pending' ? (
-            <div className="flex flex-col items-center justify-center space-y-4 py-12 text-center">
-              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 3, ease: 'linear' }}>
-                <AlertCircle className="h-16 w-16 text-amber-600/40" />
-              </motion.div>
-              <p className="font-serif text-2xl italic text-slate-300">Review in Progress</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <button onClick={() => idInputRef.current?.click()} disabled={uploading} className="flex w-full items-center justify-between rounded-xl border border-white/5 bg-brand-item p-6 hover:border-amber-500/50">
-                <span className="flex items-center gap-4 text-white"><FileText className="h-6 w-6 text-amber-500" /> ID Document</span>
-                {profile.idFrontUrl ? <CheckCircle className="h-6 w-6 text-amber-500" /> : <div className="h-6 w-6 rounded-full border border-white/10" />}
-              </button>
-              <input hidden ref={idInputRef} type="file" accept="image/*" onChange={event => event.target.files?.[0] && handleUpload('idFrontUrl', event.target.files[0])} />
-
-              <button onClick={() => selfieInputRef.current?.click()} disabled={uploading} className="flex w-full items-center justify-between rounded-xl border border-white/5 bg-brand-item p-6 hover:border-amber-500/50">
-                <span className="flex items-center gap-4 text-white"><Camera className="h-6 w-6 text-amber-500" /> Selfie Photo</span>
-                {profile.selfieUrl ? <CheckCircle className="h-6 w-6 text-amber-500" /> : <div className="h-6 w-6 rounded-full border border-white/10" />}
-              </button>
-              <input hidden ref={selfieInputRef} type="file" accept="image/*" onChange={event => event.target.files?.[0] && handleUpload('selfieUrl', event.target.files[0])} />
-
-              {uploading && <p className="text-center text-[10px] uppercase tracking-widest text-amber-500">Uploading documents...</p>}
-              {success && <p className="text-center text-[10px] uppercase tracking-widest text-amber-500">Documents submitted successfully</p>}
-            </div>
-          )}
-        </section>
-      )}
-
-      {isOwnProfile && (
         <>
           <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
             <div className="flex items-center gap-3 text-slate-400">
@@ -1286,7 +1216,11 @@ export default function Profile() {
               </div>
 
               <div className="space-y-4">
-                <select value={reportReason} onChange={event => setReportReason(event.target.value)} className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none">
+                <select
+                  value={reportReason}
+                  onChange={event => setReportReason(event.target.value)}
+                  className="w-full rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none"
+                >
                   <option value="">Select a reason...</option>
                   <option value="fraud">Fraud</option>
                   <option value="fake_products">Fake products</option>
@@ -1295,14 +1229,26 @@ export default function Profile() {
                   <option value="harassment">Harassment</option>
                 </select>
 
-                <textarea value={reportDescription} onChange={event => setReportDescription(event.target.value)} placeholder="Tell us more..." className="h-32 w-full resize-none rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none" />
+                <textarea
+                  value={reportDescription}
+                  onChange={event => setReportDescription(event.target.value)}
+                  placeholder="Tell us more..."
+                  className="h-32 w-full resize-none rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white focus:border-red-500 focus:outline-none"
+                />
               </div>
 
               <div className="flex gap-3">
-                <button onClick={() => setShowReportModal(false)} className="flex-1 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white">
+                <button
+                  onClick={() => setShowReportModal(false)}
+                  className="flex-1 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white"
+                >
                   Cancel
                 </button>
-                <button onClick={handleReport} disabled={!reportReason} className="flex-1 rounded-xl bg-red-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl disabled:opacity-50">
+                <button
+                  onClick={handleReport}
+                  disabled={!reportReason}
+                  className="flex-1 rounded-xl bg-red-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl disabled:opacity-50"
+                >
                   Submit Report
                 </button>
               </div>
