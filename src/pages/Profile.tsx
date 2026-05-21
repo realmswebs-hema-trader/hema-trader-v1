@@ -54,6 +54,12 @@ import { AnimatePresence, motion } from 'motion/react';
 
 import { useAuth } from '../components/auth/AuthContext';
 import { db, storage } from '../lib/firebase';
+import {
+  FOUNDER_NAME,
+  isFounderIdentity,
+  isReservedPlatformName,
+  normalizeNameKey
+} from '../lib/founder';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import ProfileReviewsTab from '../components/reviews/ProfileReviewsTab';
 import TrustCenterPanel from '../components/trust/TrustCenterPanel';
@@ -123,6 +129,8 @@ const formatLastActive = (profile: any) => {
 };
 
 const calculateTrustScore = (profile: any) => {
+  if (isFounderIdentity(profile)) return 100;
+
   const phone = profile?.phoneVerified ? 15 : 0;
   const identity =
     profile?.identityVerified || profile?.verificationStatus === 'verified'
@@ -313,26 +321,30 @@ export default function Profile() {
   }
 
   const roles = normalizeRoles(profile.roles);
+  const isFounderProfile = isFounderIdentity(profile);
+  const canReportProfile = !isOwnProfile && Boolean(authUser) && !isFounderProfile;
   const identityVerified =
-    Boolean(profile.identityVerified) || profile.verificationStatus === 'verified';
-  const driverVerified = Boolean(profile.driverVerified);
-  const phoneVerified = Boolean(profile.phoneVerified);
+    Boolean(profile.identityVerified) || profile.verificationStatus === 'verified' || isFounderProfile;
+  const driverVerified = Boolean(profile.driverVerified) || isFounderProfile;
+  const phoneVerified = Boolean(profile.phoneVerified) || isFounderProfile;
   const isOnline = Boolean(profile.isOnline || profile.online);
-  const displayName = profile.displayName || profile.name || 'Hema User';
+  const displayName = isFounderProfile ? FOUNDER_NAME : profile.displayName || profile.name || 'Hema User';
   const username =
     profile.username ||
     displayName.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/\.$/, '');
-  const rating = Number(profile.averageRating || profile.avgDriverRating || 0);
-  const trustScore = Number(profile.trustScore || calculateTrustScore(profile));
+  const rating = Number(isFounderProfile ? 5 : profile.averageRating || profile.avgDriverRating || 0);
+  const trustScore = Number(isFounderProfile ? 100 : profile.trustScore || calculateTrustScore(profile));
   const totalTrades = profile.totalTrades || profile.completedTrades || 0;
   const totalSales = profile.totalSales || profile.salesCount || 0;
-  const responseRate = profile.responseRate || 100;
-  const responseTime = profile.responseTime || 'Usually replies fast';
+  const responseRate = isFounderProfile ? 100 : profile.responseRate || 100;
+  const responseTime = isFounderProfile ? 'Founder priority' : profile.responseTime || 'Usually replies fast';
   const deliverySuccessRate =
-    profile.deliverySuccessRate ||
-    profile.reliabilityScore ||
-    (profile.deliveriesCount ? 96 : 0);
-  const escrowSuccessRate = profile.escrowSuccessRate || (totalTrades ? 98 : 0);
+    isFounderProfile
+      ? 100
+      : profile.deliverySuccessRate ||
+        profile.reliabilityScore ||
+        (profile.deliveriesCount ? 96 : 0);
+  const escrowSuccessRate = isFounderProfile ? 100 : profile.escrowSuccessRate || (totalTrades ? 98 : 0);
 
   const toggleFollow = async () => {
     if (!authUser || !targetUserId || isOwnProfile) return;
@@ -410,6 +422,12 @@ export default function Profile() {
 
   const handleReport = async () => {
     if (!authUser || !targetUserId || !reportReason) return;
+
+    if (isFounderProfile) {
+      alert('The Hema Trader founder profile cannot be reported.');
+      setShowReportModal(false);
+      return;
+    }
 
     try {
       await addDoc(collection(db, 'reports'), {
@@ -496,18 +514,32 @@ export default function Profile() {
   };
 
   const handleDisplayNameUpdate = async () => {
-    if (!displayNameInput.trim()) return;
+    const nextName = displayNameInput.trim();
+    if (!nextName) return;
+
+    if (isReservedPlatformName(nextName, authUser?.email)) {
+      setSettingsMessage(`${FOUNDER_NAME} is reserved for the platform founder.`);
+      return;
+    }
 
     setSettingsLoading(true);
     setSettingsMessage('');
 
     try {
-      await updateDisplayName(displayNameInput.trim());
+      await updateDisplayName(nextName);
+
+      await updateDoc(doc(db, 'users', profile.userId), {
+        displayName: nextName,
+        name: nextName,
+        displayNameKey: normalizeNameKey(nextName),
+        updatedAt: serverTimestamp()
+      });
 
       setProfileOverlay((prev: any) => ({
         ...prev,
-        displayName: displayNameInput.trim(),
-        name: displayNameInput.trim()
+        displayName: nextName,
+        name: nextName,
+        displayNameKey: normalizeNameKey(nextName)
       }));
 
       setDisplayNameInput('');
@@ -523,6 +555,11 @@ export default function Profile() {
   const handlePremiumSettingsUpdate = async () => {
     if (!authUser || !profile.userId) return;
 
+    if (usernameInput.trim() && isReservedPlatformName(usernameInput, authUser.email)) {
+      setSettingsMessage(`${FOUNDER_NAME} is reserved for the platform founder.`);
+      return;
+    }
+
     setSettingsLoading(true);
     setSettingsMessage('');
 
@@ -535,7 +572,11 @@ export default function Profile() {
       updatedAt: serverTimestamp()
     };
 
-    if (usernameInput.trim()) updates.username = usernameInput.trim();
+    if (usernameInput.trim()) {
+      updates.username = usernameInput.trim();
+      updates.usernameKey = normalizeNameKey(usernameInput.trim());
+    }
+
     if (bioInput.trim()) updates.bio = bioInput.trim();
     if (locationInput.trim()) updates.location = locationInput.trim();
     if (phoneInput.trim()) updates.phoneNumber = phoneInput.trim();
@@ -684,10 +725,18 @@ export default function Profile() {
                 <p className="max-w-xl font-serif text-sm italic leading-relaxed text-slate-400">
                   {profile.bio ||
                     profile.businessDescription ||
-                    'Growing trust inside the Hema Trader local trade network.'}
+                    (isFounderProfile
+                      ? 'Founder of Hema Trader.'
+                      : 'Growing trust inside the Hema Trader local trade network.')}
                 </p>
 
                 <div className="flex flex-wrap justify-center gap-2 sm:justify-start">
+                  {isFounderProfile && (
+                    <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-amber-500">
+                      Founder
+                    </span>
+                  )}
+
                   {roles.map(role => (
                     <span
                       key={role}
@@ -792,17 +841,27 @@ export default function Profile() {
                     </Link>
                   )}
 
-                  <button
-                    onClick={() => setShowReportModal(true)}
-                    className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-500 hover:text-white"
-                  >
-                    <Flag className="h-4 w-4" />
-                    Report
-                  </button>
+                  {canReportProfile && (
+                    <button
+                      onClick={() => setShowReportModal(true)}
+                      className="flex items-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-red-500 hover:bg-red-500 hover:text-white"
+                    >
+                      <Flag className="h-4 w-4" />
+                      Report
+                    </button>
+                  )}
                 </>
               )}
 
-              {isOwnProfile && (
+              {isOwnProfile && isFounderProfile ? (
+                <Link
+                  to="/admin"
+                  className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-amber-500 hover:bg-amber-500 hover:text-black"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  Admin Dashboard
+                </Link>
+              ) : isOwnProfile ? (
                 <button
                   onClick={() => updateRoles([])}
                   className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-slate-300 hover:bg-white hover:text-black"
@@ -810,7 +869,7 @@ export default function Profile() {
                   <UserCog className="h-4 w-4" />
                   Switch Roles
                 </button>
-              )}
+              ) : null}
             </div>
           </div>
 
@@ -1199,7 +1258,7 @@ export default function Profile() {
       )}
 
       <AnimatePresence>
-        {showReportModal && (
+        {showReportModal && canReportProfile && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-6 backdrop-blur-md">
             <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
