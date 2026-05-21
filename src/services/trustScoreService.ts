@@ -8,16 +8,17 @@ import {
   onSnapshot,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
-  where
+  where,
+  writeBatch
 } from 'firebase/firestore';
 
 import { db } from '../lib/firebase';
-import {
-  FOUNDER_BADGES,
-  getFounderUserFields,
-  isFounderIdentity
-} from '../lib/founder';
+
+export const FOUNDER_EMAIL = 'realmswebs@gmail.com';
+export const FOUNDER_NAME = 'Hema Trader';
+export const FOUNDER_USERNAME = 'hema.trader';
 
 export type TrustLevel =
   | 'HIGH RISK'
@@ -40,6 +41,7 @@ export type TrustEventType =
   | 'phone_verified'
   | 'identity_verified'
   | 'driver_verified'
+  | 'founder_sync'
   | 'manual_reward'
   | 'manual_penalty';
 
@@ -75,6 +77,103 @@ const average = (values: number[]) =>
 const removeUndefined = (data: Record<string, any>) =>
   Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined));
 
+export const normalizeNameKey = (value = '') =>
+  value.trim().toLowerCase().replace(/\s+/g, ' ');
+
+export const isFounderEmail = (email?: string | null) =>
+  email?.trim().toLowerCase() === FOUNDER_EMAIL;
+
+export const isReservedFounderName = (value?: string, email?: string | null) => {
+  if (!value || isFounderEmail(email)) return false;
+
+  const normalized = normalizeNameKey(value);
+  return ['hema trader', 'hematrader', 'hema-trader', 'hema.trader'].includes(normalized);
+};
+
+export const isFounderProfile = (profile?: any) =>
+  Boolean(
+    profile?.isFounder ||
+      profile?.founderVerified ||
+      isFounderEmail(profile?.email)
+  );
+
+export const FOUNDER_BADGES = [
+  'Founder',
+  'Hema Trader Founder',
+  'Email Verified',
+  'Phone Verified',
+  'Verified Identity',
+  'Verified Driver',
+  'Trusted',
+  'Elite Trader',
+  'Elite Driver',
+  'Fast Responder',
+  'Top Rated',
+  'Active Trader',
+  'Elite Verified'
+];
+
+export const getFounderUserFields = (profile: any = {}) => ({
+  displayName: FOUNDER_NAME,
+  name: FOUNDER_NAME,
+  username: FOUNDER_USERNAME,
+  displayNameKey: normalizeNameKey(FOUNDER_NAME),
+  usernameKey: normalizeNameKey(FOUNDER_USERNAME),
+  email: FOUNDER_EMAIL,
+
+  isFounder: true,
+  founderVerified: true,
+  isAdmin: true,
+  roles: ['buyer', 'seller', 'driver', 'admin'],
+
+  verificationStatus: 'verified',
+  emailVerified: true,
+  phoneVerified: true,
+  identityVerified: true,
+  driverVerified: true,
+  eliteVerified: true,
+  verificationScore: 100,
+
+  trustScore: 100,
+  trustLevel: 'VERIFIED ELITE',
+  trustBadges: FOUNDER_BADGES,
+  trustVisibilityMultiplier: 2,
+  marketplaceVisibility: 2,
+  searchRankBoost: 2,
+  premiumVisibility: true,
+  instantTransactionsEnabled: true,
+  accountRiskStatus: 'clear',
+  fraudProtectionStatus: 'protected',
+
+  averageRating: 5,
+  avgDriverRating: 5,
+  communityRatingPercent: 100,
+
+  successfulTrades: Math.max(safeNumber(profile.successfulTrades), 10),
+  completedTrades: Math.max(safeNumber(profile.completedTrades), 10),
+  totalTrades: Math.max(safeNumber(profile.totalTrades), 10),
+
+  totalSales: Math.max(safeNumber(profile.totalSales), 10),
+  salesCount: Math.max(safeNumber(profile.salesCount), 10),
+
+  completedDeliveries: Math.max(safeNumber(profile.completedDeliveries), 10),
+  deliveriesCount: Math.max(safeNumber(profile.deliveriesCount), 10),
+
+  escrowSuccessRate: 100,
+  deliveryCompletionRate: 100,
+  deliverySuccessRate: 100,
+  responseRate: 100,
+  responseTime: 'Founder priority',
+
+  failedTrades: 0,
+  failedDeliveries: 0,
+  cancelledTransactions: 0,
+  disputeCount: 0,
+  reportCount: 0,
+  fraudReportCount: 0,
+  warningCount: 0
+});
+
 export const getTrustLevel = (score: number): TrustLevel => {
   if (score <= 20) return 'HIGH RISK';
   if (score <= 40) return 'LOW TRUST';
@@ -94,21 +193,13 @@ export const getTrustVisibilityMultiplier = (score: number) => {
 };
 
 export const calculateVerificationScore = (profile: any) => {
-  if (isFounderIdentity(profile)) return 100;
+  if (isFounderProfile(profile)) return 100;
 
   let score = 0;
-
   if (profile?.emailVerified !== false) score += 15;
   if (profile?.phoneVerified) score += 30;
-
-  if (
-    profile?.identityVerified ||
-    profile?.verificationStatus === 'verified' ||
-    profile?.governmentIdUrl
-  ) {
-    score += profile?.identityVerified || profile?.verificationStatus === 'verified' ? 35 : 15;
-  }
-
+  if (profile?.identityVerified || profile?.verificationStatus === 'verified') score += 35;
+  else if (profile?.governmentIdUrl && profile?.selfieUrl) score += 15;
   if (profile?.driverVerified) score += 15;
 
   const hasCommunityProof =
@@ -117,24 +208,17 @@ export const calculateVerificationScore = (profile: any) => {
     safeNumber(profile?.followersCount) >= 5;
 
   if (hasCommunityProof) score += 5;
-
-  return Math.min(score, 100);
+  return clamp(score);
 };
 
 export const getTrustBadges = (profile: any) => {
-  if (isFounderIdentity(profile)) {
-    return FOUNDER_BADGES;
-  }
+  if (isFounderProfile(profile)) return FOUNDER_BADGES;
 
   const score = safeNumber(profile?.trustScore, 50);
   const badges: string[] = [];
 
   if (profile?.phoneVerified) badges.push('Phone Verified');
-
-  if (profile?.identityVerified || profile?.verificationStatus === 'verified') {
-    badges.push('Verified Identity');
-  }
-
+  if (profile?.identityVerified || profile?.verificationStatus === 'verified') badges.push('Verified Identity');
   if (profile?.driverVerified) badges.push('Verified Driver');
   if (score >= 61) badges.push('Trusted');
   if (score >= 81) badges.push('Elite Trader');
@@ -143,15 +227,9 @@ export const getTrustBadges = (profile: any) => {
   if (safeNumber(profile?.averageRating || profile?.avgDriverRating) >= 4.7) badges.push('Top Rated');
 
   const lastActiveAt = getMillis(profile?.lastActiveAt);
-  if (lastActiveAt && Date.now() - lastActiveAt < 24 * 60 * 60 * 1000) {
-    badges.push('Active Trader');
-  }
+  if (lastActiveAt && Date.now() - lastActiveAt < 86400000) badges.push('Active Trader');
 
-  if (
-    score >= 96 &&
-    profile?.phoneVerified &&
-    (profile?.identityVerified || profile?.verificationStatus === 'verified')
-  ) {
+  if (score >= 96 && profile?.phoneVerified && profile?.identityVerified) {
     badges.push('Elite Verified');
   }
 
@@ -159,7 +237,7 @@ export const getTrustBadges = (profile: any) => {
 };
 
 export const calculateProfileCompletion = (profile: any) => {
-  if (isFounderIdentity(profile)) return 100;
+  if (isFounderProfile(profile)) return 100;
 
   const fields = [
     profile?.photoURL,
@@ -172,123 +250,35 @@ export const calculateProfileCompletion = (profile: any) => {
     profile?.tradeCategory || profile?.businessCategory || profile?.businessDescription
   ];
 
-  const completed = fields.filter(Boolean).length;
-  return Math.round((completed / fields.length) * 100);
+  return Math.round((fields.filter(Boolean).length / fields.length) * 100);
 };
 
 export const calculateTrustScore = (profile: any) => {
-  if (isFounderIdentity(profile)) return 100;
+  if (isFounderProfile(profile)) return 100;
 
   const baseScore = 50;
-
   const emailBonus = profile?.emailVerified !== false ? 2 : 0;
   const phoneBonus = profile?.phoneVerified ? 7 : 0;
-
-  const identityVerified =
-    profile?.identityVerified || profile?.verificationStatus === 'verified';
-
-  const identityBonus = identityVerified ? 9 : profile?.governmentIdUrl && profile?.selfieUrl ? 3 : 0;
+  const identityBonus =
+    profile?.identityVerified || profile?.verificationStatus === 'verified'
+      ? 9
+      : profile?.governmentIdUrl && profile?.selfieUrl
+        ? 3
+        : 0;
   const driverBonus = profile?.driverVerified ? 5 : 0;
 
-  const successfulTrades = safeNumber(
-    profile?.successfulTrades ?? profile?.completedTrades ?? profile?.totalTrades
-  );
-  const failedTrades = safeNumber(profile?.failedTrades);
-  const cancelledTransactions = safeNumber(profile?.cancelledTransactions);
+  const successfulTrades = safeNumber(profile?.successfulTrades ?? profile?.completedTrades ?? profile?.totalTrades);
   const completedDeliveries = safeNumber(profile?.completedDeliveries ?? profile?.deliveriesCount);
-  const failedDeliveries = safeNumber(profile?.failedDeliveries);
-  const disputes = safeNumber(profile?.disputeCount);
-  const warnings = safeNumber(profile?.warningCount);
-  const reportCount = safeNumber(profile?.reportCount);
-  const fraudReportCount = safeNumber(profile?.fraudReportCount);
-
-  const escrowSuccessRate = safeNumber(profile?.escrowSuccessRate, successfulTrades ? 90 : 0);
-  const deliveryCompletionRate = safeNumber(
-    profile?.deliveryCompletionRate ?? profile?.deliverySuccessRate,
-    completedDeliveries ? 90 : 0
-  );
-  const responseRate = safeNumber(profile?.responseRate, 0);
   const averageRating = safeNumber(profile?.averageRating || profile?.avgDriverRating);
-  const repeatCustomers = safeNumber(profile?.repeatCustomers);
-  const followersCount = safeNumber(profile?.followersCount);
-  const profileCompletion = safeNumber(
-    profile?.profileCompletion,
-    calculateProfileCompletion(profile)
-  );
-  const manualAdjustment = safeNumber(profile?.trustAdjustment);
+  const responseRate = safeNumber(profile?.responseRate);
+  const escrowSuccessRate = safeNumber(profile?.escrowSuccessRate, successfulTrades ? 90 : 0);
+  const deliveryCompletionRate = safeNumber(profile?.deliveryCompletionRate ?? profile?.deliverySuccessRate, completedDeliveries ? 90 : 0);
+  const profileCompletion = safeNumber(profile?.profileCompletion, calculateProfileCompletion(profile));
 
   const memberSince = getMillis(profile?.memberSince || profile?.createdAt);
-  const accountAgeDays = memberSince
-    ? Math.max(Math.floor((Date.now() - memberSince) / 86400000), 1)
-    : 1;
-
+  const accountAgeDays = memberSince ? Math.max(Math.floor((Date.now() - memberSince) / 86400000), 1) : 1;
   const lastActiveAt = getMillis(profile?.lastActiveAt);
-  const daysInactive = lastActiveAt
-    ? Math.floor((Date.now() - lastActiveAt) / 86400000)
-    : 30;
-
-  const tradeBonus = clamp(successfulTrades * 1.2, 0, 14);
-  const deliveryBonus = clamp(completedDeliveries * 0.8, 0, 10);
-
-  const escrowBonus =
-    escrowSuccessRate >= 95
-      ? 8
-      : escrowSuccessRate >= 80
-        ? 5
-        : escrowSuccessRate >= 60
-          ? 2
-          : successfulTrades > 0
-            ? -8
-            : 0;
-
-  const deliveryRateBonus =
-    deliveryCompletionRate >= 95
-      ? 6
-      : deliveryCompletionRate >= 80
-        ? 3
-        : deliveryCompletionRate >= 60
-          ? 1
-          : completedDeliveries > 0
-            ? -7
-            : 0;
-
-  const ratingBonus =
-    averageRating >= 4.8
-      ? 12
-      : averageRating >= 4.4
-        ? 9
-        : averageRating >= 4
-          ? 5
-          : averageRating >= 3
-            ? 0
-            : averageRating > 0
-              ? -12
-              : 0;
-
-  const responseBonus =
-    responseRate >= 95
-      ? 6
-      : responseRate >= 80
-        ? 4
-        : responseRate >= 50
-          ? 1
-          : responseRate > 0
-            ? -5
-            : 0;
-
-  const repeatCustomerBonus = clamp(repeatCustomers * 1.5, 0, 6);
-  const profileBonus =
-    profileCompletion >= 90 ? 7 : profileCompletion >= 70 ? 4 : profileCompletion >= 45 ? 1 : -4;
-  const ageBonus = accountAgeDays >= 365 ? 6 : accountAgeDays >= 180 ? 4 : accountAgeDays >= 30 ? 2 : 0;
-  const followerBonus = clamp(followersCount / 20, 0, 5);
-  const activityBonusOrPenalty = daysInactive > 60 ? -8 : daysInactive > 30 ? -4 : daysInactive > 14 ? -2 : 3;
-
-  const failedTradePenalty = clamp(failedTrades * 4, 0, 18);
-  const cancellationPenalty = clamp(cancelledTransactions * 3, 0, 18);
-  const failedDeliveryPenalty = clamp(failedDeliveries * 4, 0, 16);
-  const disputePenalty = clamp(disputes * 7, 0, 25);
-  const reportPenalty = clamp(reportCount * 4 + fraudReportCount * 8, 0, 35);
-  const warningPenalty = clamp(warnings * 6, 0, 24);
+  const daysInactive = lastActiveAt ? Math.floor((Date.now() - lastActiveAt) / 86400000) : 30;
 
   const rawScore =
     baseScore +
@@ -296,26 +286,214 @@ export const calculateTrustScore = (profile: any) => {
     phoneBonus +
     identityBonus +
     driverBonus +
-    tradeBonus +
-    deliveryBonus +
-    escrowBonus +
-    deliveryRateBonus +
-    ratingBonus +
-    responseBonus +
-    repeatCustomerBonus +
-    profileBonus +
-    ageBonus +
-    followerBonus +
-    activityBonusOrPenalty +
-    manualAdjustment -
-    failedTradePenalty -
-    cancellationPenalty -
-    failedDeliveryPenalty -
-    disputePenalty -
-    reportPenalty -
-    warningPenalty;
+    clamp(successfulTrades * 1.2, 0, 14) +
+    clamp(completedDeliveries * 0.8, 0, 10) +
+    (escrowSuccessRate >= 95 ? 8 : escrowSuccessRate >= 80 ? 5 : escrowSuccessRate >= 60 ? 2 : successfulTrades ? -8 : 0) +
+    (deliveryCompletionRate >= 95 ? 6 : deliveryCompletionRate >= 80 ? 3 : deliveryCompletionRate >= 60 ? 1 : completedDeliveries ? -7 : 0) +
+    (averageRating >= 4.8 ? 12 : averageRating >= 4.4 ? 9 : averageRating >= 4 ? 5 : averageRating > 0 && averageRating < 3 ? -12 : 0) +
+    (responseRate >= 95 ? 6 : responseRate >= 80 ? 4 : responseRate >= 50 ? 1 : responseRate > 0 ? -5 : 0) +
+    clamp(safeNumber(profile?.repeatCustomers) * 1.5, 0, 6) +
+    (profileCompletion >= 90 ? 7 : profileCompletion >= 70 ? 4 : profileCompletion >= 45 ? 1 : -4) +
+    (accountAgeDays >= 365 ? 6 : accountAgeDays >= 180 ? 4 : accountAgeDays >= 30 ? 2 : 0) +
+    clamp(safeNumber(profile?.followersCount) / 20, 0, 5) +
+    (daysInactive > 60 ? -8 : daysInactive > 30 ? -4 : daysInactive > 14 ? -2 : 3) +
+    safeNumber(profile?.trustAdjustment) -
+    clamp(safeNumber(profile?.failedTrades) * 4, 0, 18) -
+    clamp(safeNumber(profile?.cancelledTransactions) * 3, 0, 18) -
+    clamp(safeNumber(profile?.failedDeliveries) * 4, 0, 16) -
+    clamp(safeNumber(profile?.disputeCount) * 7, 0, 25) -
+    clamp(safeNumber(profile?.reportCount) * 4 + safeNumber(profile?.fraudReportCount) * 8, 0, 35) -
+    clamp(safeNumber(profile?.warningCount) * 6, 0, 24);
 
   return Math.round(clamp(rawScore));
+};
+
+export const syncFounderAccount = async (userId: string) => {
+  const userRef = doc(db, 'users', userId);
+  const snap = await getDoc(userRef);
+  const profile = snap.exists() ? snap.data() : {};
+
+  await setDoc(
+    userRef,
+    {
+      uid: userId,
+      ...getFounderUserFields(profile),
+      trustUpdatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    },
+    { merge: true }
+  );
+
+  return {
+    trustScore: 100,
+    trustLevel: 'VERIFIED ELITE' as TrustLevel,
+    visibilityMultiplier: 2,
+    riskStatus: 'clear',
+    instantTransactionsEnabled: true
+  };
+};
+
+const findFounderUser = async () => {
+  const founderSnap = await getDocs(
+    query(collection(db, 'users'), where('email', '==', FOUNDER_EMAIL))
+  );
+
+  if (founderSnap.empty) return null;
+
+  const founderDoc = founderSnap.docs[0];
+  return {
+    id: founderDoc.id,
+    profile: founderDoc.data()
+  };
+};
+
+export const ensureUserFollowsFounder = async (userId: string) => {
+  const founder = await findFounderUser();
+  if (!founder) return { followed: false, reason: 'founder_not_found' };
+  if (founder.id === userId) return syncFounderAccount(userId);
+
+  const followId = `${userId}_${founder.id}`;
+  const followRef = doc(db, 'followers', followId);
+  const followSnap = await getDoc(followRef);
+
+  if (followSnap.exists()) {
+    await syncFounderAccount(founder.id);
+    return { followed: false, reason: 'already_following', founderId: founder.id };
+  }
+
+  const batch = writeBatch(db);
+
+  batch.set(followRef, {
+    followerId: userId,
+    followingId: founder.id,
+    autoFollowedFounder: true,
+    createdAt: serverTimestamp()
+  });
+
+  batch.set(
+    doc(db, 'users', userId),
+    {
+      followingCount: increment(1),
+      updatedAt: serverTimestamp()
+    },
+    { merge: true }
+  );
+
+  batch.set(
+    doc(db, 'users', founder.id),
+    {
+      ...getFounderUserFields(founder.profile),
+      followersCount: increment(1),
+      updatedAt: serverTimestamp()
+    },
+    { merge: true }
+  );
+
+  await batch.commit();
+
+  return { followed: true, founderId: founder.id };
+};
+
+export const syncUserAndFounderOnAuth = async (authUser: {
+  uid: string;
+  email?: string | null;
+  displayName?: string | null;
+  photoURL?: string | null;
+  emailVerified?: boolean;
+}) => {
+  if (isFounderEmail(authUser.email)) {
+    return syncFounderAccount(authUser.uid);
+  }
+
+  const safeDisplayName = isReservedFounderName(authUser.displayName || '', authUser.email)
+    ? authUser.email?.split('@')[0] || 'Hema User'
+    : authUser.displayName || undefined;
+
+  await setDoc(
+    doc(db, 'users', authUser.uid),
+    removeUndefined({
+      uid: authUser.uid,
+      email: authUser.email,
+      emailVerified: authUser.emailVerified,
+      displayName: safeDisplayName,
+      name: safeDisplayName,
+      displayNameKey: safeDisplayName ? normalizeNameKey(safeDisplayName) : undefined,
+      photoURL: authUser.photoURL || undefined,
+      lastActiveAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }),
+    { merge: true }
+  );
+
+  return ensureUserFollowsFounder(authUser.uid);
+};
+
+export const backfillFounderFollowers = async () => {
+  const founder = await findFounderUser();
+  if (!founder) throw new Error('Founder account not found.');
+
+  const usersSnap = await getDocs(collection(db, 'users'));
+  let created = 0;
+  let batch = writeBatch(db);
+  let writes = 0;
+
+  const commitBatch = async () => {
+    if (writes > 0) {
+      await batch.commit();
+      batch = writeBatch(db);
+      writes = 0;
+    }
+  };
+
+  for (const userDoc of usersSnap.docs) {
+    if (userDoc.id === founder.id) continue;
+
+    const user = userDoc.data();
+    if (isFounderProfile(user)) continue;
+
+    const followId = `${userDoc.id}_${founder.id}`;
+    const followRef = doc(db, 'followers', followId);
+    const followSnap = await getDoc(followRef);
+
+    if (followSnap.exists()) continue;
+
+    batch.set(followRef, {
+      followerId: userDoc.id,
+      followingId: founder.id,
+      autoFollowedFounder: true,
+      backfilled: true,
+      createdAt: serverTimestamp()
+    });
+
+    batch.set(
+      doc(db, 'users', userDoc.id),
+      {
+        followingCount: increment(1),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    batch.set(
+      doc(db, 'users', founder.id),
+      {
+        ...getFounderUserFields(founder.profile),
+        followersCount: increment(1),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    created += 1;
+    writes += 3;
+
+    if (writes >= 450) await commitBatch();
+  }
+
+  await commitBatch();
+  await syncFounderAccount(founder.id);
+
+  return { created, founderId: founder.id };
 };
 
 export const updateUserTrustMetrics = async (
@@ -325,66 +503,53 @@ export const updateUserTrustMetrics = async (
   const userRef = doc(db, 'users', userId);
   const userSnap = await getDoc(userRef);
 
-  if (!userSnap.exists()) {
-    throw new Error('User not found.');
-  }
+  if (!userSnap.exists()) throw new Error('User not found.');
 
   const profile = userSnap.data();
-  const founder = isFounderIdentity(profile);
 
-  const [reviewsSnap, reportsSnap] = await Promise.all([
+  if (isFounderProfile(profile)) {
+    return syncFounderAccount(userId);
+  }
+
+  const [reviewsByReviewedSnap, reviewsByRevieweeSnap, reportsSnap] = await Promise.all([
     getDocs(query(collection(db, 'reviews'), where('reviewedUserId', '==', userId))),
+    getDocs(query(collection(db, 'reviews'), where('revieweeId', '==', userId))),
     getDocs(query(collection(db, 'reports'), where('targetId', '==', userId)))
   ]);
 
-  const reviews = reviewsSnap.docs
-    .map(reviewDoc => reviewDoc.data())
-    .filter(review => review.status !== 'removed');
+  const reviewsMap = new Map<string, any>();
+  reviewsByReviewedSnap.docs.forEach(reviewDoc => reviewsMap.set(reviewDoc.id, reviewDoc.data()));
+  reviewsByRevieweeSnap.docs.forEach(reviewDoc => reviewsMap.set(reviewDoc.id, reviewDoc.data()));
 
-  const reports = founder
-    ? []
-    : reportsSnap.docs
-        .map(reportDoc => reportDoc.data())
-        .filter(report => report.status !== 'dismissed');
+  const reviews = [...reviewsMap.values()].filter(review => review.status !== 'removed');
+  const reports = reportsSnap.docs
+    .map(reportDoc => reportDoc.data())
+    .filter(report => report.status !== 'dismissed');
 
-  const averageRating = founder
-    ? 5
-    : reviews.length
-      ? Number(average(reviews.map(review => safeNumber(review.rating))).toFixed(2))
-      : safeNumber(profile.averageRating || profile.avgDriverRating);
+  const averageRating = reviews.length
+    ? Number(average(reviews.map(review => safeNumber(review.rating))).toFixed(2))
+    : safeNumber(profile.averageRating || profile.avgDriverRating);
 
-  const fraudReportCount = founder
-    ? 0
-    : reports.filter(report =>
-        ['fraud', 'scam', 'fake_products', 'fake_review'].includes(report.reason)
-      ).length;
-
-  const identityVerified =
-    founder ||
-    profile.identityVerified ||
-    profile.verificationStatus === 'verified' ||
-    Boolean(profile.governmentIdVerified);
+  const fraudReportCount = reports.filter(report =>
+    ['fraud', 'scam', 'fake_products', 'fake_review'].includes(report.reason)
+  ).length;
 
   const mergedProfile = {
     ...profile,
     ...metricOverrides,
-    ...(founder ? getFounderUserFields() : {}),
     averageRating,
-    reportCount: founder ? 0 : reports.length,
+    reportCount: reports.length,
     fraudReportCount,
-    profileCompletion: founder ? 100 : calculateProfileCompletion(profile),
-    verificationScore: founder ? 100 : calculateVerificationScore(profile),
-    identityVerified
+    profileCompletion: calculateProfileCompletion(profile)
   };
 
-  const previousScore = safeNumber(profile.trustScore, founder ? 100 : 50);
-  const trustScore = founder ? 100 : calculateTrustScore(mergedProfile);
-  const trustLevel = founder ? 'VERIFIED ELITE' : getTrustLevel(trustScore);
-  const visibilityMultiplier = founder ? 2 : getTrustVisibilityMultiplier(trustScore);
+  const previousScore = safeNumber(profile.trustScore, 50);
+  const trustScore = calculateTrustScore(mergedProfile);
+  const trustLevel = getTrustLevel(trustScore);
+  const visibilityMultiplier = getTrustVisibilityMultiplier(trustScore);
 
-  const riskStatus = founder
-    ? 'clear'
-    : trustScore <= 20
+  const riskStatus =
+    trustScore <= 20
       ? 'high_risk'
       : trustScore <= 40
         ? 'restricted'
@@ -392,64 +557,39 @@ export const updateUserTrustMetrics = async (
           ? 'fraud_review'
           : 'clear';
 
-  const instantTransactionsEnabled = founder || (trustScore >= 41 && fraudReportCount < 3);
-  const premiumVisibility = founder || trustScore >= 81;
-
   const updates = removeUndefined({
-    ...(founder ? getFounderUserFields() : {}),
-
     trustScore,
     trustLevel,
-    trustBadges: founder
-      ? FOUNDER_BADGES
-      : getTrustBadges({ ...mergedProfile, trustScore }),
+    trustBadges: getTrustBadges({ ...mergedProfile, trustScore }),
     trustVisibilityMultiplier: visibilityMultiplier,
     marketplaceVisibility: visibilityMultiplier,
-    premiumVisibility,
-    instantTransactionsEnabled,
+    searchRankBoost: visibilityMultiplier,
+    premiumVisibility: trustScore >= 81,
+    instantTransactionsEnabled: trustScore >= 41 && fraudReportCount < 3,
     accountRiskStatus: riskStatus,
     fraudProtectionStatus: riskStatus === 'clear' ? 'protected' : 'under_review',
-    searchRankBoost: visibilityMultiplier,
 
     averageRating,
-    reportCount: founder ? 0 : reports.length,
+    communityRatingPercent: Math.round((averageRating / 5) * 100),
+    reportCount: reports.length,
     fraudReportCount,
-    profileCompletion: founder ? 100 : calculateProfileCompletion(profile),
+    profileCompletion: calculateProfileCompletion(mergedProfile),
+    verificationScore: calculateVerificationScore(mergedProfile),
 
-    verificationScore: founder ? 100 : calculateVerificationScore(mergedProfile),
-    verificationStatus: founder ? 'verified' : profile.verificationStatus || 'unverified',
-    emailVerified: founder ? true : profile.emailVerified !== false,
-    phoneVerified: founder ? true : Boolean(profile.phoneVerified),
-    identityVerified: Boolean(identityVerified),
-    driverVerified: founder ? true : Boolean(profile.driverVerified),
-    eliteVerified: founder ? true : trustScore >= 96 && Boolean(identityVerified),
+    emailVerified: profile.emailVerified !== false,
+    phoneVerified: Boolean(profile.phoneVerified),
+    identityVerified: Boolean(profile.identityVerified || profile.verificationStatus === 'verified'),
+    driverVerified: Boolean(profile.driverVerified),
 
-    governmentIdUrl: profile.governmentIdUrl || profile.idFrontUrl || '',
-    selfieUrl: profile.selfieUrl || '',
-    driverLicenseUrl: profile.driverLicenseUrl || '',
-
-    successfulTrades: founder
-      ? Math.max(
-          safeNumber(mergedProfile.successfulTrades ?? mergedProfile.completedTrades ?? mergedProfile.totalTrades),
-          1
-        )
-      : safeNumber(
-          mergedProfile.successfulTrades ?? mergedProfile.completedTrades ?? mergedProfile.totalTrades
-        ),
-    failedTrades: founder ? 0 : safeNumber(mergedProfile.failedTrades),
-    completedDeliveries: founder
-      ? Math.max(safeNumber(mergedProfile.completedDeliveries ?? mergedProfile.deliveriesCount), 1)
-      : safeNumber(mergedProfile.completedDeliveries ?? mergedProfile.deliveriesCount),
-    cancelledTransactions: founder ? 0 : safeNumber(mergedProfile.cancelledTransactions),
-    escrowSuccessRate: founder
-      ? 100
-      : safeNumber(
-          mergedProfile.escrowSuccessRate,
-          safeNumber(mergedProfile.successfulTrades) ? 90 : 0
-        ),
-    responseRate: founder ? 100 : safeNumber(mergedProfile.responseRate),
+    successfulTrades: safeNumber(mergedProfile.successfulTrades ?? mergedProfile.completedTrades ?? mergedProfile.totalTrades),
+    failedTrades: safeNumber(mergedProfile.failedTrades),
+    completedDeliveries: safeNumber(mergedProfile.completedDeliveries ?? mergedProfile.deliveriesCount),
+    cancelledTransactions: safeNumber(mergedProfile.cancelledTransactions),
+    escrowSuccessRate: safeNumber(mergedProfile.escrowSuccessRate, safeNumber(mergedProfile.successfulTrades) ? 90 : 0),
+    responseRate: safeNumber(mergedProfile.responseRate),
     repeatCustomers: safeNumber(mergedProfile.repeatCustomers),
     followersCount: safeNumber(mergedProfile.followersCount),
+
     memberSince: profile.memberSince || profile.createdAt || serverTimestamp(),
     trustUpdatedAt: serverTimestamp(),
     updatedAt: serverTimestamp()
@@ -457,7 +597,7 @@ export const updateUserTrustMetrics = async (
 
   await updateDoc(userRef, updates);
 
-  if (!founder && trustScore !== previousScore) {
+  if (trustScore !== previousScore) {
     await addDoc(collection(db, 'trustHistory'), {
       userId,
       type: trustScore > previousScore ? 'score_increased' : 'score_decreased',
@@ -470,7 +610,7 @@ export const updateUserTrustMetrics = async (
     });
   }
 
-  if (!founder && riskStatus !== 'clear') {
+  if (riskStatus !== 'clear') {
     await addDoc(collection(db, 'activities'), {
       userId,
       type: 'trust_alert',
@@ -485,19 +625,14 @@ export const updateUserTrustMetrics = async (
     trustLevel,
     visibilityMultiplier,
     riskStatus,
-    instantTransactionsEnabled
+    instantTransactionsEnabled: trustScore >= 41 && fraudReportCount < 3
   };
 };
 
-export const applyTrustReward = async (
-  userId: string,
-  options: TrustAdjustmentOptions
-) => {
+export const applyTrustReward = async (userId: string, options: TrustAdjustmentOptions) => {
   const userSnap = await getDoc(doc(db, 'users', userId));
-  const profile = userSnap.exists() ? userSnap.data() : null;
-
-  if (isFounderIdentity(profile)) {
-    return updateUserTrustMetrics(userId);
+  if (userSnap.exists() && isFounderProfile(userSnap.data())) {
+    return syncFounderAccount(userId);
   }
 
   const amount = Math.abs(options.amount);
@@ -521,15 +656,10 @@ export const applyTrustReward = async (
   return updateUserTrustMetrics(userId);
 };
 
-export const applyTrustPenalty = async (
-  userId: string,
-  options: TrustAdjustmentOptions
-) => {
+export const applyTrustPenalty = async (userId: string, options: TrustAdjustmentOptions) => {
   const userSnap = await getDoc(doc(db, 'users', userId));
-  const profile = userSnap.exists() ? userSnap.data() : null;
-
-  if (isFounderIdentity(profile)) {
-    return updateUserTrustMetrics(userId);
+  if (userSnap.exists() && isFounderProfile(userSnap.data())) {
+    return syncFounderAccount(userId);
   }
 
   const amount = Math.abs(options.amount);
@@ -567,29 +697,33 @@ export const subscribeToUserTrust = (
     if (!snapshot.exists()) return;
 
     const profile = snapshot.data();
-    const founder = isFounderIdentity(profile);
-    const trustScore = founder ? 100 : safeNumber(profile.trustScore, calculateTrustScore(profile));
+
+    if (isFounderProfile(profile)) {
+      callback({
+        profile: { ...profile, ...getFounderUserFields(profile) },
+        trustScore: 100,
+        trustLevel: 'VERIFIED ELITE',
+        trustBadges: FOUNDER_BADGES,
+        visibilityMultiplier: 2
+      });
+      return;
+    }
+
+    const trustScore = safeNumber(profile.trustScore, calculateTrustScore(profile));
 
     callback({
-      profile: founder ? { ...profile, ...getFounderUserFields() } : profile,
+      profile,
       trustScore,
-      trustLevel: founder ? 'VERIFIED ELITE' : getTrustLevel(trustScore),
-      trustBadges: founder
-        ? FOUNDER_BADGES
-        : profile.trustBadges || getTrustBadges({ ...profile, trustScore }),
-      visibilityMultiplier: founder ? 2 : getTrustVisibilityMultiplier(trustScore)
+      trustLevel: getTrustLevel(trustScore),
+      trustBadges: profile.trustBadges || getTrustBadges({ ...profile, trustScore }),
+      visibilityMultiplier: getTrustVisibilityMultiplier(trustScore)
     });
   });
 };
 
 export const getListingRankScore = (listing: any) => {
-  const founderBoost = isFounderIdentity({
-    email: listing.sellerEmail,
-    isFounder: listing.sellerIsFounder,
-    founderVerified: listing.sellerFounderVerified
-  })
-    ? 1000
-    : 0;
+  const founderBoost =
+    isFounderEmail(listing.sellerEmail) || listing.sellerIsFounder || listing.isFounder ? 1000 : 0;
 
   const trustScore = safeNumber(listing.sellerTrustScore ?? listing.trustScore);
   const verifiedBoost =
@@ -603,15 +737,7 @@ export const getListingRankScore = (listing: any) => {
   const escrowBoost = listing.escrowProtected !== false ? 12 : 0;
   const activityBoost = getMillis(listing.updatedAt || listing.createdAt) / 1000000000000;
 
-  return (
-    founderBoost +
-    trustScore * 2 +
-    verifiedBoost +
-    phoneBoost +
-    ratingBoost +
-    escrowBoost +
-    activityBoost
-  );
+  return founderBoost + trustScore * 2 + verifiedBoost + phoneBoost + ratingBoost + escrowBoost + activityBoost;
 };
 
 export const rankListingsByTrust = <T extends Record<string, any>>(listings: T[]) => {
