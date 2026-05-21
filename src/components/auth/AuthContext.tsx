@@ -22,6 +22,14 @@ import {
 } from 'firebase/storage';
 
 import { auth, db, storage } from '../../lib/firebase';
+import {
+  FOUNDER_NAME,
+  getFounderUserFields,
+  isFounderEmail,
+  isReservedFounderName,
+  normalizeNameKey,
+  syncUserAndFounderOnAuth
+} from '../../services/trustScoreService';
 
 interface AuthProfile {
   userId: string;
@@ -64,10 +72,30 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const FOUNDER_ROLES = ['buyer', 'seller', 'driver', 'admin'];
+
 const normalizeRoles = (roles: unknown): string[] => {
   if (!Array.isArray(roles)) return [];
 
   return roles.filter(role => typeof role === 'string');
+};
+
+const getFounderActiveRole = (data: any = {}) =>
+  FOUNDER_ROLES.includes(data.activeRole) ? data.activeRole : 'admin';
+
+const getSafeDisplayName = (firebaseUser: User, data: any = {}) => {
+  if (isFounderEmail(firebaseUser.email)) return FOUNDER_NAME;
+
+  const fallback =
+    firebaseUser.displayName ||
+    data.displayName ||
+    data.name ||
+    firebaseUser.email?.split('@')[0] ||
+    'Hema User';
+
+  return isReservedFounderName(fallback, firebaseUser.email)
+    ? firebaseUser.email?.split('@')[0] || 'Hema User'
+    : fallback;
 };
 
 const buildRoleDefaults = (roles: string[]) => {
@@ -88,18 +116,36 @@ const buildRoleDefaults = (roles: string[]) => {
 };
 
 const buildProfile = (firebaseUser: User, data: any = {}): AuthProfile => {
-  const roles = normalizeRoles(data.roles);
+  const founder = isFounderEmail(firebaseUser.email);
+  const founderFields = founder ? getFounderUserFields(data) : {};
+  const mergedData = founder
+    ? {
+        ...data,
+        ...founderFields,
+        activeRole: getFounderActiveRole(data)
+      }
+    : data;
+
+  const roles = normalizeRoles(mergedData.roles);
 
   return {
-    ...data,
+    ...mergedData,
     userId: firebaseUser.uid,
     uid: firebaseUser.uid,
-    email: data.email ?? firebaseUser.email,
-    displayName: data.displayName ?? data.name ?? firebaseUser.displayName ?? '',
-    name: data.name ?? data.displayName ?? firebaseUser.displayName ?? '',
-    photoURL: data.photoURL ?? firebaseUser.photoURL ?? '',
+    email: mergedData.email ?? firebaseUser.email,
+    displayName:
+      mergedData.displayName ??
+      mergedData.name ??
+      firebaseUser.displayName ??
+      '',
+    name:
+      mergedData.name ??
+      mergedData.displayName ??
+      firebaseUser.displayName ??
+      '',
+    photoURL: mergedData.photoURL ?? firebaseUser.photoURL ?? '',
     roles,
-    activeRole: data.activeRole ?? roles[0] ?? ''
+    activeRole: mergedData.activeRole ?? roles[0] ?? ''
   };
 };
 
@@ -112,64 +158,53 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const saveUserProfile = async (firebaseUser: User) => {
     const userRef = doc(db, 'users', firebaseUser.uid);
     const userSnap = await getDoc(userRef);
+    const existingData = userSnap.exists() ? userSnap.data() : {};
+    const founder = isFounderEmail(firebaseUser.email);
 
-    if (!userSnap.exists()) {
-      const roles =
-        firebaseUser.email === 'realmswebs@gmail.com'
-          ? ['buyer', 'seller', 'driver', 'admin']
-          : [];
+    const roles = founder ? FOUNDER_ROLES : normalizeRoles(existingData.roles);
+    const activeRole = founder
+      ? getFounderActiveRole(existingData)
+      : existingData.activeRole ?? roles[0] ?? '';
 
-      const newProfile = {
-        uid: firebaseUser.uid,
-        userId: firebaseUser.uid,
-        email: firebaseUser.email,
-        displayName:
-          firebaseUser.displayName ||
-          firebaseUser.email?.split('@')[0] ||
-          'Hema User',
-        name:
-          firebaseUser.displayName ||
-          firebaseUser.email?.split('@')[0] ||
-          'Hema User',
-        photoURL: firebaseUser.photoURL || '',
-        roles,
-        activeRole: roles[0] || '',
-        isOnline: true,
-        online: true,
-        lastActiveAt: serverTimestamp(),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        ...buildRoleDefaults(roles)
-      };
+    const displayName = getSafeDisplayName(firebaseUser, existingData);
 
-      await setDoc(userRef, newProfile);
-
-      return buildProfile(firebaseUser, newProfile);
-    }
-
-    const existingData = userSnap.data();
-    const existingProfile = buildProfile(firebaseUser, existingData);
-    const existingRoles = normalizeRoles(existingData.roles);
-
-    const onlineUpdate: Record<string, any> = {
+    const profileUpdate: Record<string, any> = {
+      uid: firebaseUser.uid,
+      userId: firebaseUser.uid,
+      email: firebaseUser.email,
+      emailVerified: firebaseUser.emailVerified,
+      displayName,
+      name: displayName,
+      displayNameKey: normalizeNameKey(displayName),
+      photoURL: firebaseUser.photoURL || existingData.photoURL || '',
+      roles,
+      activeRole,
       isOnline: true,
       online: true,
       lastActiveAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
+      updatedAt: serverTimestamp(),
+      ...(!userSnap.exists() ? { createdAt: serverTimestamp() } : {}),
+      ...buildRoleDefaults(roles),
+      ...(founder
+        ? {
+            ...getFounderUserFields(existingData),
+            activeRole
+          }
+        : {})
     };
 
-    if (existingRoles.includes('driver') && !existingData.driverStatus) {
-      onlineUpdate.driverStatus = 'available';
+    await setDoc(userRef, profileUpdate, { merge: true });
+
+    try {
+      await syncUserAndFounderOnAuth(firebaseUser);
+    } catch (error) {
+      console.error('Founder sync failed:', error);
     }
 
-    await updateDoc(userRef, onlineUpdate);
+    const freshSnap = await getDoc(userRef);
+    const freshData = freshSnap.exists() ? freshSnap.data() : profileUpdate;
 
-    return {
-      ...existingProfile,
-      isOnline: true,
-      online: true,
-      ...(onlineUpdate.driverStatus ? { driverStatus: onlineUpdate.driverStatus } : {})
-    };
+    return buildProfile(firebaseUser, freshData);
   };
 
   const signInWithGoogle = async () => {
@@ -186,6 +221,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     if (!currentUser) return;
 
     try {
+      if (isFounderEmail(currentUser.email)) {
+        await setDoc(
+          doc(db, 'users', currentUser.uid),
+          {
+            ...getFounderUserFields(profile || {}),
+            isOnline: true,
+            online: true,
+            lastActiveAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          },
+          { merge: true }
+        );
+        return;
+      }
+
       const offlineUpdate: Record<string, any> = {
         isOnline: false,
         online: false,
@@ -214,6 +264,33 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const updateRoles = async (roles: string[]) => {
     if (!user) return;
+
+    if (isFounderEmail(user.email)) {
+      const founderActiveRole = getFounderActiveRole(profile || {});
+
+      await setDoc(
+        doc(db, 'users', user.uid),
+        {
+          ...getFounderUserFields(profile || {}),
+          activeRole: founderActiveRole,
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      );
+
+      setProfile(prev =>
+        prev
+          ? {
+              ...prev,
+              ...getFounderUserFields(prev),
+              activeRole: founderActiveRole
+            }
+          : prev
+      );
+
+      setActiveRole(founderActiveRole);
+      return;
+    }
 
     const safeRoles = normalizeRoles(roles);
     const nextActiveRole = safeRoles[0] || '';
@@ -250,7 +327,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const switchRole = async (role: string) => {
     if (!user || !profile) return;
 
-    if (!profile.roles.includes(role)) {
+    const roles = isFounderEmail(user.email) ? FOUNDER_ROLES : profile.roles;
+
+    if (!roles.includes(role)) {
       console.error('User does not have this role:', role);
       return;
     }
@@ -260,7 +339,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       updatedAt: serverTimestamp()
     };
 
-    if (role === 'driver' && profile.driverStatus === 'offline') {
+    if (!isFounderEmail(user.email) && role === 'driver' && profile.driverStatus === 'offline') {
       updates.driverStatus = 'available';
     }
 
@@ -271,6 +350,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       prev
         ? {
             ...prev,
+            roles,
             activeRole: role,
             ...(updates.driverStatus ? { driverStatus: updates.driverStatus } : {})
           }
@@ -345,26 +425,40 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const updateDisplayName = async (displayName: string) => {
     if (!user) return;
 
-    const cleanDisplayName = displayName.trim();
+    const cleanDisplayName = isFounderEmail(user.email)
+      ? FOUNDER_NAME
+      : displayName.trim();
 
     if (!cleanDisplayName) return;
+
+    if (isReservedFounderName(cleanDisplayName, user.email)) {
+      throw new Error(`${FOUNDER_NAME} is reserved for the founder.`);
+    }
 
     await updateProfile(user, {
       displayName: cleanDisplayName
     });
 
-    await updateDoc(doc(db, 'users', user.uid), {
-      displayName: cleanDisplayName,
-      name: cleanDisplayName,
-      updatedAt: serverTimestamp()
-    });
+    await setDoc(
+      doc(db, 'users', user.uid),
+      {
+        ...(isFounderEmail(user.email) ? getFounderUserFields(profile || {}) : {}),
+        displayName: cleanDisplayName,
+        name: cleanDisplayName,
+        displayNameKey: normalizeNameKey(cleanDisplayName),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
     setProfile(prev =>
       prev
         ? {
             ...prev,
+            ...(isFounderEmail(user.email) ? getFounderUserFields(prev) : {}),
             displayName: cleanDisplayName,
-            name: cleanDisplayName
+            name: cleanDisplayName,
+            displayNameKey: normalizeNameKey(cleanDisplayName)
           }
         : prev
     );
@@ -414,19 +508,29 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     const sendHeartbeat = async () => {
       try {
-        const heartbeatUpdate: Record<string, any> = {
-          isOnline: true,
-          online: true,
-          lastActiveAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        };
+        const heartbeatUpdate: Record<string, any> = isFounderEmail(user.email)
+          ? {
+              ...getFounderUserFields(profile || {}),
+              activeRole: getFounderActiveRole(profile || {}),
+              isOnline: true,
+              online: true,
+              lastActiveAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            }
+          : {
+              isOnline: true,
+              online: true,
+              lastActiveAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            };
 
-        await updateDoc(userRef, heartbeatUpdate);
+        await setDoc(userRef, heartbeatUpdate, { merge: true });
 
         setProfile(prev =>
           prev
             ? {
                 ...prev,
+                ...(isFounderEmail(user.email) ? getFounderUserFields(prev) : {}),
                 isOnline: true,
                 online: true
               }
