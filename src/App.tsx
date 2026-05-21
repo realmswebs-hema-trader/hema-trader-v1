@@ -39,6 +39,7 @@ import DriverDiscovery from './pages/DriverDiscovery';
 import Drivers from './pages/Drivers';
 import DriverProfile from './pages/DriverProfile';
 import DeliveryDetail from './pages/DeliveryDetail';
+import DeliveryTracking from './pages/DeliveryTracking';
 import Admin from './pages/Admin';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
@@ -310,6 +311,15 @@ function AppRoutes() {
 
           <Route
             path="/delivery/:id"
+            element={
+              <PrivateRoute>
+                <DeliveryTracking />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/delivery-detail/:id"
             element={
               <PrivateRoute>
                 <DeliveryDetail />
