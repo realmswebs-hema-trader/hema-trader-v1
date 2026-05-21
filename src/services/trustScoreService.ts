@@ -32,6 +32,9 @@ export type TrustEventType =
   | 'report_received'
   | 'profile_completed'
   | 'verification_completed'
+  | 'phone_verified'
+  | 'identity_verified'
+  | 'driver_verified'
   | 'manual_reward'
   | 'manual_penalty';
 
@@ -85,23 +88,60 @@ export const getTrustVisibilityMultiplier = (score: number) => {
   return 0.2;
 };
 
+export const calculateVerificationScore = (profile: any) => {
+  let score = 0;
+
+  if (profile?.emailVerified !== false) score += 15;
+  if (profile?.phoneVerified) score += 30;
+
+  if (
+    profile?.identityVerified ||
+    profile?.verificationStatus === 'verified' ||
+    profile?.governmentIdUrl
+  ) {
+    score += profile?.identityVerified || profile?.verificationStatus === 'verified' ? 35 : 15;
+  }
+
+  if (profile?.driverVerified) score += 15;
+
+  const hasCommunityProof =
+    safeNumber(profile?.successfulTrades ?? profile?.completedTrades ?? profile?.totalTrades) > 0 ||
+    safeNumber(profile?.averageRating || profile?.avgDriverRating) >= 4 ||
+    safeNumber(profile?.followersCount) >= 5;
+
+  if (hasCommunityProof) score += 5;
+
+  return Math.min(score, 100);
+};
+
 export const getTrustBadges = (profile: any) => {
   const score = safeNumber(profile?.trustScore, 50);
   const badges: string[] = [];
 
+  if (profile?.phoneVerified) badges.push('Phone Verified');
+
   if (profile?.identityVerified || profile?.verificationStatus === 'verified') {
-    badges.push('Verified');
+    badges.push('Verified Identity');
   }
 
+  if (profile?.driverVerified) badges.push('Verified Driver');
   if (score >= 61) badges.push('Trusted');
   if (score >= 81) badges.push('Elite Trader');
   if (profile?.roles?.includes?.('driver') && score >= 81) badges.push('Elite Driver');
   if (safeNumber(profile?.responseRate) >= 90) badges.push('Fast Responder');
-  if (safeNumber(profile?.averageRating) >= 4.7) badges.push('Top Rated');
+  if (safeNumber(profile?.averageRating || profile?.avgDriverRating) >= 4.7) badges.push('Top Rated');
 
   const lastActiveAt = getMillis(profile?.lastActiveAt);
   if (lastActiveAt && Date.now() - lastActiveAt < 24 * 60 * 60 * 1000) {
     badges.push('Active Trader');
+  }
+
+  if (
+    score >= 96 &&
+    profile?.phoneVerified &&
+    (profile?.identityVerified || profile?.verificationStatus === 'verified')
+  ) {
+    badges.push('Elite Verified');
   }
 
   return badges;
@@ -116,7 +156,7 @@ export const calculateProfileCompletion = (profile: any) => {
     profile?.bio,
     profile?.location || profile?.city,
     profile?.phoneNumber,
-    profile?.businessCategory || profile?.businessDescription
+    profile?.tradeCategory || profile?.businessCategory || profile?.businessDescription
   ];
 
   const completed = fields.filter(Boolean).length;
@@ -126,13 +166,18 @@ export const calculateProfileCompletion = (profile: any) => {
 export const calculateTrustScore = (profile: any) => {
   const baseScore = 50;
 
-  const identityBonus =
-    profile?.identityVerified || profile?.verificationStatus === 'verified' ? 8 : 0;
-  const phoneBonus = profile?.phoneVerified ? 3 : 0;
   const emailBonus = profile?.emailVerified !== false ? 2 : 0;
-  const governmentIdBonus = profile?.governmentIdVerified ? 5 : 0;
+  const phoneBonus = profile?.phoneVerified ? 7 : 0;
 
-  const successfulTrades = safeNumber(profile?.successfulTrades ?? profile?.completedTrades ?? profile?.totalTrades);
+  const identityVerified =
+    profile?.identityVerified || profile?.verificationStatus === 'verified';
+
+  const identityBonus = identityVerified ? 9 : profile?.governmentIdUrl && profile?.selfieUrl ? 3 : 0;
+  const driverBonus = profile?.driverVerified ? 5 : 0;
+
+  const successfulTrades = safeNumber(
+    profile?.successfulTrades ?? profile?.completedTrades ?? profile?.totalTrades
+  );
   const failedTrades = safeNumber(profile?.failedTrades);
   const cancelledTransactions = safeNumber(profile?.cancelledTransactions);
   const completedDeliveries = safeNumber(profile?.completedDeliveries ?? profile?.deliveriesCount);
@@ -151,7 +196,10 @@ export const calculateTrustScore = (profile: any) => {
   const averageRating = safeNumber(profile?.averageRating || profile?.avgDriverRating);
   const repeatCustomers = safeNumber(profile?.repeatCustomers);
   const followersCount = safeNumber(profile?.followersCount);
-  const profileCompletion = safeNumber(profile?.profileCompletion, calculateProfileCompletion(profile));
+  const profileCompletion = safeNumber(
+    profile?.profileCompletion,
+    calculateProfileCompletion(profile)
+  );
   const manualAdjustment = safeNumber(profile?.trustAdjustment);
 
   const memberSince = getMillis(profile?.memberSince || profile?.createdAt);
@@ -166,15 +214,59 @@ export const calculateTrustScore = (profile: any) => {
 
   const tradeBonus = clamp(successfulTrades * 1.2, 0, 14);
   const deliveryBonus = clamp(completedDeliveries * 0.8, 0, 10);
-  const escrowBonus = escrowSuccessRate >= 95 ? 8 : escrowSuccessRate >= 80 ? 5 : escrowSuccessRate >= 60 ? 2 : -8;
-  const deliveryRateBonus = deliveryCompletionRate >= 95 ? 6 : deliveryCompletionRate >= 80 ? 3 : deliveryCompletionRate >= 60 ? 1 : -7;
-  const ratingBonus = averageRating >= 4.8 ? 12 : averageRating >= 4.4 ? 9 : averageRating >= 4 ? 5 : averageRating >= 3 ? 0 : -12;
-  const responseBonus = responseRate >= 95 ? 6 : responseRate >= 80 ? 4 : responseRate >= 50 ? 1 : -5;
+
+  const escrowBonus =
+    escrowSuccessRate >= 95
+      ? 8
+      : escrowSuccessRate >= 80
+        ? 5
+        : escrowSuccessRate >= 60
+          ? 2
+          : successfulTrades > 0
+            ? -8
+            : 0;
+
+  const deliveryRateBonus =
+    deliveryCompletionRate >= 95
+      ? 6
+      : deliveryCompletionRate >= 80
+        ? 3
+        : deliveryCompletionRate >= 60
+          ? 1
+          : completedDeliveries > 0
+            ? -7
+            : 0;
+
+  const ratingBonus =
+    averageRating >= 4.8
+      ? 12
+      : averageRating >= 4.4
+        ? 9
+        : averageRating >= 4
+          ? 5
+          : averageRating >= 3
+            ? 0
+            : averageRating > 0
+              ? -12
+              : 0;
+
+  const responseBonus =
+    responseRate >= 95
+      ? 6
+      : responseRate >= 80
+        ? 4
+        : responseRate >= 50
+          ? 1
+          : responseRate > 0
+            ? -5
+            : 0;
+
   const repeatCustomerBonus = clamp(repeatCustomers * 1.5, 0, 6);
-  const profileBonus = profileCompletion >= 90 ? 7 : profileCompletion >= 70 ? 4 : profileCompletion >= 45 ? 1 : -4;
+  const profileBonus =
+    profileCompletion >= 90 ? 7 : profileCompletion >= 70 ? 4 : profileCompletion >= 45 ? 1 : -4;
   const ageBonus = accountAgeDays >= 365 ? 6 : accountAgeDays >= 180 ? 4 : accountAgeDays >= 30 ? 2 : 0;
   const followerBonus = clamp(followersCount / 20, 0, 5);
-  const activityPenalty = daysInactive > 60 ? -8 : daysInactive > 30 ? -4 : daysInactive > 14 ? -2 : 3;
+  const activityBonusOrPenalty = daysInactive > 60 ? -8 : daysInactive > 30 ? -4 : daysInactive > 14 ? -2 : 3;
 
   const failedTradePenalty = clamp(failedTrades * 4, 0, 18);
   const cancellationPenalty = clamp(cancelledTransactions * 3, 0, 18);
@@ -185,10 +277,10 @@ export const calculateTrustScore = (profile: any) => {
 
   const rawScore =
     baseScore +
-    identityBonus +
-    phoneBonus +
     emailBonus +
-    governmentIdBonus +
+    phoneBonus +
+    identityBonus +
+    driverBonus +
     tradeBonus +
     deliveryBonus +
     escrowBonus +
@@ -199,7 +291,7 @@ export const calculateTrustScore = (profile: any) => {
     profileBonus +
     ageBonus +
     followerBonus +
-    activityPenalty +
+    activityBonusOrPenalty +
     manualAdjustment -
     failedTradePenalty -
     cancellationPenalty -
@@ -239,11 +331,16 @@ export const updateUserTrustMetrics = async (
 
   const averageRating = reviews.length
     ? Number(average(reviews.map(review => safeNumber(review.rating))).toFixed(2))
-    : safeNumber(profile.averageRating);
+    : safeNumber(profile.averageRating || profile.avgDriverRating);
 
   const fraudReportCount = reports.filter(report =>
     ['fraud', 'scam', 'fake_products', 'fake_review'].includes(report.reason)
   ).length;
+
+  const identityVerified =
+    profile.identityVerified ||
+    profile.verificationStatus === 'verified' ||
+    Boolean(profile.governmentIdVerified);
 
   const mergedProfile = {
     ...profile,
@@ -252,10 +349,8 @@ export const updateUserTrustMetrics = async (
     reportCount: reports.length,
     fraudReportCount,
     profileCompletion: calculateProfileCompletion(profile),
-    identityVerified:
-      profile.identityVerified ||
-      profile.verificationStatus === 'verified' ||
-      Boolean(profile.governmentIdVerified)
+    verificationScore: calculateVerificationScore(profile),
+    identityVerified
   };
 
   const previousScore = safeNumber(profile.trustScore, 50);
@@ -286,19 +381,33 @@ export const updateUserTrustMetrics = async (
     accountRiskStatus: riskStatus,
     fraudProtectionStatus: riskStatus === 'clear' ? 'protected' : 'under_review',
     searchRankBoost: visibilityMultiplier,
+
     averageRating,
     reportCount: reports.length,
     fraudReportCount,
     profileCompletion: calculateProfileCompletion(profile),
-    identityVerified: mergedProfile.identityVerified,
-    phoneVerified: Boolean(profile.phoneVerified),
+
+    verificationScore: calculateVerificationScore(mergedProfile),
+    verificationStatus: profile.verificationStatus || 'unverified',
     emailVerified: profile.emailVerified !== false,
-    governmentIdVerified: Boolean(profile.governmentIdVerified),
-    successfulTrades: safeNumber(mergedProfile.successfulTrades ?? mergedProfile.completedTrades ?? mergedProfile.totalTrades),
+    phoneVerified: Boolean(profile.phoneVerified),
+    identityVerified: Boolean(identityVerified),
+    driverVerified: Boolean(profile.driverVerified),
+
+    governmentIdUrl: profile.governmentIdUrl || profile.idFrontUrl || '',
+    selfieUrl: profile.selfieUrl || '',
+    driverLicenseUrl: profile.driverLicenseUrl || '',
+
+    successfulTrades: safeNumber(
+      mergedProfile.successfulTrades ?? mergedProfile.completedTrades ?? mergedProfile.totalTrades
+    ),
     failedTrades: safeNumber(mergedProfile.failedTrades),
     completedDeliveries: safeNumber(mergedProfile.completedDeliveries ?? mergedProfile.deliveriesCount),
     cancelledTransactions: safeNumber(mergedProfile.cancelledTransactions),
-    escrowSuccessRate: safeNumber(mergedProfile.escrowSuccessRate, safeNumber(mergedProfile.successfulTrades) ? 90 : 0),
+    escrowSuccessRate: safeNumber(
+      mergedProfile.escrowSuccessRate,
+      safeNumber(mergedProfile.successfulTrades) ? 90 : 0
+    ),
     responseRate: safeNumber(mergedProfile.responseRate),
     repeatCustomers: safeNumber(mergedProfile.repeatCustomers),
     followersCount: safeNumber(mergedProfile.followersCount),
@@ -419,12 +528,18 @@ export const subscribeToUserTrust = (
 
 export const getListingRankScore = (listing: any) => {
   const trustScore = safeNumber(listing.sellerTrustScore ?? listing.trustScore);
-  const verifiedBoost = listing.sellerVerified || listing.verificationStatus === 'verified' ? 20 : 0;
+  const verifiedBoost =
+    listing.sellerIdentityVerified ||
+    listing.identityVerified ||
+    listing.verificationStatus === 'verified'
+      ? 16
+      : 0;
+  const phoneBoost = listing.sellerPhoneVerified || listing.phoneVerified ? 8 : 0;
   const ratingBoost = safeNumber(listing.sellerRating ?? listing.averageRating) * 8;
   const escrowBoost = listing.escrowProtected !== false ? 12 : 0;
   const activityBoost = getMillis(listing.updatedAt || listing.createdAt) / 1000000000000;
 
-  return trustScore * 2 + verifiedBoost + ratingBoost + escrowBoost + activityBoost;
+  return trustScore * 2 + verifiedBoost + phoneBoost + ratingBoost + escrowBoost + activityBoost;
 };
 
 export const rankListingsByTrust = <T extends Record<string, any>>(listings: T[]) => {
