@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   collection,
+  doc,
   getDocs,
   limit,
   onSnapshot,
   query,
+  serverTimestamp,
+  updateDoc,
   where
 } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
@@ -24,13 +27,21 @@ import {
   Truck,
   Radio,
   Lock,
-  Flag
+  Flag,
+  Navigation
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { calculateDistance, formatDistance } from '../lib/geoUtils';
 import { useAuth } from '../components/auth/AuthContext';
+import MarketplaceMap from '../components/maps/MarketplaceMap';
+import {
+  calculateDistance,
+  formatDistance,
+  requestBrowserLocation,
+  toGeoPoint,
+  type GeoPoint
+} from '../utils/geoUtils';
 
 interface Listing {
   id: string;
@@ -38,6 +49,7 @@ interface Listing {
   price: number;
   category: string;
   location: string;
+  locationName?: string;
   images: string[];
   ownerId: string;
   latitude?: number;
@@ -65,6 +77,7 @@ interface UserProfile {
   totalTrades?: number;
   deliveriesCount?: number;
   followersCount?: number;
+  trustScore?: number;
   verificationStatus?: string;
   driverStatus?: string;
   vehicleType?: string;
@@ -72,7 +85,14 @@ interface UserProfile {
   location?: string;
   city?: string;
   country?: string;
+  latitude?: number;
+  longitude?: number;
+  currentLocation?: {
+    latitude?: number;
+    longitude?: number;
+  };
   isOnline?: boolean;
+  online?: boolean;
   lastActiveAt?: any;
 }
 
@@ -96,7 +116,7 @@ const normalizeUser = (user: any): UserProfile => ({
 });
 
 const isActive = (profile: UserProfile) => {
-  if (profile.isOnline) return true;
+  if (profile.isOnline || profile.online) return true;
   const lastActive = getMillis(profile.lastActiveAt);
   return lastActive > 0 && Date.now() - lastActive < 15 * 60 * 1000;
 };
@@ -115,6 +135,10 @@ const titleCase = (value: string) =>
 const sortProfiles = (a: UserProfile, b: UserProfile) => {
   const activeDelta = Number(isActive(b)) - Number(isActive(a));
   if (activeDelta !== 0) return activeDelta;
+
+  const trustA = a.trustScore || 0;
+  const trustB = b.trustScore || 0;
+  if (trustB !== trustA) return trustB - trustA;
 
   const ratingA = a.averageRating || a.avgDriverRating || 0;
   const ratingB = b.averageRating || b.avgDriverRating || 0;
@@ -272,7 +296,7 @@ function MerchantCard({
         </Link>
 
         <Link
-          to={`/profile/${merchant.id}`}
+          to={`/messages/${merchant.id}`}
           className="flex items-center justify-center gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-[9px] font-bold text-amber-500 transition hover:bg-amber-500 hover:text-black"
         >
           <MessageCircle className="h-3 w-3" />
@@ -355,11 +379,28 @@ export default function Home() {
   const [marketUsers, setMarketUsers] = useState<UserProfile[]>([]);
   const [drivers, setDrivers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
+  const [mapLocation, setMapLocation] = useState<GeoPoint | null>(null);
+  const [distanceFilter, setDistanceFilter] = useState<'all' | '5' | '10' | '50' | 'city'>('50');
   const [error, setError] = useState<string | null>(null);
   const [nearbyOnly, setNearbyOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeUsersCount, setActiveUsersCount] = useState(0);
   const [recentAlert, setRecentAlert] = useState<string | null>(null);
+
+  useEffect(() => {
+    const nextLocation = toGeoPoint(profile);
+
+    if (nextLocation) {
+      setMapLocation(nextLocation);
+    }
+  }, [
+    profile?.latitude,
+    profile?.longitude,
+    profile?.currentLocation?.latitude,
+    profile?.currentLocation?.longitude
+  ]);
 
   useEffect(() => {
     const qActiveUsers = query(
@@ -521,11 +562,81 @@ export default function Home() {
     };
   }, [user]);
 
+  const handleRequestLocation = async () => {
+    setLocating(true);
+    setLocationError(null);
+
+    try {
+      const nextLocation = await requestBrowserLocation();
+      setMapLocation(nextLocation);
+
+      if (user?.uid) {
+        await updateDoc(doc(db, 'users', user.uid), {
+          latitude: nextLocation.latitude,
+          longitude: nextLocation.longitude,
+          currentLocation: nextLocation,
+          locationUpdatedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      }
+    } catch (err) {
+      console.error('Location permission failed:', err);
+      setLocationError('Location unavailable. You can still search by city, village, or region.');
+    } finally {
+      setLocating(false);
+    }
+  };
+
   const searchTerm = searchQuery.trim().toLowerCase();
+  const userLocation = mapLocation || toGeoPoint(profile);
+
+  const activeRadiusKm =
+    distanceFilter === '5'
+      ? 5
+      : distanceFilter === '10'
+        ? 10
+        : 50;
+
+  const sameCitySearch = [
+    profile?.city,
+    profile?.location
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  const matchesSameCity = (item: any) => {
+    if (distanceFilter !== 'city') return true;
+    if (!sameCitySearch) return true;
+
+    const searchable = [
+      item.location,
+      item.locationName,
+      item.city,
+      item.country
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return searchable.includes(sameCitySearch) || sameCitySearch.includes(searchable);
+  };
 
   const searchedUsers = marketUsers.filter(profileItem =>
     profileMatchesSearch(profileItem, searchTerm)
   );
+
+  const mapUsers = searchedUsers
+    .filter(profileItem => profileItem.id !== user?.uid)
+    .filter(profileItem => matchesSameCity(profileItem))
+    .filter(profileItem => {
+      if (distanceFilter === 'all' || distanceFilter === 'city') return true;
+      if (!userLocation) return true;
+
+      const point = toGeoPoint(profileItem);
+      return point ? calculateDistance(userLocation, point) <= activeRadiusKm : false;
+    })
+    .slice(0, 120);
 
   const verifiedMerchants = searchedUsers.filter(
     profileItem => profileItem.verificationStatus === 'verified'
@@ -543,41 +654,45 @@ export default function Home() {
     .filter(listing => {
       if (!searchTerm) return true;
 
-      return [listing.title, listing.category, listing.location]
+      return [listing.title, listing.category, listing.location, listing.locationName]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
         .includes(searchTerm);
     })
     .map(listing => {
-      const hasDistance =
-        typeof profile?.latitude === 'number' &&
-        typeof profile?.longitude === 'number' &&
-        typeof listing.latitude === 'number' &&
-        typeof listing.longitude === 'number';
+      const listingPoint = toGeoPoint(listing);
 
       return {
         ...listing,
-        distance: hasDistance
-          ? calculateDistance(
-              profile.latitude,
-              profile.longitude,
-              listing.latitude,
-              listing.longitude
-            )
-          : null
+        distance:
+          userLocation && listingPoint
+            ? calculateDistance(userLocation, listingPoint)
+            : null
       };
+    })
+    .filter(listing => {
+      if (!nearbyOnly && distanceFilter === 'all') return true;
+      if (distanceFilter === 'city') return matchesSameCity(listing);
+      if (!userLocation) return true;
+      if (listing.distance === null) return false;
+
+      return listing.distance <= activeRadiusKm;
     })
     .sort((a, b) => {
       if (a.isBoosted && !b.isBoosted) return -1;
       if (!a.isBoosted && b.isBoosted) return 1;
 
-      if (nearbyOnly && a.distance !== null && b.distance !== null) {
+      if ((nearbyOnly || distanceFilter !== 'all') && a.distance !== null && b.distance !== null) {
         return a.distance - b.distance;
       }
 
-      return 0;
+      return getMillis(b.createdAt) - getMillis(a.createdAt);
     });
+
+  const mapListings = filteredListings
+    .filter(listing => toGeoPoint(listing))
+    .slice(0, 80);
 
   return (
     <div className="space-y-12 pb-24">
@@ -592,7 +707,11 @@ export default function Home() {
           </Link>
 
           <button
-            onClick={() => setNearbyOnly(!nearbyOnly)}
+            onClick={() => {
+              const nextNearby = !nearbyOnly;
+              setNearbyOnly(nextNearby);
+              setDistanceFilter(nextNearby ? '10' : 'all');
+            }}
             className={`flex items-center gap-3 rounded-full border px-6 py-3 text-[10px] font-black uppercase tracking-widest transition ${
               nearbyOnly
                 ? 'border-amber-500 bg-amber-500 text-black'
@@ -601,6 +720,19 @@ export default function Home() {
           >
             <Compass className="h-4 w-4" />
             Nearby Only
+          </button>
+
+          <button
+            onClick={handleRequestLocation}
+            disabled={locating}
+            className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 transition hover:border-amber-500/30 disabled:opacity-60"
+          >
+            {locating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Navigation className="h-4 w-4" />
+            )}
+            Use GPS
           </button>
 
           <button className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 transition hover:border-amber-500/30">
@@ -615,12 +747,62 @@ export default function Home() {
             <input
               value={searchQuery}
               onChange={event => setSearchQuery(event.target.value)}
-              placeholder="Search merchants, products, or locations..."
+              placeholder="Search merchants, products, cities, villages, or regions..."
               className="w-full rounded-2xl border border-white/10 bg-brand-card py-5 pl-16 pr-14 text-sm text-white shadow-2xl outline-none transition placeholder:text-slate-600 focus:border-amber-500/50"
             />
             <Search className="absolute right-6 h-4 w-4 text-slate-500" />
           </div>
         </div>
+      </section>
+
+      <section className="space-y-5">
+        <SectionHeader
+          icon={<MapPin className="h-5 w-5" />}
+          title="Marketplace Map"
+          subtitle="Discover nearby sellers, buyers, drivers, crops, livestock, and delivery zones"
+          action="Live Nearby"
+          tone="amber"
+        />
+
+        <div className="flex flex-wrap gap-2 px-2">
+          {[
+            { id: 'all', label: 'All' },
+            { id: '5', label: 'Within 5km' },
+            { id: '10', label: 'Within 10km' },
+            { id: '50', label: 'Within 50km' },
+            { id: 'city', label: 'Same City' }
+          ].map(item => (
+            <button
+              key={item.id}
+              onClick={() => {
+                setDistanceFilter(item.id as 'all' | '5' | '10' | '50' | 'city');
+                setNearbyOnly(item.id !== 'all');
+              }}
+              className={`rounded-full border px-4 py-2 text-[9px] font-black uppercase tracking-widest transition ${
+                distanceFilter === item.id
+                  ? 'border-amber-500 bg-amber-500 text-black'
+                  : 'border-white/10 bg-white/5 text-slate-500 hover:border-amber-500/30 hover:text-white'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {locationError && (
+          <div className="mx-2 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-300">
+            {locationError}
+          </div>
+        )}
+
+        <MarketplaceMap
+          listings={mapListings}
+          users={mapUsers}
+          currentLocation={userLocation}
+          radiusKm={activeRadiusKm}
+          className="h-[520px]"
+          onRequestLocation={handleRequestLocation}
+        />
       </section>
 
       {loading ? (
@@ -742,7 +924,7 @@ export default function Home() {
                   </h4>
                   <div className="mt-1 flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
                     <MapPin className="h-3 w-3 text-amber-500/50" />
-                    <span>{listing.location}</span>
+                    <span>{listing.locationName || listing.location}</span>
                   </div>
                 </div>
               </Link>
@@ -863,7 +1045,7 @@ export default function Home() {
                     </h3>
                     <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
                       <MapPin className="h-3 w-3 text-amber-500/50" />
-                      <span>{listing.location}</span>
+                      <span>{listing.locationName || listing.location}</span>
                     </div>
                   </div>
                 </motion.article>
