@@ -56,6 +56,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useAuth } from '../components/auth/AuthContext';
 import { db, storage } from '../lib/firebase';
 import { useNotifications } from '../components/notifications/NotificationContext';
+import ProfileReviewsTab from '../components/reviews/ProfileReviewsTab';
 
 type ProfileTab = 'listings' | 'reviews' | 'about' | 'deliveries' | 'activity';
 
@@ -69,15 +70,6 @@ interface ListingItem {
   deliveryAvailable?: boolean;
   escrowProtected?: boolean;
   verificationStatus?: string;
-  createdAt?: any;
-}
-
-interface ReviewItem {
-  id: string;
-  rating?: number;
-  comment?: string;
-  reviewerName?: string;
-  reviewerPhotoURL?: string;
   createdAt?: any;
 }
 
@@ -140,21 +132,6 @@ const calculateTrustScore = (profile: any) => {
 const normalizeRoles = (roles: unknown) =>
   Array.isArray(roles) ? roles.filter(role => typeof role === 'string') : [];
 
-const renderStars = (rating = 0) => (
-  <div className="flex items-center gap-0.5">
-    {[1, 2, 3, 4, 5].map(value => (
-      <Star
-        key={value}
-        className={`h-3.5 w-3.5 ${
-          value <= Math.round(rating)
-            ? 'fill-amber-500 text-amber-500'
-            : 'text-slate-700'
-        }`}
-      />
-    ))}
-  </div>
-);
-
 export default function Profile() {
   const { userId: urlUserId } = useParams();
   const {
@@ -177,7 +154,6 @@ export default function Profile() {
   const [targetProfile, setTargetProfile] = useState<any>(null);
   const [profileOverlay, setProfileOverlay] = useState<any>({});
   const [listings, setListings] = useState<ListingItem[]>([]);
-  const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [activeTab, setActiveTab] = useState<ProfileTab>('listings');
   const [loading, setLoading] = useState(true);
@@ -264,18 +240,6 @@ export default function Profile() {
       error => console.error('Profile listings sync failed:', error)
     );
 
-    const unsubReviews = onSnapshot(
-      query(collection(db, 'reviews'), where('revieweeId', '==', targetUserId)),
-      snapshot => {
-        const next = snapshot.docs
-          .map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as ReviewItem))
-          .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
-
-        setReviews(next);
-      },
-      error => console.error('Profile reviews sync failed:', error)
-    );
-
     const unsubActivities = onSnapshot(
       query(collection(db, 'activities'), where('userId', '==', targetUserId)),
       snapshot => {
@@ -290,7 +254,6 @@ export default function Profile() {
 
     return () => {
       unsubListings();
-      unsubReviews();
       unsubActivities();
     };
   }, [targetUserId]);
@@ -975,42 +938,12 @@ export default function Profile() {
           )}
 
           {activeTab === 'reviews' && (
-            <div className="space-y-4">
-              {reviews.length > 0 ? (
-                reviews.map(review => (
-                  <div key={review.id} className="rounded-2xl border border-white/5 bg-black/30 p-5">
-                    <div className="flex items-start gap-4">
-                      <img
-                        src={
-                          review.reviewerPhotoURL ||
-                          `https://api.dicebear.com/7.x/avataaars/svg?seed=${review.id}`
-                        }
-                        alt={review.reviewerName || 'Reviewer'}
-                        className="h-12 w-12 rounded-full object-cover"
-                      />
-                      <div className="flex-1">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <p className="font-serif text-lg text-white">
-                            {review.reviewerName || 'Marketplace User'}
-                          </p>
-                          {renderStars(review.rating || 0)}
-                        </div>
-                        <p className="mt-2 font-serif text-sm italic leading-relaxed text-slate-400">
-                          {review.comment || 'No comment left.'}
-                        </p>
-                        <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
-                          {formatDate(review.createdAt)}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="rounded-2xl border border-white/5 bg-black/30 p-10 text-center text-slate-500">
-                  No reviews yet.
-                </div>
-              )}
-            </div>
+            <ProfileReviewsTab
+              targetUserId={profile.userId}
+              profile={profile}
+              authUser={authUser}
+              isOwnProfile={isOwnProfile}
+            />
           )}
 
           {activeTab === 'about' && (
