@@ -57,6 +57,8 @@ import { useAuth } from '../components/auth/AuthContext';
 import { db, storage } from '../lib/firebase';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import ProfileReviewsTab from '../components/reviews/ProfileReviewsTab';
+import TrustCenterPanel from '../components/trust/TrustCenterPanel';
+import { applyTrustPenalty } from '../services/trustScoreService';
 
 type ProfileTab = 'listings' | 'reviews' | 'about' | 'deliveries' | 'activity';
 
@@ -417,6 +419,26 @@ export default function Profile() {
         status: 'pending',
         createdAt: serverTimestamp()
       });
+
+      try {
+        const highRiskReport = ['fraud', 'scam', 'fake_products'].includes(reportReason);
+
+        await applyTrustPenalty(targetUserId, {
+          amount: highRiskReport ? 10 : 5,
+          reason: `Profile report submitted: ${reportReason}`,
+          eventType: 'report_received',
+          metadata: {
+            reporterId: authUser.uid,
+            reason: reportReason
+          },
+          metricUpdates: {
+            reportCount: increment(1),
+            ...(highRiskReport ? { fraudReportCount: increment(1) } : {})
+          }
+        });
+      } catch (trustErr) {
+        console.error('Trust penalty failed after report:', trustErr);
+      }
 
       alert('Report submitted successfully. Our safety team will review it.');
       setShowReportModal(false);
@@ -864,6 +886,12 @@ export default function Profile() {
           </div>
         ))}
       </section>
+
+      <TrustCenterPanel
+        userId={profile.userId}
+        profile={profile}
+        isOwnProfile={isOwnProfile}
+      />
 
       <section className="overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card shadow-2xl">
         <div className="scrollbar-hide flex gap-2 overflow-x-auto border-b border-white/5 p-2">
