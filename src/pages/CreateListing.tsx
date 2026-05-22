@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
+  AlertCircle,
   CheckCircle2,
   ImagePlus,
   Loader2,
@@ -46,6 +47,7 @@ export default function CreateListing() {
   const [loading, setLoading] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [gpsError, setGpsError] = useState('');
+  const [uploadWarning, setUploadWarning] = useState('');
   const [gpsLocation, setGpsLocation] = useState<ListingGpsLocation | null>(null);
   const [images, setImages] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
@@ -143,6 +145,8 @@ export default function CreateListing() {
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
+      setUploadWarning('');
+
       const newFiles = Array.from(e.target.files);
       setImages(prev => [...prev, ...newFiles]);
 
@@ -158,6 +162,34 @@ export default function CreateListing() {
     setPreviewUrls(prev => prev.filter((_, i) => i !== index));
   };
 
+  const uploadListingImagesSafely = async () => {
+    const imageUrls: string[] = [];
+    const failedImageNames: string[] = [];
+
+    for (const image of images) {
+      try {
+        const safeName = image.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const imageRef = ref(
+          storage,
+          `listings/${profile?.userId || user?.uid || 'unknown'}/${Date.now()}_${safeName}`
+        );
+
+        const snapshot = await uploadBytes(imageRef, image);
+        const url = await getDownloadURL(snapshot.ref);
+
+        imageUrls.push(url);
+      } catch (uploadError) {
+        console.error('Image upload failed:', uploadError);
+        failedImageNames.push(image.name);
+      }
+    }
+
+    return {
+      imageUrls,
+      failedImageNames
+    };
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -170,24 +202,31 @@ export default function CreateListing() {
     }
 
     setLoading(true);
+    setUploadWarning('');
 
     try {
-      const imageUrls: string[] = [];
+      const { imageUrls, failedImageNames } = await uploadListingImagesSafely();
 
-      for (const image of images) {
-        const safeName = image.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const imageRef = ref(
-          storage,
-          `listings/${profile.userId}/${Date.now()}_${safeName}`
+      if (failedImageNames.length > 0) {
+        setUploadWarning(
+          `Listing will be posted, but ${failedImageNames.length} photo upload failed.`
         );
-
-        const snapshot = await uploadBytes(imageRef, image);
-        const url = await getDownloadURL(snapshot.ref);
-        imageUrls.push(url);
+        console.warn(
+          `Listing created, but ${failedImageNames.length} image upload(s) failed.`
+        );
       }
 
       const listingLatitude = activeLocation?.latitude ?? null;
       const listingLongitude = activeLocation?.longitude ?? null;
+
+      const imageUploadStatus =
+        images.length === 0
+          ? 'none'
+          : failedImageNames.length === 0
+            ? 'uploaded'
+            : imageUrls.length > 0
+              ? 'partial'
+              : 'failed';
 
       const listingDoc = await addDoc(collection(db, 'listings'), {
         ownerId: profile.userId,
@@ -213,6 +252,8 @@ export default function CreateListing() {
         gpsSource: activeLocation?.source || 'missing',
         isGeoTagged: listingLatitude !== null && listingLongitude !== null,
         images: imageUrls,
+        imageUploadStatus,
+        failedImageNames,
         status: 'active',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -343,6 +384,13 @@ export default function CreateListing() {
           )}
         </div>
 
+        {uploadWarning && (
+          <div className="flex gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-5 text-sm text-amber-300">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            {uploadWarning}
+          </div>
+        )}
+
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-4">
             <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
@@ -350,7 +398,7 @@ export default function CreateListing() {
               Photos
             </label>
             <span className="text-right text-[8px] font-bold uppercase tracking-widest text-slate-600">
-              Clear photos increase trust
+              Optional for now
             </span>
           </div>
 
