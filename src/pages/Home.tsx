@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   collection,
@@ -47,6 +47,12 @@ interface Listing {
   id: string;
   title: string;
   price: number;
+  priceDisplay?: string;
+  currency?: string;
+  currencyCode?: string;
+  currencyLocale?: string;
+  currencyLabel?: string;
+  country?: string;
   category: string;
   location: string;
   locationName?: string;
@@ -95,6 +101,34 @@ interface UserProfile {
   online?: boolean;
   lastActiveAt?: any;
 }
+
+const zeroDecimalCurrencies = new Set(['XAF', 'XOF', 'UGX', 'RWF']);
+
+const formatMoney = (
+  amount: number,
+  currencyCode = 'XAF',
+  locale = 'fr-CM'
+) => {
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: currencyCode,
+      maximumFractionDigits: zeroDecimalCurrencies.has(currencyCode) ? 0 : 2
+    }).format(amount || 0);
+  } catch {
+    return `${currencyCode} ${(amount || 0).toLocaleString()}`;
+  }
+};
+
+const formatListingPrice = (listing: Listing) => {
+  if (listing.priceDisplay) return listing.priceDisplay;
+
+  return formatMoney(
+    Number(listing.price || 0),
+    listing.currencyCode || listing.currency || 'XAF',
+    listing.currencyLocale || 'fr-CM'
+  );
+};
 
 const getMillis = (value: any) => {
   if (!value) return 0;
@@ -913,7 +947,7 @@ export default function Home() {
 
                   <div className="absolute right-4 top-4 rounded-lg border border-white/10 bg-black/60 px-3 py-1.5 backdrop-blur-md">
                     <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">
-                      ${listing.price.toLocaleString()}
+                      {formatListingPrice(listing)}
                     </p>
                   </div>
                 </div>
@@ -1031,7 +1065,7 @@ export default function Home() {
 
                     <div className="absolute right-6 top-6 rounded-lg bg-amber-500 px-3 py-1.5 shadow-xl">
                       <p className="text-[10px] font-black uppercase tracking-widest text-black">
-                        ${listing.price.toLocaleString()}
+                        {formatListingPrice(listing)}
                       </p>
                     </div>
                   </div>
