@@ -20,6 +20,7 @@ import {
   CreditCard,
   Loader2,
   MessageCircle,
+  Navigation,
   Package,
   Scale,
   Send,
@@ -32,6 +33,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { db } from '../lib/firebase';
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
+import DeliveryRequestPanel from '../components/delivery/DeliveryRequestPanel';
 import RatingModal from '../components/trade/RatingModal';
 import DriverRatingModal from '../components/trade/DriverRatingModal';
 import { findOptimalDrivers } from '../services/matchingService';
@@ -130,7 +132,9 @@ interface Trade {
   driverCommission?: number;
   deliveryStatus?: string;
   deliveryETA?: string;
+  deliveryRequestId?: string;
   deliveryRequestStatus?: string;
+  logisticsOrderId?: string;
   escrowStatus?: string;
   paymentStatus?: string;
   paymentTxRef?: string;
@@ -196,6 +200,7 @@ export default function TradeDetail() {
   const [showDriverRating, setShowDriverRating] = useState(false);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [showDriverSelection, setShowDriverSelection] = useState(false);
+  const [showDeliveryRequestPanel, setShowDeliveryRequestPanel] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -222,9 +227,7 @@ export default function TradeDetail() {
 
   useEffect(() => {
     return () => {
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
   }, []);
 
@@ -597,7 +600,6 @@ export default function TradeDetail() {
     if (!id || !user || !newOfferAmount || !trade) return;
 
     const amount = Number(newOfferAmount);
-
     if (!Number.isFinite(amount) || amount <= 0) return;
 
     setUpdating(true);
@@ -651,9 +653,7 @@ export default function TradeDetail() {
       const offerRef = doc(db, 'trades', id, 'offers', offerId);
       const offerSnap = await getDoc(offerRef);
 
-      if (!offerSnap.exists()) {
-        throw new Error('Offer not found.');
-      }
+      if (!offerSnap.exists()) throw new Error('Offer not found.');
 
       const offerSenderId = offerSnap.data().senderId;
 
@@ -837,6 +837,12 @@ export default function TradeDetail() {
     }
   };
 
+  const canRequestAdvancedDelivery =
+    Boolean(trade && user) &&
+    isBuyer &&
+    !trade?.deliveryRequestId &&
+    ['pending', 'funded', 'shipped'].includes(trade?.status || '');
+
   if (loading) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-6 bg-brand-bg p-12">
@@ -959,7 +965,7 @@ export default function TradeDetail() {
           </div>
         </div>
 
-        <div className="md:hidden">
+        <div className="space-y-3 md:hidden">
           {trade.status === 'pending' && isBuyer && (
             <button
               onClick={handlePayment}
@@ -977,14 +983,24 @@ export default function TradeDetail() {
             </button>
           )}
 
-          {trade.status === 'funded' && isBuyer && !trade.driverId && (
+          {canRequestAdvancedDelivery && (
             <button
-              onClick={() => setShowDriverSelection(true)}
+              onClick={() => setShowDeliveryRequestPanel(true)}
               className="flex w-full items-center justify-center gap-3 rounded-2xl bg-amber-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
             >
               <Truck className="h-4 w-4" />
-              Select Delivery Driver
+              Request Advanced Delivery
             </button>
+          )}
+
+          {trade.deliveryRequestId && (
+            <Link
+              to={`/delivery/${trade.deliveryRequestId}`}
+              className="flex w-full items-center justify-center gap-3 rounded-2xl border border-green-500/30 bg-green-500/10 py-5 text-[10px] font-bold uppercase tracking-widest text-green-400 shadow-2xl"
+            >
+              <Navigation className="h-4 w-4" />
+              Live Tracking
+            </Link>
           )}
 
           {trade.status === 'funded' && isSeller && (
@@ -1161,7 +1177,12 @@ export default function TradeDetail() {
             className="flex flex-col gap-3 border-t border-white/5 bg-white/[0.01] p-4"
           >
             <div className="scrollbar-hide flex gap-2 overflow-x-auto pb-2">
-              {['Is this available?', 'When can you ship?', 'I have a question', 'Can we meet?'].map(text => (
+              {[
+                'Is this available?',
+                'When can you ship?',
+                'I have a question',
+                'Can we meet?'
+              ].map(text => (
                 <button
                   key={text}
                   type="button"
@@ -1325,36 +1346,58 @@ export default function TradeDetail() {
                 </div>
               )}
 
-              {trade.status === 'funded' && isBuyer && !trade.driverId && (
+              {canRequestAdvancedDelivery && (
                 <div className="space-y-3">
                   <button
-                    onClick={broadcastRequest}
-                    disabled={broadcasting || trade.deliveryRequestStatus === 'open'}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl hover:bg-amber-400 disabled:opacity-50"
+                    onClick={() => setShowDeliveryRequestPanel(true)}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl hover:bg-amber-400"
                   >
-                    {broadcasting ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <>
-                        <Truck className="h-4 w-4" />
-                        {trade.deliveryRequestStatus === 'open' ? 'Request Broadcasted' : 'Broadcast Request'}
-                      </>
-                    )}
+                    <Truck className="h-4 w-4" />
+                    Request Advanced Delivery
                   </button>
 
-                  {trade.deliveryRequestStatus === 'open' && (
-                    <p className="animate-pulse text-center text-[8px] font-black uppercase text-amber-500/50">
-                      Waiting for driver to claim...
-                    </p>
+                  <p className="text-center text-[8px] font-black uppercase tracking-widest text-slate-600">
+                    Smart driver matching, escrow-linked shipment, live GPS tracking
+                  </p>
+
+                  {trade.status === 'funded' && isBuyer && !trade.driverId && (
+                    <>
+                      <button
+                        onClick={broadcastRequest}
+                        disabled={broadcasting || trade.deliveryRequestStatus === 'open'}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 hover:bg-white/10 disabled:opacity-50"
+                      >
+                        {broadcasting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Truck className="h-4 w-4" />
+                            {trade.deliveryRequestStatus === 'open'
+                              ? 'Request Broadcasted'
+                              : 'Basic Broadcast'}
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        onClick={() => setShowDriverSelection(true)}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-white/5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 hover:bg-white/10"
+                      >
+                        Select Manually
+                      </button>
+                    </>
                   )}
-
-                  <button
-                    onClick={() => setShowDriverSelection(true)}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-white/5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 hover:bg-white/10"
-                  >
-                    Select Manually
-                  </button>
                 </div>
+              )}
+
+              {trade.deliveryRequestId && (
+                <Link
+                  to={`/delivery/${trade.deliveryRequestId}`}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-green-500/30 bg-green-500/10 py-3 text-[10px] font-black uppercase tracking-widest text-green-400 hover:bg-green-500 hover:text-black"
+                >
+                  <Navigation className="h-4 w-4" />
+                  Live Tracking
+                </Link>
               )}
             </div>
 
@@ -1399,24 +1442,26 @@ export default function TradeDetail() {
                           )}
                         </div>
 
-                        {offer.status === 'pending' && offer.senderId !== user?.uid && trade.status === 'pending' && (
-                          <div className="flex gap-2 pt-2">
-                            <button
-                              onClick={() => handleOfferResponse(offer.id, 'accepted', offer.amount)}
-                              disabled={updating}
-                              className="flex-1 rounded-lg bg-white py-2 text-[8px] font-black uppercase text-black transition-all hover:bg-amber-500"
-                            >
-                              Accept
-                            </button>
-                            <button
-                              onClick={() => handleOfferResponse(offer.id, 'declined', offer.amount)}
-                              disabled={updating}
-                              className="flex-1 rounded-lg bg-red-500/10 py-2 text-[8px] font-black uppercase text-red-500 transition-all hover:bg-red-500 hover:text-white"
-                            >
-                              Decline
-                            </button>
-                          </div>
-                        )}
+                        {offer.status === 'pending' &&
+                          offer.senderId !== user?.uid &&
+                          trade.status === 'pending' && (
+                            <div className="flex gap-2 pt-2">
+                              <button
+                                onClick={() => handleOfferResponse(offer.id, 'accepted', offer.amount)}
+                                disabled={updating}
+                                className="flex-1 rounded-lg bg-white py-2 text-[8px] font-black uppercase text-black transition-all hover:bg-amber-500"
+                              >
+                                Accept
+                              </button>
+                              <button
+                                onClick={() => handleOfferResponse(offer.id, 'declined', offer.amount)}
+                                disabled={updating}
+                                className="flex-1 rounded-lg bg-red-500/10 py-2 text-[8px] font-black uppercase text-red-500 transition-all hover:bg-red-500 hover:text-white"
+                              >
+                                Decline
+                              </button>
+                            </div>
+                          )}
 
                         {offer.status === 'pending' && offer.senderId === user?.uid && (
                           <p className="mt-2 font-serif text-[9px] italic leading-none text-slate-600">
@@ -1650,6 +1695,27 @@ export default function TradeDetail() {
       </div>
 
       <AnimatePresence>
+        {showDeliveryRequestPanel && trade && (
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-black/90 p-4 backdrop-blur-md">
+            <div className="mx-auto my-8 max-w-5xl">
+              <DeliveryRequestPanel
+                tradeId={trade.id}
+                buyerId={trade.buyerId}
+                sellerId={trade.sellerId}
+                packageValue={trade.amount}
+                onCreated={() => setShowDeliveryRequestPanel(false)}
+              />
+
+              <button
+                onClick={() => setShowDeliveryRequestPanel(false)}
+                className="mt-4 w-full rounded-2xl border border-white/10 bg-white/5 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:bg-white hover:text-black"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
         {showDriverSelection && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-6 backdrop-blur-md">
             <motion.div
