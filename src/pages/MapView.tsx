@@ -1,7 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, limit, onSnapshot, query, serverTimestamp, setDoc } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  limit,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc
+} from 'firebase/firestore';
 import L from 'leaflet';
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
+import {
+  MapContainer,
+  Marker,
+  Popup,
+  TileLayer,
+  useMap
+} from 'react-leaflet';
+import { Link } from 'react-router-dom';
 import {
   Compass,
   Loader2,
@@ -40,6 +55,8 @@ interface UserProfile {
   driverStatus?: string;
   availability?: string;
   currentLocation?: Partial<GeoPoint>;
+  locationCoordinates?: Partial<GeoPoint>;
+  locationPoint?: Partial<GeoPoint>;
   latitude?: number;
   longitude?: number;
   location?: string;
@@ -65,8 +82,14 @@ interface Listing {
   locationName?: string;
   latitude?: number;
   longitude?: number;
+  currentLocation?: Partial<GeoPoint>;
+  locationCoordinates?: Partial<GeoPoint>;
+  locationPoint?: Partial<GeoPoint>;
+  pickupLocation?: Partial<GeoPoint>;
   images?: string[];
   ownerId?: string;
+  sellerId?: string;
+  userId?: string;
   status?: string;
   isBoosted?: boolean;
 }
@@ -74,8 +97,11 @@ interface Listing {
 interface DriverLocation {
   id: string;
   driverId?: string;
+  userId?: string;
+  uid?: string;
   latitude?: number;
   longitude?: number;
+  currentLocation?: Partial<GeoPoint>;
   heading?: number;
   speed?: number;
   deliveryId?: string;
@@ -123,6 +149,28 @@ const toPoint = (value: any): GeoPoint | null => {
   return { latitude, longitude };
 };
 
+const getUserPoint = (profile: UserProfile | null | undefined) => {
+  if (!profile) return null;
+
+  return (
+    toPoint(profile.currentLocation) ||
+    toPoint(profile.locationCoordinates) ||
+    toPoint(profile.locationPoint) ||
+    toPoint(profile)
+  );
+};
+
+const getListingPoint = (
+  listing: Listing,
+  owner?: UserProfile
+): GeoPoint | null =>
+  toPoint(listing) ||
+  toPoint(listing.currentLocation) ||
+  toPoint(listing.locationCoordinates) ||
+  toPoint(listing.locationPoint) ||
+  toPoint(listing.pickupLocation) ||
+  getUserPoint(owner);
+
 const calculateDistance = (from: GeoPoint, to: GeoPoint) => {
   const earthRadiusKm = 6371;
   const dLat = ((to.latitude - from.latitude) * Math.PI) / 180;
@@ -132,19 +180,26 @@ const calculateDistance = (from: GeoPoint, to: GeoPoint) => {
 
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+    Math.sin(dLon / 2) *
+      Math.sin(dLon / 2) *
+      Math.cos(lat1) *
+      Math.cos(lat2);
 
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
 const formatDistance = (distanceKm: number) =>
-  distanceKm < 1 ? `${Math.round(distanceKm * 1000)} m` : `${distanceKm.toFixed(1)} km`;
+  distanceKm < 1
+    ? `${Math.round(distanceKm * 1000)} m`
+    : `${distanceKm.toFixed(1)} km`;
 
 const displayName = (profile: UserProfile) =>
   profile.displayName || profile.name || profile.email || 'Hema Trader';
 
 const displayLocation = (profile: UserProfile) =>
-  profile.location || [profile.city, profile.country].filter(Boolean).join(', ') || 'Cameroon';
+  profile.location ||
+  [profile.city, profile.country].filter(Boolean).join(', ') ||
+  'Cameroon';
 
 const normalizeRoles = (roles: unknown): string[] =>
   Array.isArray(roles) ? roles.filter(role => typeof role === 'string') : [];
@@ -156,12 +211,27 @@ const isActive = (profile: UserProfile) => {
   return lastActive > 0 && Date.now() - lastActive < 15 * 60 * 1000;
 };
 
+const isDriverProfile = (profile: UserProfile) => {
+  const roles = normalizeRoles(profile.roles);
+
+  return (
+    roles.includes('driver') ||
+    Boolean(profile.driverStatus || profile.availability)
+  );
+};
+
+const isTraderProfile = (profile: UserProfile) => {
+  const roles = normalizeRoles(profile.roles);
+
+  return roles.includes('seller') || roles.includes('buyer');
+};
+
 const createMarkerIcon = (type: MapPoint['type'], active = false) => {
   const palette = {
     me: ['#f59e0b', '#111827', 'ME'],
-    driver: ['#22c55e', '#052e16', 'D'],
-    listing: ['#f59e0b', '#451a03', 'L'],
-    trader: ['#38bdf8', '#082f49', 'T']
+    driver: ['#22c55e', '#052e16', 'DR'],
+    listing: ['#f59e0b', '#451a03', 'PK'],
+    trader: ['#38bdf8', '#082f49', 'TR']
   }[type];
 
   return L.divIcon({
@@ -175,14 +245,18 @@ const createMarkerIcon = (type: MapPoint['type'], active = false) => {
         display: grid;
         place-items: center;
         color: white;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 900;
         letter-spacing: 0.08em;
         background: ${palette[1]};
         border: 2px solid ${palette[0]};
         box-shadow: 0 0 0 6px ${palette[0]}22, 0 0 28px ${palette[0]}66;
       ">
-        ${active ? `<span style="position:absolute; inset:-8px; border-radius:999px; border:1px solid ${palette[0]}; animation:pulse 1.6s infinite;"></span>` : ''}
+        ${
+          active
+            ? `<span style="position:absolute; inset:-8px; border-radius:999px; border:1px solid ${palette[0]}; animation:pulse 1.6s infinite;"></span>`
+            : ''
+        }
         ${palette[2]}
       </div>
     `,
@@ -211,51 +285,72 @@ export default function MapView() {
   const [browserLocation, setBrowserLocation] = useState<GeoPoint | null>(null);
   const [locationError, setLocationError] = useState('');
   const [search, setSearch] = useState('');
-  const [activeLayer, setActiveLayer] = useState<'all' | 'drivers' | 'listings' | 'traders'>('all');
+  const [activeLayer, setActiveLayer] = useState<
+    'all' | 'drivers' | 'listings' | 'traders'
+  >('all');
   const [radiusKm, setRadiusKm] = useState<number | null>(50);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let readyCount = 0;
+    let usersReady = false;
+    let listingsReady = false;
+    let locationsReady = false;
 
-    const markReady = () => {
-      readyCount += 1;
-      if (readyCount >= 3) setLoading(false);
+    const finishLoading = () => {
+      if (usersReady && listingsReady && locationsReady) {
+        setLoading(false);
+      }
     };
 
     const unsubscribeUsers = onSnapshot(
       query(collection(db, 'users'), limit(300)),
       snap => {
-        setUsers(snap.docs.map(item => ({ id: item.id, ...item.data() } as UserProfile)));
-        markReady();
+        setUsers(
+          snap.docs.map(
+            item => ({ id: item.id, ...item.data() }) as UserProfile
+          )
+        );
+        usersReady = true;
+        finishLoading();
       },
       error => {
         console.error('Users map sync failed:', error);
-        markReady();
+        usersReady = true;
+        finishLoading();
       }
     );
 
     const unsubscribeListings = onSnapshot(
       query(collection(db, 'listings'), limit(300)),
       snap => {
-        setListings(snap.docs.map(item => ({ id: item.id, ...item.data() } as Listing)));
-        markReady();
+        setListings(
+          snap.docs.map(item => ({ id: item.id, ...item.data() }) as Listing)
+        );
+        listingsReady = true;
+        finishLoading();
       },
       error => {
         console.error('Listings map sync failed:', error);
-        markReady();
+        listingsReady = true;
+        finishLoading();
       }
     );
 
     const unsubscribeDriverLocations = onSnapshot(
       query(collection(db, 'driverLocations'), limit(300)),
       snap => {
-        setDriverLocations(snap.docs.map(item => ({ id: item.id, ...item.data() } as DriverLocation)));
-        markReady();
+        setDriverLocations(
+          snap.docs.map(
+            item => ({ id: item.id, ...item.data() }) as DriverLocation
+          )
+        );
+        locationsReady = true;
+        finishLoading();
       },
       error => {
         console.error('Driver location map sync failed:', error);
-        markReady();
+        locationsReady = true;
+        finishLoading();
       }
     );
 
@@ -266,16 +361,31 @@ export default function MapView() {
     };
   }, []);
 
+  const userMap = useMemo(() => {
+    const next = new Map<string, UserProfile>();
+
+    users.forEach(profileItem => {
+      next.set(profileItem.id, profileItem);
+
+      if (profileItem.uid) {
+        next.set(profileItem.uid, profileItem);
+      }
+    });
+
+    return next;
+  }, [users]);
+
   const driverLocationMap = useMemo(() => {
     const next = new Map<string, DriverLocation>();
 
     driverLocations.forEach(location => {
-      const point = toPoint(location);
-      const driverId = location.driverId || location.id;
+      const point = toPoint(location) || toPoint(location.currentLocation);
+      const ids = [location.driverId, location.userId, location.uid, location.id]
+        .filter(Boolean) as string[];
 
-      if (driverId && point) {
-        next.set(driverId, location);
-      }
+      if (!point) return;
+
+      ids.forEach(id => next.set(id, location));
     });
 
     return next;
@@ -284,10 +394,7 @@ export default function MapView() {
   const currentUserPoint = useMemo(() => {
     if (browserLocation) return browserLocation;
 
-    const profilePoint =
-      toPoint((profile as any)?.currentLocation) || toPoint(profile);
-
-    return profilePoint;
+    return getUserPoint(profile as UserProfile | null);
   }, [browserLocation, profile]);
 
   const requestLocation = async () => {
@@ -323,7 +430,9 @@ export default function MapView() {
       },
       error => {
         console.error('Map location permission failed:', error);
-        setLocationError('Location unavailable. Allow GPS from your browser address bar.');
+        setLocationError(
+          'Location unavailable. Allow GPS from your browser address bar.'
+        );
       },
       {
         enableHighAccuracy: true,
@@ -338,23 +447,18 @@ export default function MapView() {
 
     users.forEach(profileItem => {
       const roles = normalizeRoles(profileItem.roles);
-      const isDriver =
-        roles.includes('driver') ||
-        Boolean(profileItem.driverStatus || profileItem.availability);
+      const driverLocation =
+        driverLocationMap.get(profileItem.id) ||
+        driverLocationMap.get(profileItem.uid || '');
 
-      const liveDriverPoint = isDriver
-        ? toPoint(driverLocationMap.get(profileItem.id)) ||
-          toPoint(driverLocationMap.get(profileItem.uid || ''))
-        : null;
+      const liveDriverPoint =
+        toPoint(driverLocation) || toPoint(driverLocation?.currentLocation);
 
-      const profilePoint =
-        liveDriverPoint ||
-        toPoint(profileItem.currentLocation) ||
-        toPoint(profileItem);
+      const profilePoint = liveDriverPoint || getUserPoint(profileItem);
 
       if (!profilePoint) return;
 
-      if (isDriver) {
+      if (isDriverProfile(profileItem)) {
         points.push({
           id: profileItem.id,
           type: 'driver',
@@ -364,7 +468,9 @@ export default function MapView() {
           longitude: profilePoint.longitude,
           avatar: profileItem.photoURL,
           actionUrl: `/drivers/${profileItem.id}`,
-          rating: safeNumber(profileItem.avgDriverRating || profileItem.averageRating),
+          rating: safeNumber(
+            profileItem.avgDriverRating || profileItem.averageRating
+          ),
           trustScore: safeNumber(profileItem.trustScore, 100),
           active: isActive(profileItem) || profileItem.driverStatus === 'available',
           meta: profileItem.driverStatus || profileItem.availability || 'available'
@@ -373,7 +479,7 @@ export default function MapView() {
         return;
       }
 
-      if (roles.includes('seller') || roles.includes('buyer')) {
+      if (isTraderProfile(profileItem)) {
         points.push({
           id: profileItem.id,
           type: 'trader',
@@ -394,14 +500,24 @@ export default function MapView() {
     listings
       .filter(listing => !listing.status || listing.status === 'active')
       .forEach(listing => {
-        const listingPoint = toPoint(listing);
+        const owner =
+          userMap.get(listing.ownerId || '') ||
+          userMap.get(listing.sellerId || '') ||
+          userMap.get(listing.userId || '');
+
+        const listingPoint = getListingPoint(listing, owner);
+
         if (!listingPoint) return;
 
         points.push({
           id: listing.id,
           type: 'listing',
           title: listing.title || 'Marketplace Listing',
-          subtitle: `${listing.category || 'Listing'} - ${listing.locationName || listing.location || 'Cameroon'}`,
+          subtitle: `${listing.category || 'Listing'} - ${
+            listing.locationName ||
+            listing.location ||
+            (owner ? displayLocation(owner) : 'Cameroon')
+          }`,
           latitude: listingPoint.latitude,
           longitude: listingPoint.longitude,
           avatar: listing.images?.[0],
@@ -425,13 +541,22 @@ export default function MapView() {
     }
 
     return points;
-  }, [users, listings, currentUserPoint, driverLocationMap]);
+  }, [users, listings, currentUserPoint, driverLocationMap, userMap]);
 
   const filteredPoints = useMemo(() => {
     const term = search.trim().toLowerCase();
 
+    const layerType =
+      activeLayer === 'drivers'
+        ? 'driver'
+        : activeLayer === 'listings'
+          ? 'listing'
+          : activeLayer === 'traders'
+            ? 'trader'
+            : 'all';
+
     return mapPoints
-      .filter(point => activeLayer === 'all' || point.type === activeLayer.slice(0, -1))
+      .filter(point => layerType === 'all' || point.type === layerType)
       .filter(point => {
         if (!term) return true;
 
@@ -447,6 +572,15 @@ export default function MapView() {
         return calculateDistance(currentUserPoint, point) <= radiusKm;
       });
   }, [mapPoints, activeLayer, search, currentUserPoint, radiusKm]);
+
+  const emptyMessage =
+    activeLayer === 'drivers'
+      ? 'No GPS drivers found. Ask drivers to turn on Available mode.'
+      : activeLayer === 'listings'
+        ? 'No geotagged listings found yet. Listings need GPS or seller location.'
+        : activeLayer === 'traders'
+          ? 'No nearby trader GPS signals found yet.'
+          : 'Try allowing GPS, changing the radius, or clearing your search.';
 
   const center: [number, number] = currentUserPoint
     ? [currentUserPoint.latitude, currentUserPoint.longitude]
@@ -487,13 +621,13 @@ export default function MapView() {
                 Use My GPS
               </button>
 
-              <a
-                href="/drivers"
+              <Link
+                to="/drivers"
                 className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-white hover:bg-white/10"
               >
                 <Truck className="h-4 w-4" />
                 Driver Network
-              </a>
+              </Link>
             </div>
           </div>
         </div>
@@ -627,12 +761,12 @@ export default function MapView() {
                         </div>
 
                         {point.actionUrl && (
-                          <a
-                            href={point.actionUrl}
+                          <Link
+                            to={point.actionUrl}
                             className="block rounded-lg bg-slate-950 py-2 text-center text-[10px] font-black uppercase tracking-widest text-white"
                           >
                             Open
-                          </a>
+                          </Link>
                         )}
                       </div>
                     </Popup>
@@ -646,7 +780,7 @@ export default function MapView() {
                 <WifiOff className="mx-auto h-10 w-10 text-amber-500" />
                 <h3 className="mt-4 font-serif text-2xl text-white">No map signals found</h3>
                 <p className="mt-2 text-sm text-slate-500">
-                  Try allowing GPS, changing the radius, or clearing your search.
+                  {emptyMessage}
                 </p>
               </div>
             )}
