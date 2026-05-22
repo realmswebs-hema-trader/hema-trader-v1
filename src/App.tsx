@@ -35,6 +35,7 @@ import Profile from './pages/Profile';
 import Trades from './pages/Trades';
 import TradeDetail from './pages/TradeDetail';
 import DriverDashboard from './pages/DriverDashboard';
+import DriverDeliveries from './pages/DriverDeliveries';
 import DriverDiscovery from './pages/DriverDiscovery';
 import Drivers from './pages/Drivers';
 import DriverProfile from './pages/DriverProfile';
@@ -286,6 +287,15 @@ function AppRoutes() {
             element={
               <PrivateRoute>
                 <DriverDashboard />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/driver/deliveries"
+            element={
+              <PrivateRoute>
+                <DriverDeliveries />
               </PrivateRoute>
             }
           />
