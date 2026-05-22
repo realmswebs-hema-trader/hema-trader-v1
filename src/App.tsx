@@ -41,6 +41,7 @@ import Drivers from './pages/Drivers';
 import DriverProfile from './pages/DriverProfile';
 import DeliveryDetail from './pages/DeliveryDetail';
 import DeliveryTracking from './pages/DeliveryTracking';
+import MapView from './pages/MapView';
 import Admin from './pages/Admin';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
@@ -278,6 +279,15 @@ function AppRoutes() {
             element={
               <PrivateRoute>
                 <TradeDetail />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/map"
+            element={
+              <PrivateRoute>
+                <MapView />
               </PrivateRoute>
             }
           />
