@@ -14,7 +14,7 @@ import { db } from '../lib/firebase';
 import {
   analyzeDeliveryRisk,
   calculateDeliveryFee,
-  calculateDeliveryETA,
+  calculateSmartETA,
   findBestDriversForDelivery,
   getVehicleRecommendation,
   type DeliveryMatchInput
@@ -129,17 +129,17 @@ export const createDeliveryRequest = async (
     dropoffLocation: normalizedDropoff
   };
 
+  const recommendedVehicle = getVehicleRecommendation(matchingInput);
+
   const estimatedFee =
     input.estimatedFee ||
     calculateDeliveryFee(normalizedPickup, normalizedDropoff, matchingInput);
 
-  const estimatedEtaMinutes = calculateDeliveryETA(
+  const estimatedEtaMinutes = calculateSmartETA(
     normalizedPickup,
-    normalizedDropoff,
-    getVehicleRecommendation(matchingInput)
+    normalizedDropoff
   );
 
-  const recommendedVehicle = getVehicleRecommendation(matchingInput);
   const risk = analyzeDeliveryRisk(matchingInput);
 
   const matchedDrivers = input.driverId
