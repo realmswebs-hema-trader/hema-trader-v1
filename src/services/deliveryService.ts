@@ -14,7 +14,7 @@ import { db } from '../lib/firebase';
 import {
   analyzeDeliveryRisk,
   calculateDeliveryFee,
-  calculateSmartETA,
+  calculateDeliveryETA,
   findBestDriversForDelivery,
   getVehicleRecommendation,
   type DeliveryMatchInput
@@ -36,14 +36,15 @@ export type DeliveryStatus =
   | 'disputed'
   | 'cancelled';
 
-export interface CreateDeliveryRequestInput extends DeliveryMatchInput {
+export interface CreateDeliveryRequestInput
+  extends Omit<DeliveryMatchInput, 'pickupLocation' | 'dropoffLocation'> {
   tradeId: string;
   buyerId: string;
   sellerId: string;
   driverId?: string;
-  pickupLocation?: string | GeoPoint;
-  dropoffLocation?: string | GeoPoint;
-  deliveryLocation?: string | GeoPoint;
+  pickupLocation?: string | GeoPoint | null;
+  dropoffLocation?: string | GeoPoint | null;
+  deliveryLocation?: string | GeoPoint | null;
   pickupAddress?: string;
   destinationAddress?: string;
   dropoffAddress?: string;
@@ -72,16 +73,8 @@ const statusMessage: Record<string, string> = {
   cancelled: 'Delivery cancelled.'
 };
 
-const getDeliveryPoint = (value: any): GeoPoint | null => {
-  if (typeof value === 'string') return null;
-  return toGeoPoint(value);
-};
-
 const getAddress = (value: any, fallback = '') =>
   typeof value === 'string' ? value : fallback;
-
-const deliveryRecipients = (delivery: any) =>
-  [delivery.buyerId, delivery.sellerId, delivery.driverId].filter(Boolean);
 
 const addNotificationWrites = (
   batch: ReturnType<typeof writeBatch>,
@@ -93,7 +86,7 @@ const addNotificationWrites = (
     actionUrl: string;
   }
 ) => {
-  recipientIds.forEach(recipientId => {
+  recipientIds.filter(Boolean).forEach(recipientId => {
     const notificationRef = doc(
       collection(db, 'users', recipientId, 'notifications')
     );
@@ -126,49 +119,32 @@ const writeDeliveryHistory = async (
 export const createDeliveryRequest = async (
   input: CreateDeliveryRequestInput
 ) => {
-  const pickupPoint =
-    input.pickupLocation && typeof input.pickupLocation !== 'string'
-      ? getDeliveryPoint(input.pickupLocation)
-      : input.pickupLocation || input.pickupAddress
-        ? input.pickupLocationObject || input.pickupLocationPoint || input.pickupPoint || null
-        : input.pickupLocation || null;
+  const normalizedPickup = toGeoPoint(input.pickupLocation);
+  const normalizedDropoff =
+    toGeoPoint(input.dropoffLocation) || toGeoPoint(input.deliveryLocation);
 
-  const dropoffPoint =
-    input.dropoffLocation && typeof input.dropoffLocation !== 'string'
-      ? getDeliveryPoint(input.dropoffLocation)
-      : input.deliveryLocation && typeof input.deliveryLocation !== 'string'
-        ? getDeliveryPoint(input.deliveryLocation)
-        : input.dropoffLocationObject || input.destinationLocation || input.deliveryPoint || null;
-
-  const normalizedPickup = toGeoPoint(pickupPoint);
-  const normalizedDropoff = toGeoPoint(dropoffPoint);
-
-  const estimatedFee =
-    input.estimatedFee ||
-    calculateDeliveryFee(normalizedPickup, normalizedDropoff, input);
-
-  const estimatedEtaMinutes = calculateSmartETA(
-    normalizedPickup,
-    normalizedDropoff
-  );
-
-  const recommendedVehicle = getVehicleRecommendation(input);
-  const risk = analyzeDeliveryRisk({
+  const matchingInput: DeliveryMatchInput = {
     ...input,
     pickupLocation: normalizedPickup,
     dropoffLocation: normalizedDropoff
-  });
+  };
+
+  const estimatedFee =
+    input.estimatedFee ||
+    calculateDeliveryFee(normalizedPickup, normalizedDropoff, matchingInput);
+
+  const estimatedEtaMinutes = calculateDeliveryETA(
+    normalizedPickup,
+    normalizedDropoff,
+    getVehicleRecommendation(matchingInput)
+  );
+
+  const recommendedVehicle = getVehicleRecommendation(matchingInput);
+  const risk = analyzeDeliveryRisk(matchingInput);
 
   const matchedDrivers = input.driverId
     ? []
-    : await findBestDriversForDelivery(
-        {
-          ...input,
-          pickupLocation: normalizedPickup,
-          dropoffLocation: normalizedDropoff
-        },
-        5
-      );
+    : await findBestDriversForDelivery(matchingInput, 5);
 
   const selectedDriverId = input.driverId || matchedDrivers[0]?.driverId || '';
 
@@ -177,6 +153,7 @@ export const createDeliveryRequest = async (
 
   const driverCommission = Math.round(estimatedFee * 0.8);
   const platformDeliveryFee = Math.max(estimatedFee - driverCommission, 0);
+  const initialStatus: DeliveryStatus = selectedDriverId ? 'assigned' : 'pending';
 
   const deliveryPayload = {
     id: deliveryId,
@@ -195,7 +172,10 @@ export const createDeliveryRequest = async (
     destinationAddress:
       input.destinationAddress ||
       input.dropoffAddress ||
-      getAddress(input.dropoffLocation, getAddress(input.deliveryLocation, 'Destination')),
+      getAddress(
+        input.dropoffLocation,
+        getAddress(input.deliveryLocation, 'Destination')
+      ),
 
     packageType: input.packageType || 'general',
     packageWeight: Number(input.packageWeight || 0),
@@ -215,8 +195,8 @@ export const createDeliveryRequest = async (
     riskFlags: risk.flags,
     matchedDrivers,
 
-    status: selectedDriverId ? 'assigned' : 'pending',
-    deliveryStatus: selectedDriverId ? 'assigned' : 'pending',
+    status: initialStatus,
+    deliveryStatus: initialStatus,
     escrowStatus: 'delivery_linked',
     escrowProtected: true,
 
@@ -236,7 +216,7 @@ export const createDeliveryRequest = async (
     sellerId: input.sellerId,
     pickupLocation: normalizedPickup,
     destinationLocation: normalizedDropoff,
-    status: deliveryPayload.status,
+    status: initialStatus,
     routeProgress: 0,
     lastUpdatedAt: serverTimestamp(),
     createdAt: serverTimestamp()
@@ -248,7 +228,7 @@ export const createDeliveryRequest = async (
     buyerId: input.buyerId,
     sellerId: input.sellerId,
     driverId: selectedDriverId || null,
-    status: deliveryPayload.status,
+    status: initialStatus,
     packageType: deliveryPayload.packageType,
     packageWeight: deliveryPayload.packageWeight,
     deliveryFee: estimatedFee,
@@ -264,7 +244,7 @@ export const createDeliveryRequest = async (
     tradeId: input.tradeId,
     escrowStatus: 'locked_pending_delivery',
     fundsReleaseStatus: 'blocked_until_buyer_confirmation',
-    status: deliveryPayload.status,
+    status: initialStatus,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   });
@@ -274,7 +254,7 @@ export const createDeliveryRequest = async (
     {
       deliveryRequestId: deliveryId,
       driverId: selectedDriverId || null,
-      deliveryStatus: deliveryPayload.status,
+      deliveryStatus: initialStatus,
       deliveryRequestStatus: selectedDriverId ? 'assigned' : 'open',
       deliveryFee: estimatedFee,
       driverCommission,
@@ -301,7 +281,7 @@ export const createDeliveryRequest = async (
 
   addNotificationWrites(
     batch,
-    [input.buyerId, input.sellerId, selectedDriverId].filter(Boolean),
+    [input.buyerId, input.sellerId, selectedDriverId],
     {
       title: selectedDriverId ? 'Driver Assigned' : 'Delivery Requested',
       body: selectedDriverId
@@ -318,7 +298,7 @@ export const createDeliveryRequest = async (
     tradeId: input.tradeId,
     actorId: input.buyerId,
     type: 'delivery_created',
-    status: deliveryPayload.status,
+    status: initialStatus,
     note: 'Delivery request, logistics order, and escrow-linked shipment created.'
   });
 
@@ -345,30 +325,46 @@ export const assignDriverToDelivery = async (
       updatedAt: serverTimestamp()
     });
 
-    transaction.update(doc(db, 'deliveryTracking', requestId), {
-      driverId,
-      status: 'assigned',
-      lastUpdatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'deliveryTracking', requestId),
+      {
+        driverId,
+        status: 'assigned',
+        lastUpdatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
-    transaction.update(doc(db, 'logisticsOrders', requestId), {
-      driverId,
-      status: 'assigned',
-      updatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'logisticsOrders', requestId),
+      {
+        driverId,
+        status: 'assigned',
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
-    transaction.update(doc(db, 'deliveryShipments', requestId), {
-      status: 'assigned',
-      updatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'deliveryShipments', requestId),
+      {
+        status: 'assigned',
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
-    transaction.update(doc(db, 'trades', request.tradeId), {
-      driverId,
-      deliveryRequestId: requestId,
-      deliveryStatus: 'assigned',
-      deliveryRequestStatus: 'assigned',
-      updatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'trades', request.tradeId),
+      {
+        driverId,
+        deliveryRequestId: requestId,
+        deliveryStatus: 'assigned',
+        deliveryRequestStatus: 'assigned',
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
     transaction.set(
       doc(db, 'users', driverId),
@@ -414,18 +410,26 @@ export const acceptDeliveryRequest = async (
       updatedAt: serverTimestamp()
     });
 
-    transaction.update(doc(db, 'deliveryTracking', requestId), {
-      driverId,
-      status: 'driver_arriving',
-      lastUpdatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'deliveryTracking', requestId),
+      {
+        driverId,
+        status: 'driver_arriving',
+        lastUpdatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
-    transaction.update(doc(db, 'trades', request.tradeId), {
-      driverId,
-      deliveryStatus: 'driver_arriving',
-      deliveryRequestStatus: 'claimed',
-      updatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'trades', request.tradeId),
+      {
+        driverId,
+        deliveryStatus: 'driver_arriving',
+        deliveryRequestStatus: 'claimed',
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
     transaction.set(
       doc(db, 'users', driverId),
@@ -472,10 +476,12 @@ export const updateDeliveryRequestStatus = async (
   status: DeliveryStatus,
   actorId?: string
 ) => {
-  const normalizedStatus =
-    status === 'accepted' ? 'driver_arriving' :
-    status === 'arriving' ? 'near_destination' :
-    status;
+  const normalizedStatus: DeliveryStatus =
+    status === 'accepted'
+      ? 'driver_arriving'
+      : status === 'arriving'
+        ? 'near_destination'
+        : status;
 
   const batch = writeBatch(db);
 
@@ -485,9 +491,15 @@ export const updateDeliveryRequestStatus = async (
       status: normalizedStatus,
       deliveryStatus: normalizedStatus,
       updatedAt: serverTimestamp(),
-      ...(normalizedStatus === 'picked_up' ? { pickedUpAt: serverTimestamp() } : {}),
-      ...(normalizedStatus === 'delivered' ? { deliveredAt: serverTimestamp() } : {}),
-      ...(normalizedStatus === 'completed' ? { completedAt: serverTimestamp() } : {})
+      ...(normalizedStatus === 'picked_up'
+        ? { pickedUpAt: serverTimestamp() }
+        : {}),
+      ...(normalizedStatus === 'delivered'
+        ? { deliveredAt: serverTimestamp() }
+        : {}),
+      ...(normalizedStatus === 'completed'
+        ? { completedAt: serverTimestamp() }
+        : {})
     },
     { merge: true }
   );
@@ -559,7 +571,6 @@ export const confirmDeliveryAndReleaseEscrow = async (
     }
 
     const tradeRef = doc(db, 'trades', request.tradeId);
-    const driverRef = doc(db, 'users', request.driverId);
 
     transaction.update(requestRef, {
       status: 'completed',
@@ -569,48 +580,68 @@ export const confirmDeliveryAndReleaseEscrow = async (
       updatedAt: serverTimestamp()
     });
 
-    transaction.update(doc(db, 'deliveryTracking', requestId), {
-      status: 'completed',
-      routeProgress: 100,
-      lastUpdatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'deliveryTracking', requestId),
+      {
+        status: 'completed',
+        routeProgress: 100,
+        lastUpdatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
-    transaction.update(doc(db, 'logisticsOrders', requestId), {
-      status: 'completed',
-      updatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'logisticsOrders', requestId),
+      {
+        status: 'completed',
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
-    transaction.update(doc(db, 'deliveryShipments', requestId), {
-      status: 'completed',
-      escrowStatus: 'release_pending_server_payout',
-      fundsReleaseStatus: 'release_pending_server_payout',
-      updatedAt: serverTimestamp()
-    });
+    transaction.set(
+      doc(db, 'deliveryShipments', requestId),
+      {
+        status: 'completed',
+        escrowStatus: 'release_pending_server_payout',
+        fundsReleaseStatus: 'release_pending_server_payout',
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
-    transaction.update(tradeRef, {
-      status: 'completed',
-      deliveryStatus: 'completed',
-      escrowStatus: 'release_pending_server_payout',
-      sellerPayoutStatus: 'pending',
-      driverPayoutStatus: 'pending',
-      platformFeeStatus: 'pending',
-      completedAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
+    transaction.set(
+      tradeRef,
+      {
+        status: 'completed',
+        deliveryStatus: 'completed',
+        escrowStatus: 'release_pending_server_payout',
+        sellerPayoutStatus: 'pending',
+        driverPayoutStatus: 'pending',
+        platformFeeStatus: 'pending',
+        completedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
     if (request.driverId) {
-      transaction.update(driverRef, {
-        driverStatus: 'available',
-        availability: 'available',
-        activeDeliveryId: null,
-        totalDeliveries: increment(1),
-        completedDeliveries: increment(1),
-        deliveriesCount: increment(1),
-        pendingDeliveryCount: increment(-1),
-        totalEarnings: increment(request.driverCommission || 0),
-        pendingPayouts: increment(request.driverCommission || 0),
-        updatedAt: serverTimestamp()
-      });
+      transaction.set(
+        doc(db, 'users', request.driverId),
+        {
+          driverStatus: 'available',
+          availability: 'available',
+          activeDeliveryId: null,
+          totalDeliveries: increment(1),
+          completedDeliveries: increment(1),
+          deliveriesCount: increment(1),
+          pendingDeliveryCount: increment(-1),
+          totalEarnings: increment(request.driverCommission || 0),
+          pendingPayouts: increment(request.driverCommission || 0),
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      );
     }
   });
 
