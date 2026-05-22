@@ -34,15 +34,69 @@ interface ListingGpsLocation {
   source: 'profile' | 'browser';
 }
 
+const countryCurrencyMap: Record<string, { code: string; locale: string; label: string }> = {
+  cameroon: { code: 'XAF', locale: 'fr-CM', label: 'XAF / FCFA' },
+  nigeria: { code: 'NGN', locale: 'en-NG', label: 'NGN' },
+  ghana: { code: 'GHS', locale: 'en-GH', label: 'GHS' },
+  kenya: { code: 'KES', locale: 'en-KE', label: 'KES' },
+  uganda: { code: 'UGX', locale: 'en-UG', label: 'UGX' },
+  tanzania: { code: 'TZS', locale: 'sw-TZ', label: 'TZS' },
+  rwanda: { code: 'RWF', locale: 'rw-RW', label: 'RWF' },
+  cote_d_ivoire: { code: 'XOF', locale: 'fr-CI', label: 'XOF / CFA' },
+  senegal: { code: 'XOF', locale: 'fr-SN', label: 'XOF / CFA' },
+  south_africa: { code: 'ZAR', locale: 'en-ZA', label: 'ZAR' },
+  united_states: { code: 'USD', locale: 'en-US', label: 'USD' }
+};
+
 const safeCoordinate = (value: any) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const normalizeCountryKey = (country?: string) =>
+  (country || 'Cameroon')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+const getCurrencyInfo = (profile: any) => {
+  if (profile?.currency || profile?.currencyCode) {
+    return {
+      code: profile.currency || profile.currencyCode,
+      locale: profile.currencyLocale || 'fr-CM',
+      label: profile.currencyLabel || profile.currency || profile.currencyCode
+    };
+  }
+
+  const countryKey = normalizeCountryKey(profile?.country);
+  return countryCurrencyMap[countryKey] || countryCurrencyMap.cameroon;
+};
+
+const formatMoney = (
+  amount: number,
+  currencyCode: string,
+  locale: string
+) => {
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: currencyCode,
+      maximumFractionDigits: ['XAF', 'XOF', 'UGX', 'RWF'].includes(currencyCode)
+        ? 0
+        : 2
+    }).format(amount || 0);
+  } catch {
+    return `${currencyCode} ${(amount || 0).toLocaleString()}`;
+  }
 };
 
 export default function CreateListing() {
   const { user, profile } = useAuth();
   const { sendNotification } = useNotifications();
   const navigate = useNavigate();
+
+  const currencyInfo = getCurrencyInfo(profile);
 
   const [loading, setLoading] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
@@ -218,6 +272,7 @@ export default function CreateListing() {
 
       const listingLatitude = activeLocation?.latitude ?? null;
       const listingLongitude = activeLocation?.longitude ?? null;
+      const priceValue = parseFloat(formData.price) || 0;
 
       const imageUploadStatus =
         images.length === 0
@@ -233,7 +288,13 @@ export default function CreateListing() {
         sellerId: profile.userId,
         title: formData.title.trim(),
         description: formData.description.trim(),
-        price: parseFloat(formData.price),
+        price: priceValue,
+        priceDisplay: formatMoney(priceValue, currencyInfo.code, currencyInfo.locale),
+        currency: currencyInfo.code,
+        currencyCode: currencyInfo.code,
+        currencyLocale: currencyInfo.locale,
+        currencyLabel: currencyInfo.label,
+        country: profile?.country || 'Cameroon',
         quantity: formData.quantity.trim(),
         category: formData.category,
         metadata,
@@ -398,7 +459,7 @@ export default function CreateListing() {
               Photos
             </label>
             <span className="text-right text-[8px] font-bold uppercase tracking-widest text-slate-600">
-              Optional for now
+              Recommended for trust
             </span>
           </div>
 
@@ -464,14 +525,14 @@ export default function CreateListing() {
           <div className="space-y-4">
             <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
               <div className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-              Price ($)
+              Price ({currencyInfo.label})
             </label>
             <input
               required
               type="number"
               value={formData.price}
               onChange={e => setFormData({ ...formData, price: e.target.value })}
-              placeholder="0.00"
+              placeholder={`Example: ${formatMoney(45000, currencyInfo.code, currencyInfo.locale)}`}
               className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
             />
           </div>
