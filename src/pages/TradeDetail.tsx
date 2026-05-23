@@ -199,6 +199,7 @@ interface Message {
   text: string;
   type?: 'user' | 'system';
   status?: string;
+  contactVisibleAfterPayment?: boolean;
   readBy?: string[];
   createdAt: any;
   updatedAt?: any;
@@ -522,7 +523,7 @@ export default function TradeDetail() {
             await sendSystemTradeMessage({
               tradeId: trade.id,
               listingId: trade.listingId,
-              text: `Delivery fee paid: ${formatMoney(deliveryAmount, 'XAF', 'fr-CM')}. Driver can now proceed to pickup.`,
+              text: `Delivery fee paid: ${formatMoney(deliveryAmount, 'XAF', 'fr-CM')}. Driver can now share their delivery contact with the buyer and proceed to pickup.`,
               recipientIds: [trade.buyerId, trade.sellerId, trade.driverId],
               sendNotification,
               title: 'Delivery Payment Secured'
@@ -679,6 +680,28 @@ export default function TradeDetail() {
     }
   }, [messages]);
 
+  const canDriverShareContact =
+    Boolean(trade?.driverId) &&
+    isDriver &&
+    trade?.deliveryPaymentStatus === 'paid';
+
+  const canBuyerViewDriverContact =
+    Boolean(trade?.driverId) &&
+    isBuyer &&
+    trade?.deliveryPaymentStatus === 'paid';
+
+  const canRevealContactMessage = (message: Message) =>
+    Boolean(trade?.driverId) &&
+    trade?.deliveryPaymentStatus === 'paid' &&
+    message.senderId === trade.driverId &&
+    Boolean(message.contactVisibleAfterPayment) &&
+    (canBuyerViewDriverContact || isDriver);
+
+  const getVisibleMessageText = (message: Message) =>
+    canRevealContactMessage(message)
+      ? message.text
+      : sanitizeContactText(message.text);
+
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -708,11 +731,16 @@ export default function TradeDetail() {
         senderPhotoURL: profileData?.photoURL || user.photoURL || '',
         text,
         recipientIds: [trade.buyerId, trade.sellerId, trade.driverId || ''],
-        sendNotification
+        sendNotification,
+        allowContactInfo: canDriverShareContact
       });
     } catch (err) {
       if (err instanceof Error && err.name === CONTACT_BLOCK_ERROR) {
-        alert(err.message);
+        alert(
+          isDriver
+            ? 'You can share your phone number only after the buyer pays the delivery fee.'
+            : err.message
+        );
         return;
       }
 
@@ -1531,7 +1559,7 @@ export default function TradeDetail() {
                     Chat, Bargain, Stay Protected
                   </p>
                   <p className="mt-1 font-serif text-[11px] italic leading-relaxed text-slate-500">
-                    Phone numbers, links, email, and outside contact details are blocked so every deal stays protected inside Hema Trader.
+                    Contact details stay blocked until delivery is paid. Then only the assigned driver may share a phone number with the buyer.
                   </p>
                 </div>
               </div>
@@ -1549,7 +1577,7 @@ export default function TradeDetail() {
                         Hema Trader
                       </p>
                       <p className="mt-1 font-serif text-[11px] italic leading-relaxed text-slate-400">
-                        {sanitizeContactText(message.text)}
+                        {getVisibleMessageText(message)}
                       </p>
                     </div>
                   </div>
@@ -1574,7 +1602,7 @@ export default function TradeDetail() {
                       </p>
                     )}
                     <p className="font-serif text-sm leading-relaxed">
-                      {sanitizeContactText(message.text)}
+                      {getVisibleMessageText(message)}
                     </p>
                     <p
                       className={`mt-2 text-[8px] font-black uppercase tracking-widest opacity-40 ${
@@ -1621,6 +1649,16 @@ export default function TradeDetail() {
                   {text}
                 </button>
               ))}
+
+              {canDriverShareContact && profileData?.phoneNumber && (
+                <button
+                  type="button"
+                  onClick={() => setNewMessage(`Delivery contact: ${profileData.phoneNumber}`)}
+                  className="whitespace-nowrap rounded-full border border-green-500/30 bg-green-500/10 px-3 py-1.5 text-[8px] font-bold uppercase tracking-widest text-green-400 transition-all hover:bg-green-500 hover:text-black"
+                >
+                  Share Delivery Phone
+                </button>
+              )}
             </div>
 
             <div className="flex gap-3">
@@ -1631,7 +1669,11 @@ export default function TradeDetail() {
                   setNewMessage(e.target.value);
                   handleTyping();
                 }}
-                placeholder="Type a message. Contact details are blocked..."
+                placeholder={
+                  canDriverShareContact
+                    ? 'You may share your delivery phone with the buyer...'
+                    : 'Type a message. Contact details are blocked...'
+                }
                 className="flex-1 rounded-xl border border-white/5 bg-black/40 px-5 py-3 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
               />
 
@@ -1883,6 +1925,18 @@ export default function TradeDetail() {
                       {trade.deliveryPaymentStatus || 'unpaid'}
                     </span>
                   </div>
+
+                  {canDriverShareContact && (
+                    <div className="rounded-xl border border-green-500/20 bg-green-500/10 p-3 text-center text-[8px] font-black uppercase leading-relaxed tracking-widest text-green-400">
+                      Delivery is paid. You can now share your phone number with the buyer in chat.
+                    </div>
+                  )}
+
+                  {canBuyerViewDriverContact && (
+                    <div className="rounded-xl border border-green-500/20 bg-green-500/10 p-3 text-center text-[8px] font-black uppercase leading-relaxed tracking-widest text-green-400">
+                      Delivery is paid. The assigned driver may share their phone number here.
+                    </div>
+                  )}
                 </div>
               ) : null}
 
