@@ -6,6 +6,7 @@ import {
   collection,
   doc,
   getDoc,
+  limit,
   onSnapshot,
   orderBy,
   query,
@@ -86,6 +87,8 @@ const handleFirestoreError = (
         return 'The requested record could not be found.';
       case 'unavailable':
         return 'The database is temporarily unavailable. Please try again.';
+      case 'failed-precondition':
+        return 'This query needs a Firestore index before it can run at scale.';
       default:
         return error.message || 'A database error occurred.';
     }
@@ -168,13 +171,20 @@ interface Listing {
 
 interface Message {
   id: string;
+  tradeId?: string;
+  listingId?: string;
+  userId?: string;
   senderId: string;
   senderName?: string;
   senderPhotoURL?: string;
+  recipientIds?: string[];
+  participants?: string[];
   text: string;
   type?: 'user' | 'system';
+  status?: string;
   readBy?: string[];
   createdAt: any;
+  updatedAt?: any;
 }
 
 interface Offer {
@@ -208,14 +218,16 @@ const formatMoney = (
   currencyCode = 'XAF',
   locale = 'fr-CM'
 ) => {
+  const normalizedCurrency = currencyCode === 'CFA' ? 'XAF' : currencyCode;
+
   try {
     return new Intl.NumberFormat(locale, {
       style: 'currency',
-      currency: currencyCode,
-      maximumFractionDigits: zeroDecimalCurrencies.has(currencyCode) ? 0 : 2
+      currency: normalizedCurrency,
+      maximumFractionDigits: zeroDecimalCurrencies.has(normalizedCurrency) ? 0 : 2
     }).format(amount || 0);
   } catch {
-    return `${currencyCode} ${(amount || 0).toLocaleString()}`;
+    return `${normalizedCurrency} ${(amount || 0).toLocaleString()}`;
   }
 };
 
@@ -268,6 +280,7 @@ export default function TradeDetail() {
   const [showNegotiation, setShowNegotiation] = useState(false);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
+  const [chatSource, setChatSource] = useState<'flat' | 'legacy'>('flat');
   const [error, setError] = useState<string | null>(null);
   const [updating, setUpdating] = useState(false);
   const [showRating, setShowRating] = useState(false);
@@ -344,6 +357,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: activeTradeId,
+        listingId: trade.listingId,
         text: `Payment secured in escrow for ${listing?.title || 'this order'}. Seller: please prepare the items and update once shipped.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
@@ -424,9 +438,11 @@ export default function TradeDetail() {
     if (!id) return;
 
     let isMounted = true;
+    let unsubscribeLegacyChat: (() => void) | null = null;
 
     setLoading(true);
     setError(null);
+    setChatSource('flat');
 
     const tradeRef = doc(db, 'trades', id);
 
@@ -467,14 +483,44 @@ export default function TradeDetail() {
       }
     );
 
+    const subscribeToLegacyMessages = () => {
+      if (unsubscribeLegacyChat) return;
+
+      setChatSource('legacy');
+
+      unsubscribeLegacyChat = onSnapshot(
+        query(
+          collection(db, 'trades', id, 'messages'),
+          orderBy('createdAt', 'asc'),
+          limit(50)
+        ),
+        snapshot => {
+          if (isMounted) {
+            setMessages(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message)));
+          }
+        },
+        err => handleFirestoreError(err, OperationType.SUBSCRIBE, `trades/${id}/messages`)
+      );
+    };
+
     const unsubscribeChat = onSnapshot(
-      query(collection(db, 'trades', id, 'messages'), orderBy('createdAt', 'asc')),
+      query(
+        collection(db, 'messages'),
+        where('tradeId', '==', id),
+        orderBy('createdAt', 'asc'),
+        limit(50)
+      ),
       snapshot => {
         if (isMounted) {
+          setChatSource('flat');
           setMessages(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message)));
         }
       },
-      err => handleFirestoreError(err, OperationType.SUBSCRIBE, `trades/${id}/messages`)
+      err => {
+        const message = handleFirestoreError(err, OperationType.SUBSCRIBE, `messages?tradeId=${id}`);
+        console.warn('Flat message listener failed. Falling back to legacy trade messages:', message);
+        subscribeToLegacyMessages();
+      }
     );
 
     const unsubscribeOffers = onSnapshot(
@@ -501,6 +547,7 @@ export default function TradeDetail() {
       isMounted = false;
       unsubscribeTrade();
       unsubscribeChat();
+      unsubscribeLegacyChat?.();
       unsubscribeOffers();
       unsubscribeDrivers();
     };
@@ -535,6 +582,7 @@ export default function TradeDetail() {
     try {
       await sendTradeMessage({
         tradeId: id,
+        listingId: trade.listingId,
         senderId: user.uid,
         senderName,
         senderPhotoURL: profileData?.photoURL || user.photoURL || '',
@@ -543,7 +591,7 @@ export default function TradeDetail() {
         sendNotification
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `trades/${id}/messages`);
+      handleFirestoreError(err, OperationType.WRITE, `messages/${id}`);
     }
   };
 
@@ -566,6 +614,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: trade.id,
+        listingId: trade.listingId,
         text: 'Buyer confirmed delivery. Escrow is now marked for secure server payout.',
         recipientIds: tradeRecipientIds,
         sendNotification,
@@ -608,6 +657,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: trade.id,
+        listingId: trade.listingId,
         text: 'A dispute has been opened. Our support team is joining the conversation to help.',
         recipientIds: tradeRecipientIds,
         sendNotification,
@@ -657,6 +707,7 @@ export default function TradeDetail() {
       if (systemMessage) {
         await sendSystemTradeMessage({
           tradeId: id,
+          listingId: trade.listingId,
           text: systemMessage,
           recipientIds: tradeRecipientIds,
           sendNotification,
@@ -688,6 +739,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: id,
+        listingId: trade.listingId,
         text: `New offer submitted: ${formatTradeAmount(trade, amount)}. Awaiting peer response.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
@@ -756,6 +808,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: id,
+        listingId: trade.listingId,
         text: `Offer for ${formatTradeAmount(trade, amount)} ${status}. Order updated.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
@@ -795,6 +848,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: id,
+        listingId: trade.listingId,
         text: `Delivery broadcast sent to ${bestDrivers.length} top-rated nearby drivers. First to accept will be assigned.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
@@ -839,6 +893,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: id,
+        listingId: trade.listingId,
         text: `Driver assigned for delivery. Delivery fee of ${formatMoney(deliveryFee, 'XAF', 'fr-CM')} applied.`,
         recipientIds: [trade.buyerId, trade.sellerId, driverId],
         sendNotification,
@@ -894,6 +949,7 @@ export default function TradeDetail() {
       if (message) {
         await sendSystemTradeMessage({
           tradeId,
+          listingId: trade.listingId,
           text: message,
           recipientIds: [trade.buyerId, trade.sellerId, trade.driverId || ''],
           sendNotification,
@@ -1156,11 +1212,17 @@ export default function TradeDetail() {
 
       <div className="flex flex-1 gap-6 overflow-hidden">
         <div className="flex flex-1 flex-col overflow-hidden rounded-[2.5rem] border border-white/5 bg-brand-card shadow-2xl">
-          <div className="flex items-center gap-3 border-b border-white/5 bg-white/[0.01] p-6">
-            <MessageCircle className="h-4 w-4 text-amber-500" />
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              Messages
-            </h3>
+          <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.01] p-6">
+            <div className="flex items-center gap-3">
+              <MessageCircle className="h-4 w-4 text-amber-500" />
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Messages
+              </h3>
+            </div>
+
+            <span className="rounded-full border border-white/5 bg-white/[0.03] px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
+              {chatSource === 'flat' ? 'Scaled Chat' : 'Legacy Chat'}
+            </span>
           </div>
 
           <div className="scrollbar-hide flex-1 space-y-6 overflow-y-auto p-6">
