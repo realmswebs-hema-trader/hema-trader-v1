@@ -4,11 +4,13 @@ import {
   addDoc,
   collection,
   doc,
+  getDoc,
   getDocs,
   limit,
   onSnapshot,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where
 } from 'firebase/firestore';
@@ -103,6 +105,12 @@ interface UserProfile {
   online?: boolean;
   lastActiveAt?: any;
 }
+
+const UNVERIFIED_TRADER_WARNING =
+  'Warning: this trader is unverified. You can continue, but keep communication inside Hema Trader, use escrow, and confirm delivery before releasing funds.';
+
+const UNVERIFIED_ACCOUNT_WARNING =
+  'Your account is not verified yet. You can still use Hema Trader, but other users will see you as an unverified trader until you complete verification.';
 
 const zeroDecimalCurrencies = new Set(['XAF', 'XOF', 'UGX', 'RWF']);
 
@@ -307,7 +315,7 @@ function MerchantCard({
           className={`mt-2 rounded-md px-2 py-1 text-[8px] font-bold ${
             verified
               ? 'bg-green-500/15 text-green-400'
-              : 'bg-white/10 text-slate-300'
+              : 'bg-amber-500/10 text-amber-300'
           }`}
         >
           {verified ? 'Verified' : 'Unverified'}
@@ -333,6 +341,11 @@ function MerchantCard({
 
         <Link
           to={`/messages/${merchant.id}`}
+          onClick={event => {
+            if (!verified && !window.confirm(UNVERIFIED_TRADER_WARNING)) {
+              event.preventDefault();
+            }
+          }}
           className="flex items-center justify-center gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-2 text-[9px] font-bold text-amber-500 transition hover:bg-amber-500 hover:text-black"
         >
           <MessageCircle className="h-3 w-3" />
@@ -426,6 +439,30 @@ export default function Home() {
   const [activeUsersCount, setActiveUsersCount] = useState(0);
   const [recentAlert, setRecentAlert] = useState<string | null>(null);
   const [startingTradeId, setStartingTradeId] = useState<string | null>(null);
+
+  const getCachedSeller = (ownerId: string) =>
+    marketUsers.find(item => item.id === ownerId || item.uid === ownerId);
+
+  const getSellerVerificationStatus = async (ownerId: string) => {
+    const cachedSeller = getCachedSeller(ownerId);
+
+    if (cachedSeller?.verificationStatus) {
+      return cachedSeller.verificationStatus;
+    }
+
+    try {
+      const sellerSnap = await getDoc(doc(db, 'users', ownerId));
+
+      if (sellerSnap.exists()) {
+        const sellerData = sellerSnap.data() as { verificationStatus?: string };
+        return sellerData.verificationStatus || 'unverified';
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.READ, `users/${ownerId}`);
+    }
+
+    return 'unverified';
+  };
 
   useEffect(() => {
     const nextLocation = toGeoPoint(profile);
@@ -637,25 +674,47 @@ export default function Home() {
       return;
     }
 
-    if (!profile || profile.verificationStatus !== 'verified') {
-      alert('Please complete your identity verification to start trading.');
-      navigate('/profile');
-      return;
-    }
-
     if (listing.ownerId === user.uid) {
       alert('This is your own listing. Buyers will be able to start trades with you.');
       return;
     }
 
+    const buyerVerificationStatus = profile?.verificationStatus || 'unverified';
+    const sellerVerificationStatus = await getSellerVerificationStatus(listing.ownerId);
+
+    const warnings: string[] = [];
+
+    if (buyerVerificationStatus !== 'verified') {
+      warnings.push(UNVERIFIED_ACCOUNT_WARNING);
+    }
+
+    if (sellerVerificationStatus !== 'verified') {
+      warnings.push(UNVERIFIED_TRADER_WARNING);
+    }
+
+    if (warnings.length > 0) {
+      const proceed = window.confirm(`${warnings.join('\n\n')}\n\nContinue to secure trade?`);
+      if (!proceed) return;
+    }
+
     setStartingTradeId(listing.id);
 
     try {
-      const tradeRef = await addDoc(collection(db, 'trades'), {
+      const tradeRef = doc(collection(db, 'trades'));
+      const participantIds = [user.uid, listing.ownerId];
+      const systemMessage =
+        sellerVerificationStatus === 'verified'
+          ? `Trade initiated for ${listing.title}. You can now discuss price, pickup, and delivery details.`
+          : `Trade initiated for ${listing.title}. This seller is unverified, so keep communication in this chat and use escrow before exchanging goods or money.`;
+
+      await setDoc(tradeRef, {
+        tradeId: tradeRef.id,
         listingId: listing.id,
         listingTitle: listing.title,
+        userId: user.uid,
         buyerId: user.uid,
         sellerId: listing.ownerId,
+        participants: participantIds,
         amount: Number(listing.price || 0),
         priceDisplay: formatListingPrice(listing),
         currency: listing.currency || listing.currencyCode || 'XAF',
@@ -663,6 +722,18 @@ export default function Home() {
         currencyLocale: listing.currencyLocale || 'fr-CM',
         currencyLabel: listing.currencyLabel || 'CFA',
         status: 'pending',
+        buyerVerificationStatus,
+        sellerVerificationStatus,
+        riskFlags: [
+          ...(buyerVerificationStatus !== 'verified' ? ['buyer_unverified'] : []),
+          ...(sellerVerificationStatus !== 'verified' ? ['seller_unverified'] : [])
+        ],
+        riskAcknowledgement: {
+          buyerId: user.uid,
+          buyerVerificationStatus,
+          sellerVerificationStatus,
+          acknowledgedAt: serverTimestamp()
+        },
         listingSnapshot: {
           title: listing.title,
           category: listing.category,
@@ -674,13 +745,37 @@ export default function Home() {
         updatedAt: serverTimestamp()
       });
 
-      await addDoc(collection(db, 'trades', tradeRef.id, 'messages'), {
-        senderId: 'system',
-        type: 'system',
-        text: `Trade initiated for ${listing.title}. You can now discuss price, pickup, and delivery details.`,
-        readBy: [],
-        createdAt: serverTimestamp()
-      });
+      await Promise.all([
+        addDoc(collection(db, 'messages'), {
+          tradeId: tradeRef.id,
+          listingId: listing.id,
+          userId: user.uid,
+          senderId: 'system',
+          senderName: 'Hema Trader',
+          senderPhotoURL: '',
+          recipientIds: participantIds,
+          participants: participantIds,
+          text: systemMessage,
+          type: 'system',
+          status: 'delivered',
+          readBy: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }),
+        addDoc(collection(db, 'trades', tradeRef.id, 'messages'), {
+          tradeId: tradeRef.id,
+          listingId: listing.id,
+          userId: user.uid,
+          senderId: 'system',
+          senderName: 'Hema Trader',
+          type: 'system',
+          status: 'delivered',
+          text: systemMessage,
+          readBy: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        })
+      ]);
 
       navigate(`/trade/${tradeRef.id}`);
     } catch (err) {
@@ -1106,6 +1201,8 @@ export default function Home() {
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
             {filteredListings.map(listing => {
               const isOwnListing = listing.ownerId === user?.uid;
+              const seller = getCachedSeller(listing.ownerId);
+              const sellerVerified = seller?.verificationStatus === 'verified';
 
               return (
                 <motion.article
@@ -1151,9 +1248,19 @@ export default function Home() {
                         {listing.category}
                       </span>
 
-                      {isOwnListing && (
+                      {isOwnListing ? (
                         <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2 py-1 text-[7px] font-black uppercase tracking-widest text-green-400">
                           Yours
+                        </span>
+                      ) : (
+                        <span
+                          className={`rounded-full border px-2 py-1 text-[7px] font-black uppercase tracking-widest ${
+                            sellerVerified
+                              ? 'border-green-500/20 bg-green-500/10 text-green-400'
+                              : 'border-amber-500/20 bg-amber-500/10 text-amber-300'
+                          }`}
+                        >
+                          {sellerVerified ? 'Verified' : 'Unverified'}
                         </span>
                       )}
                     </div>
