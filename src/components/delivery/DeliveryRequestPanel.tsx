@@ -21,15 +21,26 @@ import {
   type MatchedDriver
 } from '../../services/logisticsMatching';
 import { createDeliveryRequest } from '../../services/deliveryService';
-import { requestBrowserLocation, toGeoPoint, type GeoPoint } from '../../utils/geoUtils';
+import {
+  requestBrowserLocation,
+  toGeoPoint,
+  type GeoPoint
+} from '../../utils/geoUtils';
 
 interface DeliveryRequestPanelProps {
   tradeId: string;
   buyerId: string;
   sellerId: string;
   packageValue?: number;
+  currency?: string;
+  currencyCode?: string;
+  currencyLocale?: string;
+  currencyLabel?: string;
+  defaultPackageType?: string;
   defaultPickupAddress?: string;
   defaultDropoffAddress?: string;
+  defaultPickupLocation?: GeoPoint | null;
+  defaultDropoffLocation?: GeoPoint | null;
   onCreated?: (deliveryId: string) => void;
 }
 
@@ -48,20 +59,64 @@ const urgencyOptions = [
   { id: 'urgent', label: 'Urgent' }
 ];
 
+const zeroDecimalCurrencies = new Set(['XAF', 'XOF', 'UGX', 'RWF']);
+
+const formatMoney = (
+  amount: number,
+  currencyCode = 'XAF',
+  locale = 'fr-CM'
+) => {
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: currencyCode,
+      maximumFractionDigits: zeroDecimalCurrencies.has(currencyCode) ? 0 : 2
+    }).format(amount || 0);
+  } catch {
+    return `${currencyCode} ${(amount || 0).toLocaleString()}`;
+  }
+};
+
+const normalizePackageType = (value?: string) => {
+  const lower = (value || '').toLowerCase();
+
+  if (lower.includes('animal') || lower.includes('livestock')) return 'livestock';
+  if (lower.includes('seed') || lower.includes('farm') || lower.includes('produce')) return 'produce';
+  if (lower.includes('equipment')) return 'equipment';
+  if (lower.includes('cold')) return 'cold_chain';
+
+  return 'produce';
+};
+
 export default function DeliveryRequestPanel({
   tradeId,
   buyerId,
   sellerId,
   packageValue = 0,
+  currency,
+  currencyCode,
+  currencyLocale = 'fr-CM',
+  currencyLabel,
+  defaultPackageType,
   defaultPickupAddress = '',
   defaultDropoffAddress = '',
+  defaultPickupLocation = null,
+  defaultDropoffLocation = null,
   onCreated
 }: DeliveryRequestPanelProps) {
+  const activeCurrency = currencyCode || currency || 'XAF';
+
   const [pickupAddress, setPickupAddress] = useState(defaultPickupAddress);
   const [dropoffAddress, setDropoffAddress] = useState(defaultDropoffAddress);
-  const [pickupLocation, setPickupLocation] = useState<GeoPoint | null>(null);
-  const [dropoffLocation, setDropoffLocation] = useState<GeoPoint | null>(null);
-  const [packageType, setPackageType] = useState('produce');
+  const [pickupLocation, setPickupLocation] = useState<GeoPoint | null>(
+    toGeoPoint(defaultPickupLocation)
+  );
+  const [dropoffLocation, setDropoffLocation] = useState<GeoPoint | null>(
+    toGeoPoint(defaultDropoffLocation)
+  );
+  const [packageType, setPackageType] = useState(
+    normalizePackageType(defaultPackageType)
+  );
   const [packageWeight, setPackageWeight] = useState('10');
   const [urgency, setUrgency] = useState('normal');
   const [instructions, setInstructions] = useState('');
@@ -72,6 +127,24 @@ export default function DeliveryRequestPanel({
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
 
+  useEffect(() => {
+    setPickupAddress(defaultPickupAddress);
+  }, [defaultPickupAddress]);
+
+  useEffect(() => {
+    setDropoffAddress(defaultDropoffAddress);
+  }, [defaultDropoffAddress]);
+
+  useEffect(() => {
+    const point = toGeoPoint(defaultPickupLocation);
+    if (point) setPickupLocation(point);
+  }, [defaultPickupLocation]);
+
+  useEffect(() => {
+    const point = toGeoPoint(defaultDropoffLocation);
+    if (point) setDropoffLocation(point);
+  }, [defaultDropoffLocation]);
+
   const matchInput = useMemo(
     () => ({
       pickupLocation,
@@ -81,12 +154,24 @@ export default function DeliveryRequestPanel({
       packageValue,
       urgency
     }),
-    [pickupLocation, dropoffLocation, packageType, packageWeight, packageValue, urgency]
+    [
+      pickupLocation,
+      dropoffLocation,
+      packageType,
+      packageWeight,
+      packageValue,
+      urgency
+    ]
   );
 
   const recommendedVehicle = getVehicleRecommendation(matchInput);
-  const estimatedFee = calculateDeliveryFee(pickupLocation, dropoffLocation, matchInput);
+  const estimatedFee = calculateDeliveryFee(
+    pickupLocation,
+    dropoffLocation,
+    matchInput
+  );
   const estimatedEta = calculateSmartETA(pickupLocation, dropoffLocation);
+  const formattedFee = formatMoney(estimatedFee, activeCurrency, currencyLocale);
 
   useEffect(() => {
     if (!pickupLocation && !dropoffLocation) return;
@@ -191,12 +276,56 @@ export default function DeliveryRequestPanel({
         </div>
       </div>
 
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="rounded-2xl border border-white/5 bg-black/30 p-4">
+          <Package className="mb-2 h-5 w-5 text-amber-500" />
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+            Goods Value
+          </p>
+          <p className="mt-1 font-serif text-sm text-white">
+            {formatMoney(packageValue, activeCurrency, currencyLocale)}
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-white/5 bg-black/30 p-4">
+          <Scale className="mb-2 h-5 w-5 text-amber-500" />
+          <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+            Fee Currency
+          </p>
+          <p className="mt-1 font-serif text-sm text-white">
+            {currencyLabel || activeCurrency}
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-green-500/10 bg-green-500/5 p-4">
+          <ShieldCheck className="mb-2 h-5 w-5 text-green-400" />
+          <p className="text-[8px] font-black uppercase tracking-widest text-green-400">
+            Escrow
+          </p>
+          <p className="mt-1 font-serif text-sm text-white">
+            Delivery linked
+          </p>
+        </div>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-3 rounded-2xl border border-white/5 bg-black/30 p-4">
-          <label className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
-            <MapPin className="h-3.5 w-3.5 text-green-400" />
-            Pickup Location
-          </label>
+          <div className="flex items-center justify-between gap-3">
+            <label className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
+              <MapPin className="h-3.5 w-3.5 text-green-400" />
+              Pickup Location
+            </label>
+
+            <span
+              className={`rounded-full px-2 py-1 text-[8px] font-black uppercase tracking-widest ${
+                pickupLocation
+                  ? 'bg-green-500/10 text-green-400'
+                  : 'bg-amber-500/10 text-amber-400'
+              }`}
+            >
+              {pickupLocation ? 'GPS Ready' : 'Address Only'}
+            </span>
+          </div>
 
           <input
             value={pickupAddress}
@@ -206,6 +335,7 @@ export default function DeliveryRequestPanel({
           />
 
           <button
+            type="button"
             onClick={() => useCurrentLocation('pickup')}
             disabled={locating === 'pickup'}
             className="flex w-full items-center justify-center gap-2 rounded-xl border border-green-500/20 bg-green-500/10 py-3 text-[9px] font-black uppercase tracking-widest text-green-400 disabled:opacity-50"
@@ -220,10 +350,22 @@ export default function DeliveryRequestPanel({
         </div>
 
         <div className="space-y-3 rounded-2xl border border-white/5 bg-black/30 p-4">
-          <label className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
-            <MapPin className="h-3.5 w-3.5 text-amber-500" />
-            Dropoff Location
-          </label>
+          <div className="flex items-center justify-between gap-3">
+            <label className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
+              <MapPin className="h-3.5 w-3.5 text-amber-500" />
+              Dropoff Location
+            </label>
+
+            <span
+              className={`rounded-full px-2 py-1 text-[8px] font-black uppercase tracking-widest ${
+                dropoffLocation
+                  ? 'bg-green-500/10 text-green-400'
+                  : 'bg-amber-500/10 text-amber-400'
+              }`}
+            >
+              {dropoffLocation ? 'GPS Ready' : 'Address Only'}
+            </span>
+          </div>
 
           <input
             value={dropoffAddress}
@@ -233,6 +375,7 @@ export default function DeliveryRequestPanel({
           />
 
           <button
+            type="button"
             onClick={() => useCurrentLocation('dropoff')}
             disabled={locating === 'dropoff'}
             className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 py-3 text-[9px] font-black uppercase tracking-widest text-amber-400 disabled:opacity-50"
@@ -307,7 +450,7 @@ export default function DeliveryRequestPanel({
         {[
           {
             label: 'Estimated Fee',
-            value: `${estimatedFee.toLocaleString()} CFA`,
+            value: formattedFee,
             icon: Scale
           },
           {
@@ -351,6 +494,7 @@ export default function DeliveryRequestPanel({
             drivers.slice(0, 3).map(driver => (
               <motion.button
                 key={driver.driverId}
+                type="button"
                 whileHover={{ y: -2 }}
                 onClick={() => setSelectedDriverId(driver.driverId)}
                 className={`rounded-2xl border p-4 text-left transition ${
@@ -390,8 +534,8 @@ export default function DeliveryRequestPanel({
               </motion.button>
             ))
           ) : (
-            <div className="md:col-span-3 rounded-2xl border border-white/5 bg-black/30 p-5 text-sm text-slate-500">
-              Drivers will appear after GPS locations are available.
+            <div className="rounded-2xl border border-white/5 bg-black/30 p-5 text-sm text-slate-500 md:col-span-3">
+              Drivers will appear after pickup or dropoff GPS is available. You can still create the order and match later.
             </div>
           )}
         </div>
@@ -405,6 +549,7 @@ export default function DeliveryRequestPanel({
       )}
 
       <button
+        type="button"
         onClick={submitRequest}
         disabled={submitting}
         className="flex w-full items-center justify-center gap-3 rounded-2xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl hover:bg-amber-400 disabled:opacity-50"
