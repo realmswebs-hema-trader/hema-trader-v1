@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import type { LatLngExpression } from 'leaflet';
@@ -12,8 +12,10 @@ import {
 } from 'react-leaflet';
 import { Link } from 'react-router-dom';
 import {
+  Lock,
   MapPin,
   MessageCircle,
+  Move,
   Navigation,
   ShoppingBag,
   Truck,
@@ -114,6 +116,31 @@ function AutoFit({ points }: { points: GeoPoint[] }) {
   return null;
 }
 
+function MapGestureLock({ unlocked }: { unlocked: boolean }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const handlers = [
+      map.dragging,
+      map.touchZoom,
+      map.scrollWheelZoom,
+      map.doubleClickZoom,
+      map.boxZoom,
+      map.keyboard
+    ];
+
+    handlers.forEach(handler => {
+      if (unlocked) {
+        handler.enable();
+      } else {
+        handler.disable();
+      }
+    });
+  }, [map, unlocked]);
+
+  return null;
+}
+
 export default function MarketplaceMap({
   listings = [],
   users = [],
@@ -122,6 +149,8 @@ export default function MarketplaceMap({
   className = 'h-[460px]',
   onRequestLocation
 }: MarketplaceMapProps) {
+  const [mapUnlocked, setMapUnlocked] = useState(false);
+
   const listingPoints = useMemo(
     () =>
       listings
@@ -160,8 +189,15 @@ export default function MarketplaceMap({
         className="h-full w-full bg-black"
         zoomControl={false}
         attributionControl={false}
+        dragging={false}
+        touchZoom={false}
         scrollWheelZoom={false}
+        doubleClickZoom={false}
+        boxZoom={false}
+        keyboard={false}
       >
+        <MapGestureLock unlocked={mapUnlocked} />
+
         <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
 
         <AutoFit points={allPoints} />
@@ -215,9 +251,11 @@ export default function MarketplaceMap({
                   <p className="mt-2 text-sm font-bold text-amber-500">
                     ${(listing.price || 0).toLocaleString()}
                   </p>
-                  <p className="mt-1 text-[10px] uppercase tracking-widest text-slate-500">
-                    {formatDistance(calculateDistance(currentLocation, point))}
-                  </p>
+                  {currentLocation && (
+                    <p className="mt-1 text-[10px] uppercase tracking-widest text-slate-500">
+                      {formatDistance(calculateDistance(currentLocation, point))}
+                    </p>
+                  )}
 
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <Link
@@ -278,9 +316,11 @@ export default function MarketplaceMap({
                     </div>
                   </div>
 
-                  <p className="mt-3 text-xs text-slate-400">
-                    {formatDistance(calculateDistance(currentLocation, point))}
-                  </p>
+                  {currentLocation && (
+                    <p className="mt-3 text-xs text-slate-400">
+                      {formatDistance(calculateDistance(currentLocation, point))}
+                    </p>
+                  )}
 
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <Link
@@ -324,8 +364,33 @@ export default function MarketplaceMap({
         })}
       </MapContainer>
 
+      {!mapUnlocked && (
+        <button
+          type="button"
+          onClick={() => setMapUnlocked(true)}
+          className="absolute inset-0 z-[450] flex items-center justify-center bg-black/10 text-white backdrop-blur-[1px]"
+        >
+          <span className="flex items-center gap-2 rounded-full border border-white/15 bg-black/75 px-5 py-3 text-[10px] font-black uppercase tracking-widest shadow-2xl">
+            <Move className="h-4 w-4 text-amber-500" />
+            Tap to move map
+          </span>
+        </button>
+      )}
+
+      {mapUnlocked && (
+        <button
+          type="button"
+          onClick={() => setMapUnlocked(false)}
+          className="absolute right-4 top-4 z-[500] flex items-center gap-2 rounded-full border border-white/15 bg-black/80 px-4 py-2 text-[9px] font-black uppercase tracking-widest text-white shadow-2xl"
+        >
+          <Lock className="h-3.5 w-3.5 text-amber-500" />
+          Lock Map
+        </button>
+      )}
+
       {!currentLocation && (
         <button
+          type="button"
           onClick={onRequestLocation}
           className="absolute left-4 top-4 z-[500] flex items-center gap-2 rounded-full border border-white/10 bg-black/70 px-4 py-2 text-[9px] font-black uppercase tracking-widest text-white backdrop-blur-xl hover:border-amber-500/40"
         >
