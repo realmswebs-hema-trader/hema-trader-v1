@@ -138,7 +138,9 @@ const updateTradeLastMessage = async ({
   allowContactInfo?: boolean;
 }) => {
   await updateDoc(doc(db, 'trades', tradeId), {
-    lastMessage: allowContactInfo ? 'Driver shared delivery contact.' : sanitizeContactText(text),
+    lastMessage: allowContactInfo
+      ? 'Driver shared delivery contact.'
+      : sanitizeContactText(text),
     lastMessageAt: serverTimestamp(),
     lastMessageSenderId: senderId,
     [`typing.${senderId}`]: false,
@@ -180,7 +182,9 @@ export const sendTradeMessage = async ({
     contactVisibleAfterPayment: allowContactInfo
   });
 
-  if (mirrorToLegacyThread) {
+  const shouldMirrorToLegacyThread = mirrorToLegacyThread && !allowContactInfo;
+
+  if (shouldMirrorToLegacyThread) {
     const batch = writeBatch(db);
 
     const flatMessageRef = doc(collection(db, 'messages'));
