@@ -34,6 +34,7 @@ interface SendTradeMessageInput {
   listingId?: string;
   status?: 'sent' | 'delivered' | 'read';
   mirrorToLegacyThread?: boolean;
+  allowContactInfo?: boolean;
 }
 
 interface SendSystemMessageInput {
@@ -94,7 +95,8 @@ const createMessageDocument = ({
   recipientIds,
   text,
   type,
-  status = 'sent'
+  status = 'sent',
+  contactVisibleAfterPayment = false
 }: {
   tradeId: string;
   listingId?: string;
@@ -105,6 +107,7 @@ const createMessageDocument = ({
   text: string;
   type: 'user' | 'system';
   status?: 'sent' | 'delivered' | 'read';
+  contactVisibleAfterPayment?: boolean;
 }) => ({
   tradeId,
   listingId,
@@ -117,6 +120,7 @@ const createMessageDocument = ({
   text,
   type,
   status,
+  contactVisibleAfterPayment,
   readBy: senderId === 'system' ? [] : [senderId],
   createdAt: serverTimestamp(),
   updatedAt: serverTimestamp()
@@ -125,14 +129,16 @@ const createMessageDocument = ({
 const updateTradeLastMessage = async ({
   tradeId,
   text,
-  senderId
+  senderId,
+  allowContactInfo
 }: {
   tradeId: string;
   text: string;
   senderId: string;
+  allowContactInfo?: boolean;
 }) => {
   await updateDoc(doc(db, 'trades', tradeId), {
-    lastMessage: text,
+    lastMessage: allowContactInfo ? 'Driver shared delivery contact.' : sanitizeContactText(text),
     lastMessageAt: serverTimestamp(),
     lastMessageSenderId: senderId,
     [`typing.${senderId}`]: false,
@@ -150,13 +156,16 @@ export const sendTradeMessage = async ({
   sendNotification,
   listingId = '',
   status = 'sent',
-  mirrorToLegacyThread = true
+  mirrorToLegacyThread = true,
+  allowContactInfo = false
 }: SendTradeMessageInput) => {
   const cleanText = cleanMessageText(text);
 
   if (!cleanText) return;
 
-  assertNoContactInfo(cleanText);
+  if (!allowContactInfo) {
+    assertNoContactInfo(cleanText);
+  }
 
   const messageData = createMessageDocument({
     tradeId,
@@ -167,7 +176,8 @@ export const sendTradeMessage = async ({
     recipientIds,
     text: cleanText,
     type: 'user',
-    status
+    status,
+    contactVisibleAfterPayment: allowContactInfo
   });
 
   if (mirrorToLegacyThread) {
@@ -187,7 +197,8 @@ export const sendTradeMessage = async ({
   await updateTradeLastMessage({
     tradeId,
     text: cleanText,
-    senderId
+    senderId,
+    allowContactInfo
   });
 
   const uniqueRecipients = uniqueIds(
@@ -198,7 +209,9 @@ export const sendTradeMessage = async ({
     uniqueRecipients.map(recipientId =>
       sendNotification(recipientId, {
         title: `Message from ${senderName}`,
-        body: sanitizeContactText(cleanText),
+        body: allowContactInfo
+          ? 'Driver shared delivery contact inside Hema Trader.'
+          : sanitizeContactText(cleanText),
         type: 'message',
         targetId: tradeId,
         targetType: 'message',
