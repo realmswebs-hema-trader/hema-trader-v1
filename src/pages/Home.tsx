@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import {
+  addDoc,
   collection,
   doc,
   getDocs,
@@ -11,7 +12,7 @@ import {
   updateDoc,
   where
 } from 'firebase/firestore';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowRight,
   Compass,
@@ -19,16 +20,17 @@ import {
   Loader2,
   MapPin,
   MessageCircle,
+  Navigation,
   Search,
   ShieldAlert,
   ShieldCheck,
+  ShoppingBag,
   Star,
   Tag,
   Truck,
   Radio,
   Lock,
-  Flag,
-  Navigation
+  Flag
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 
@@ -407,6 +409,7 @@ function DriverCard({ driver }: { driver: UserProfile }) {
 
 export default function Home() {
   const { user, profile } = useAuth();
+  const navigate = useNavigate();
 
   const [listings, setListings] = useState<Listing[]>([]);
   const [followedListings, setFollowedListings] = useState<Listing[]>([]);
@@ -422,6 +425,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeUsersCount, setActiveUsersCount] = useState(0);
   const [recentAlert, setRecentAlert] = useState<string | null>(null);
+  const [startingTradeId, setStartingTradeId] = useState<string | null>(null);
 
   useEffect(() => {
     const nextLocation = toGeoPoint(profile);
@@ -618,6 +622,72 @@ export default function Home() {
       setLocationError('Location unavailable. You can still search by city, village, or region.');
     } finally {
       setLocating(false);
+    }
+  };
+
+  const startTradeFromListing = async (
+    event: MouseEvent<HTMLButtonElement>,
+    listing: ListingWithDistance
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!user) {
+      navigate(`/listing/${listing.id}`);
+      return;
+    }
+
+    if (!profile || profile.verificationStatus !== 'verified') {
+      alert('Please complete your identity verification to start trading.');
+      navigate('/profile');
+      return;
+    }
+
+    if (listing.ownerId === user.uid) {
+      alert('This is your own listing. Buyers will be able to start trades with you.');
+      return;
+    }
+
+    setStartingTradeId(listing.id);
+
+    try {
+      const tradeRef = await addDoc(collection(db, 'trades'), {
+        listingId: listing.id,
+        listingTitle: listing.title,
+        buyerId: user.uid,
+        sellerId: listing.ownerId,
+        amount: Number(listing.price || 0),
+        priceDisplay: formatListingPrice(listing),
+        currency: listing.currency || listing.currencyCode || 'XAF',
+        currencyCode: listing.currencyCode || listing.currency || 'XAF',
+        currencyLocale: listing.currencyLocale || 'fr-CM',
+        currencyLabel: listing.currencyLabel || 'CFA',
+        status: 'pending',
+        listingSnapshot: {
+          title: listing.title,
+          category: listing.category,
+          quantity: (listing as any).quantity || '',
+          image: listing.images?.[0] || '',
+          location: listing.locationName || listing.location || ''
+        },
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await addDoc(collection(db, 'trades', tradeRef.id, 'messages'), {
+        senderId: 'system',
+        type: 'system',
+        text: `Trade initiated for ${listing.title}. You can now discuss price, pickup, and delivery details.`,
+        readBy: [],
+        createdAt: serverTimestamp()
+      });
+
+      navigate(`/trade/${tradeRef.id}`);
+    } catch (err) {
+      console.error('Start trade failed:', err);
+      alert('Could not start trade. Please try again.');
+    } finally {
+      setStartingTradeId(null);
     }
   };
 
@@ -925,14 +995,14 @@ export default function Home() {
             action="Refresh Feed"
           />
 
-          <div className="flex gap-6 overflow-x-auto px-2 pb-6 scrollbar-hide">
+          <div className="flex gap-5 overflow-x-auto px-2 pb-6 scrollbar-hide">
             {followedListings.map(listing => (
               <Link
                 key={listing.id}
                 to={`/listing/${listing.id}`}
-                className="group w-64 shrink-0 space-y-4"
+                className="group w-52 shrink-0 space-y-3"
               >
-                <div className="relative aspect-[4/3] overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card">
+                <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-white/5 bg-brand-card">
                   {listing.images?.[0] ? (
                     <img
                       src={listing.images[0]}
@@ -940,25 +1010,25 @@ export default function Home() {
                       className="h-full w-full object-cover grayscale-[0.2] transition group-hover:scale-105 group-hover:grayscale-0"
                     />
                   ) : (
-                    <div className="flex h-full w-full items-center justify-center text-slate-800">
-                      NO VISUAL
+                    <div className="flex h-full w-full items-center justify-center text-[10px] font-black uppercase tracking-widest text-slate-800">
+                      No Visual
                     </div>
                   )}
 
-                  <div className="absolute right-4 top-4 rounded-lg border border-white/10 bg-black/60 px-3 py-1.5 backdrop-blur-md">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">
+                  <div className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/60 px-2.5 py-1.5 backdrop-blur-md">
+                    <p className="max-w-28 truncate text-[8px] font-black uppercase tracking-widest text-amber-500">
                       {formatListingPrice(listing)}
                     </p>
                   </div>
                 </div>
 
-                <div className="px-2">
-                  <h4 className="truncate font-serif text-lg leading-tight text-white group-hover:text-amber-500">
+                <div className="px-1">
+                  <h4 className="truncate font-serif text-base leading-tight text-white group-hover:text-amber-500">
                     {listing.title}
                   </h4>
-                  <div className="mt-1 flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
+                  <div className="mt-1 flex items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500">
                     <MapPin className="h-3 w-3 text-amber-500/50" />
-                    <span>{listing.locationName || listing.location}</span>
+                    <span className="truncate">{listing.locationName || listing.location}</span>
                   </div>
                 </div>
               </Link>
@@ -1010,7 +1080,7 @@ export default function Home() {
         ))}
       </section>
 
-      <section className="space-y-8">
+      <section className="space-y-6">
         <div className="flex items-center gap-4 px-2">
           <h2 className="font-serif text-3xl text-white">Marketplace</h2>
           <div className="h-px flex-1 bg-white/5" />
@@ -1033,58 +1103,98 @@ export default function Home() {
             </h3>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
-            {filteredListings.map(listing => (
-              <Link key={listing.id} to={`/listing/${listing.id}`}>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+            {filteredListings.map(listing => {
+              const isOwnListing = listing.ownerId === user?.uid;
+
+              return (
                 <motion.article
-                  whileHover={{ scale: 1.02 }}
-                  className="group overflow-hidden rounded-[3rem] border border-white/5 bg-brand-card shadow-2xl"
+                  key={listing.id}
+                  whileHover={{ y: -3 }}
+                  className="group overflow-hidden rounded-2xl border border-white/5 bg-brand-card shadow-xl"
                 >
                   <div className="relative aspect-[4/3] overflow-hidden bg-slate-900">
-                    {listing.images?.[0] ? (
-                      <img
-                        src={listing.images[0]}
-                        alt={listing.title}
-                        className={`h-full w-full object-cover transition duration-700 group-hover:scale-105 group-hover:grayscale-0 ${
-                          listing.isBoosted ? 'grayscale-0' : 'grayscale-[0.2]'
-                        }`}
-                      />
-                    ) : (
-                      <div className="flex h-full w-full items-center justify-center text-slate-800">
-                        NO VISUAL
-                      </div>
-                    )}
+                    <Link to={`/listing/${listing.id}`} className="block h-full w-full">
+                      {listing.images?.[0] ? (
+                        <img
+                          src={listing.images[0]}
+                          alt={listing.title}
+                          className={`h-full w-full object-cover transition duration-500 group-hover:scale-105 group-hover:grayscale-0 ${
+                            listing.isBoosted ? 'grayscale-0' : 'grayscale-[0.15]'
+                          }`}
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-slate-950 text-[9px] font-black uppercase tracking-widest text-slate-800">
+                          No Visual
+                        </div>
+                      )}
+                    </Link>
 
                     {!listing.isBoosted && listing.distance !== null && (
-                      <div className="absolute left-6 top-6 rounded-full border border-white/10 bg-black/60 px-4 py-2 backdrop-blur-md">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">
+                      <div className="absolute left-3 top-3 rounded-full border border-white/10 bg-black/65 px-3 py-1.5 backdrop-blur-md">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-amber-500">
                           {formatDistance(listing.distance)}
                         </p>
                       </div>
                     )}
 
-                    <div className="absolute right-6 top-6 rounded-lg bg-amber-500 px-3 py-1.5 shadow-xl">
-                      <p className="text-[10px] font-black uppercase tracking-widest text-black">
+                    <div className="absolute right-3 top-3 max-w-[70%] rounded-lg bg-amber-500 px-2.5 py-1.5 shadow-xl">
+                      <p className="truncate text-[8px] font-black uppercase tracking-widest text-black">
                         {formatListingPrice(listing)}
                       </p>
                     </div>
                   </div>
 
-                  <div className="space-y-4 p-8">
-                    <span className="rounded-full border border-slate-800 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-slate-600">
-                      {listing.category}
-                    </span>
-                    <h3 className="font-serif text-2xl leading-tight text-white group-hover:text-amber-500">
-                      {listing.title}
-                    </h3>
-                    <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                      <MapPin className="h-3 w-3 text-amber-500/50" />
-                      <span>{listing.locationName || listing.location}</span>
+                  <div className="space-y-3 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate rounded-full border border-slate-800 px-2.5 py-1 text-[8px] font-black uppercase tracking-widest text-slate-500">
+                        {listing.category}
+                      </span>
+
+                      {isOwnListing && (
+                        <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2 py-1 text-[7px] font-black uppercase tracking-widest text-green-400">
+                          Yours
+                        </span>
+                      )}
+                    </div>
+
+                    <Link to={`/listing/${listing.id}`} className="block">
+                      <h3 className="line-clamp-2 min-h-[2.5rem] font-serif text-base leading-tight text-white group-hover:text-amber-500 md:text-lg">
+                        {listing.title}
+                      </h3>
+                    </Link>
+
+                    <div className="flex items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500">
+                      <MapPin className="h-3 w-3 shrink-0 text-amber-500/50" />
+                      <span className="truncate">{listing.locationName || listing.location}</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <Link
+                        to={`/listing/${listing.id}`}
+                        className="rounded-xl border border-white/10 bg-white/5 px-3 py-3 text-center text-[8px] font-black uppercase tracking-widest text-white transition hover:bg-white hover:text-black"
+                      >
+                        View
+                      </Link>
+
+                      <button
+                        type="button"
+                        onClick={event => startTradeFromListing(event, listing)}
+                        disabled={startingTradeId === listing.id || isOwnListing}
+                        className="flex items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-3 py-3 text-[8px] font-black uppercase tracking-widest text-black transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {startingTradeId === listing.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <ShoppingBag className="h-3.5 w-3.5" />
+                        )}
+                        {isOwnListing ? 'Listed' : 'Trade'}
+                      </button>
                     </div>
                   </div>
                 </motion.article>
-              </Link>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>
