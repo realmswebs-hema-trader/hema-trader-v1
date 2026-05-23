@@ -1,26 +1,73 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { doc, getDoc, addDoc, collection, serverTimestamp, query, where, limit, getDocs, setDoc, deleteDoc, increment, updateDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import {
+  doc,
+  getDoc,
+  addDoc,
+  collection,
+  serverTimestamp,
+  query,
+  where,
+  limit,
+  getDocs,
+  setDoc,
+  deleteDoc,
+  increment,
+  updateDoc
+} from 'firebase/firestore';
+import {
+  AlertCircle,
+  ArrowRight,
+  CreditCard,
+  Loader2,
+  MapPin,
+  MessageCircle,
+  Navigation,
+  Package,
+  Scale,
+  ShieldCheck,
+  Star,
+  Truck,
+  UserMinus,
+  UserPlus
+} from 'lucide-react';
+
+import { db } from '../lib/firebase';
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
-import { MapPin, MessageCircle, AlertCircle, Loader2, Star, ShieldCheck, Scale, ArrowRight, CreditCard, UserPlus, UserMinus } from 'lucide-react';
-import { motion } from 'motion/react';
-import { calculateDistance, formatDistance } from '../lib/geoUtils';
+import {
+  calculateDistance,
+  formatDistance,
+  toGeoPoint
+} from '../utils/geoUtils';
 
 interface Listing {
   id: string;
   title: string;
   description: string;
   price: number;
+  priceDisplay?: string;
+  currency?: string;
+  currencyCode?: string;
+  currencyLocale?: string;
+  currencyLabel?: string;
+  country?: string;
   category: string;
   location: string;
+  locationName?: string;
   images: string[];
   ownerId: string;
+  sellerId?: string;
   status: string;
   quantity: string;
   latitude?: number;
   longitude?: number;
+  currentLocation?: {
+    latitude?: number;
+    longitude?: number;
+  };
+  isGeoTagged?: boolean;
+  imageUploadStatus?: string;
   metadata?: Record<string, string>;
   isBoosted?: boolean;
   boostTier?: string;
@@ -28,21 +75,70 @@ interface Listing {
 }
 
 interface SellerProfile {
-  displayName: string;
-  photoURL: string;
-  averageRating: number;
-  totalTrades: number;
-  verificationStatus: string;
+  displayName?: string;
+  name?: string;
+  photoURL?: string;
+  averageRating?: number;
+  totalTrades?: number;
+  verificationStatus?: string;
   lastActiveAt?: any;
   followersCount?: number;
   followingCount?: number;
+  city?: string;
+  country?: string;
+  location?: string;
 }
+
+const zeroDecimalCurrencies = new Set(['XAF', 'XOF', 'UGX', 'RWF']);
+
+const getMillis = (value: any) => {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+};
+
+const formatMoney = (
+  amount: number,
+  currencyCode = 'XAF',
+  locale = 'fr-CM'
+) => {
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: currencyCode,
+      maximumFractionDigits: zeroDecimalCurrencies.has(currencyCode) ? 0 : 2
+    }).format(amount || 0);
+  } catch {
+    return `${currencyCode} ${(amount || 0).toLocaleString()}`;
+  }
+};
+
+const formatListingPrice = (listing: Listing) => {
+  if (listing.priceDisplay) return listing.priceDisplay;
+
+  return formatMoney(
+    Number(listing.price || 0),
+    listing.currencyCode || listing.currency || 'XAF',
+    listing.currencyLocale || 'fr-CM'
+  );
+};
+
+const displaySellerName = (seller: SellerProfile | null) =>
+  seller?.displayName || seller?.name || 'Marketplace Seller';
+
+const displayListingLocation = (listing: Listing) =>
+  listing.locationName || listing.location || 'Cameroon';
 
 export default function ListingDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user, profile } = useAuth();
   const { sendNotification } = useNotifications();
+
   const [listing, setListing] = useState<Listing | null>(null);
   const [seller, setSeller] = useState<SellerProfile | null>(null);
   const [nearby, setNearby] = useState<Listing[]>([]);
@@ -59,6 +155,7 @@ export default function ListingDetail() {
       const followId = `${user.uid}_${listing.ownerId}`;
       const followRef = doc(db, 'follows', followId);
       const followSnap = await getDoc(followRef);
+
       setIsFollowing(followSnap.exists());
     };
 
@@ -67,20 +164,33 @@ export default function ListingDetail() {
 
   const toggleFollow = async () => {
     if (!user || !listing || !seller) return;
+
     setFollowingLoading(true);
+
     const followId = `${user.uid}_${listing.ownerId}`;
     const followRef = doc(db, 'follows', followId);
 
     try {
       if (isFollowing) {
         await deleteDoc(followRef);
-        
-        // Update counts
-        await updateDoc(doc(db, 'users', user.uid), { followingCount: increment(-1) });
-        await updateDoc(doc(db, 'users', listing.ownerId), { followersCount: increment(-1) });
-        
+
+        await updateDoc(doc(db, 'users', user.uid), {
+          followingCount: increment(-1)
+        });
+
+        await updateDoc(doc(db, 'users', listing.ownerId), {
+          followersCount: increment(-1)
+        });
+
         setIsFollowing(false);
-        setSeller(prev => prev ? { ...prev, followersCount: (prev.followersCount || 1) - 1 } : null);
+        setSeller(prev =>
+          prev
+            ? {
+                ...prev,
+                followersCount: Math.max((prev.followersCount || 1) - 1, 0)
+              }
+            : null
+        );
       } else {
         await setDoc(followRef, {
           followerId: user.uid,
@@ -88,14 +198,24 @@ export default function ListingDetail() {
           createdAt: serverTimestamp()
         });
 
-        // Update counts
-        await updateDoc(doc(db, 'users', user.uid), { followingCount: increment(1) });
-        await updateDoc(doc(db, 'users', listing.ownerId), { followersCount: increment(1) });
+        await updateDoc(doc(db, 'users', user.uid), {
+          followingCount: increment(1)
+        });
+
+        await updateDoc(doc(db, 'users', listing.ownerId), {
+          followersCount: increment(1)
+        });
 
         setIsFollowing(true);
-        setSeller(prev => prev ? { ...prev, followersCount: (prev.followersCount || 0) + 1 } : null);
+        setSeller(prev =>
+          prev
+            ? {
+                ...prev,
+                followersCount: (prev.followersCount || 0) + 1
+              }
+            : null
+        );
 
-        // Notify Seller
         sendNotification(listing.ownerId, {
           title: 'New Follower',
           body: `${profile?.displayName || 'Someone'} started following you.`,
@@ -104,7 +224,7 @@ export default function ListingDetail() {
         });
       }
     } catch (err) {
-      console.error("Follow error:", err);
+      console.error('Follow error:', err);
     } finally {
       setFollowingLoading(false);
     }
@@ -112,43 +232,54 @@ export default function ListingDetail() {
 
   useEffect(() => {
     let isMounted = true;
+
     async function fetchListing() {
       if (!id) return;
-      console.log('Fetching listing:', id);
+
       try {
         setLoading(true);
         setError(null);
-        
+
         const docRef = doc(db, 'listings', id);
         const docSnap = await getDoc(docRef);
-        
+
         if (!isMounted) return;
 
         if (docSnap.exists()) {
-          const lData = { id: docSnap.id, ...docSnap.data() } as Listing;
-          setListing(lData);
+          const listingData = {
+            id: docSnap.id,
+            ...docSnap.data()
+          } as Listing;
 
-          // Fetch Seller Info
-          const sellerSnap = await getDoc(doc(db, 'users', lData.ownerId));
+          setListing(listingData);
+
+          const sellerSnap = await getDoc(doc(db, 'users', listingData.ownerId));
+
           if (isMounted && sellerSnap.exists()) {
             setSeller(sellerSnap.data() as SellerProfile);
           }
 
-          // Fetch Nearby (same category)
           const qNearby = query(
             collection(db, 'listings'),
-            where('category', '==', lData.category),
+            where('category', '==', listingData.category),
             where('status', '==', 'active'),
             limit(5)
           );
+
           const nearbySnap = await getDocs(qNearby);
+
           if (isMounted) {
-            setNearby(nearbySnap.docs.filter(d => d.id !== id).map(d => ({ id: d.id, ...d.data() } as Listing)).slice(0, 4));
+            setNearby(
+              nearbySnap.docs
+                .filter(item => item.id !== id)
+                .map(item => ({ id: item.id, ...item.data() } as Listing))
+                .slice(0, 4)
+            );
           }
         } else {
-          setError('We couldn’t find this item in our marketplace.');
+          setError('We could not find this item in our marketplace.');
         }
-      } catch (err: any) {
+      } catch (err) {
         console.error('Fetch Listing Error:', err);
         setError('There was a problem loading the details for this item.');
       } finally {
@@ -157,37 +288,50 @@ export default function ListingDetail() {
         }
       }
     }
+
     fetchListing();
-    return () => { isMounted = false; };
+
+    return () => {
+      isMounted = false;
+    };
   }, [id]);
 
   const startTrade = async () => {
     if (!user || !profile || !listing) return;
+
     if (profile.verificationStatus !== 'verified') {
       alert('Please complete your identity verification to start trading. It helps keep the marketplace safe.');
       navigate('/profile');
       return;
     }
+
     if (user.uid === listing.ownerId) {
       alert('You cannot trade with yourself.');
       return;
     }
 
     setTrading(true);
+
     try {
       const tradeData = {
         listingId: listing.id,
         buyerId: user.uid,
         sellerId: listing.ownerId,
         amount: listing.price,
+        priceDisplay: formatListingPrice(listing),
+        currency: listing.currencyCode || listing.currency || 'XAF',
+        currencyCode: listing.currencyCode || listing.currency || 'XAF',
+        currencyLocale: listing.currencyLocale || 'fr-CM',
+        currencyLabel: listing.currencyLabel || 'XAF / FCFA',
+        deliveryPickupLocation: toGeoPoint(listing),
+        deliveryPickupAddress: displayListingLocation(listing),
         status: 'pending',
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
       };
-      
+
       const docRef = await addDoc(collection(db, 'trades'), tradeData);
-      
-      // Send Welcome Message
+
       await addDoc(collection(db, 'trades', docRef.id, 'messages'), {
         senderId: 'system',
         text: `Trade initiated for ${listing.title}. You can now discuss terms and delivery with the other party.`,
@@ -197,7 +341,7 @@ export default function ListingDetail() {
       navigate(`/trade/${docRef.id}`);
     } catch (err: any) {
       console.error('Start Trade Error:', err);
-      alert('Failed to initiate trade registry: ' + err.message);
+      alert(`Failed to initiate trade registry: ${err.message}`);
     } finally {
       setTrading(false);
     }
@@ -205,7 +349,11 @@ export default function ListingDetail() {
 
   const handleBoostListing = async (tier: string, amount: number) => {
     if (!user || !listing) return;
-    const confirmBoost = window.confirm(`Confirm payment of ${amount.toLocaleString()} CFA for ${tier} boost? (Demo logic)`);
+
+    const confirmBoost = window.confirm(
+      `Confirm payment of ${formatMoney(amount, 'XAF', 'fr-CM')} for ${tier} boost? (Demo logic)`
+    );
+
     if (!confirmBoost) return;
 
     try {
@@ -222,12 +370,23 @@ export default function ListingDetail() {
         listingId: listing.id,
         userId: user.uid,
         amount,
+        currency: 'XAF',
         tier,
         createdAt: serverTimestamp(),
         expiresAt
       });
 
-      setListing(prev => prev ? { ...prev, isBoosted: true, boostTier: tier, boostExpiresAt: expiresAt } : null);
+      setListing(prev =>
+        prev
+          ? {
+              ...prev,
+              isBoosted: true,
+              boostTier: tier,
+              boostExpiresAt: expiresAt
+            }
+          : null
+      );
+
       alert('Listing boosted successfully! It will now appear with priority in search results.');
     } catch (err) {
       console.error('Boost error:', err);
@@ -250,241 +409,398 @@ export default function ListingDetail() {
         <div className="mb-8 flex justify-center">
           <AlertCircle className="h-16 w-16 text-amber-500/40" />
         </div>
-        <h2 className="font-serif text-3xl text-white mb-4">Mismatched Details</h2>
-        <p className="text-slate-500 font-serif italic mb-8">{error || 'This item is no longer available or was moved.'}</p>
-        <Link to="/" className="inline-flex items-center gap-2 rounded-full border border-white/10 px-8 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-white transition-colors">
+        <h2 className="mb-4 font-serif text-3xl text-white">
+          Mismatched Details
+        </h2>
+        <p className="mb-8 font-serif italic text-slate-500">
+          {error || 'This item is no longer available or was moved.'}
+        </p>
+        <Link
+          to="/"
+          className="inline-flex items-center gap-2 rounded-full border border-white/10 px-8 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition-colors hover:text-white"
+        >
           Return to Marketplace
         </Link>
       </div>
     );
   }
 
-  const distance = profile?.latitude && listing.latitude 
-    ? calculateDistance(profile.latitude, profile.longitude, listing.latitude, listing.longitude)
-    : null;
+  const userPoint = toGeoPoint(profile);
+  const listingPoint = toGeoPoint(listing);
+  const distance =
+    userPoint && listingPoint
+      ? calculateDistance(userPoint, listingPoint)
+      : null;
+
+  const listingPrice = formatListingPrice(listing);
+  const sellerActive =
+    seller?.lastActiveAt &&
+    Date.now() - getMillis(seller.lastActiveAt) < 1000 * 60 * 15;
 
   return (
     <div className="mx-auto max-w-5xl space-y-12 pb-20">
-      <div className="overflow-hidden rounded-[3rem] bg-brand-card shadow-2xl border border-white/5">
+      <div className="overflow-hidden rounded-[3rem] border border-white/5 bg-brand-card shadow-2xl">
         <div className="grid grid-cols-1 lg:grid-cols-2">
-          {/* Images */}
-          <div className="aspect-square bg-slate-900 border-r border-white/5">
+          <div className="aspect-square border-r border-white/5 bg-slate-900">
             {listing.images?.[0] ? (
-              <img src={listing.images[0]} alt={listing.title} className="h-full w-full object-cover grayscale-[0.2] transition-all duration-1000 hover:grayscale-0" />
+              <img
+                src={listing.images[0]}
+                alt={listing.title}
+                className="h-full w-full object-cover grayscale-[0.2] transition-all duration-1000 hover:grayscale-0"
+              />
             ) : (
-              <div className="flex h-full w-full items-center justify-center text-slate-800">NO VISUAL DATA</div>
+              <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/20 text-center">
+                <div className="rounded-3xl border border-white/10 bg-black/30 p-6">
+                  <Package className="h-12 w-12 text-amber-500/50" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-600">
+                    No product photo yet
+                  </p>
+                  <p className="mt-2 max-w-xs text-xs text-slate-500">
+                    Ask the seller for photos before paying into escrow.
+                  </p>
+                </div>
+              </div>
             )}
           </div>
 
           <div className="flex flex-col p-8 md:p-14">
             {listing.isBoosted && (
-              <div className="mb-4 flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500/20 to-amber-600/20 border border-amber-500/30 w-max shadow-lg shadow-amber-500/5">
-                <Star className="h-4 w-4 text-amber-500 fill-amber-500 animate-pulse" />
-                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">{listing.boostTier} Priority Listing</span>
+              <div className="mb-4 flex w-max items-center gap-2 rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-500/20 to-amber-600/20 px-4 py-2 shadow-lg shadow-amber-500/5">
+                <Star className="h-4 w-4 animate-pulse fill-amber-500 text-amber-500" />
+                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">
+                  {listing.boostTier} Priority Listing
+                </span>
               </div>
             )}
-            <div className="mb-8 flex items-center justify-between">
-              <div className="flex gap-2">
-                <span className="rounded-lg bg-amber-500/10 border border-amber-500/20 px-4 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">{listing.category}</span>
-                {seller && seller.totalTrades >= 5 && (
-                  <div className="flex items-center gap-2 rounded-lg bg-green-500/10 border border-green-500/20 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-green-500">
+
+            <div className="mb-8 flex items-center justify-between gap-3">
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">
+                  {listing.category}
+                </span>
+
+                {(seller?.totalTrades || 0) >= 5 && (
+                  <div className="flex items-center gap-2 rounded-lg border border-green-500/20 bg-green-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-green-500">
                     <ShieldCheck className="h-3 w-3" />
                     Community Choice
                   </div>
                 )}
               </div>
-              <div className={`rounded-full px-4 py-1.5 text-[10px] font-black uppercase tracking-widest ${listing.status === 'active' ? 'bg-green-500/10 text-green-500 border border-green-500/20' : 'bg-red-500/10 text-red-500 border border-red-500/20'}`}>
+
+              <div
+                className={`rounded-full border px-4 py-1.5 text-[10px] font-black uppercase tracking-widest ${
+                  listing.status === 'active'
+                    ? 'border-green-500/20 bg-green-500/10 text-green-500'
+                    : 'border-red-500/20 bg-red-500/10 text-red-500'
+                }`}
+              >
                 Status: {listing.status === 'active' ? 'Available' : 'Sold Out'}
               </div>
             </div>
-            
-            <h1 className="text-5xl font-serif text-white tracking-tighter leading-tight">{listing.title}</h1>
-            
+
+            <h1 className="font-serif text-5xl leading-tight tracking-tighter text-white">
+              {listing.title}
+            </h1>
+
             <div className="mt-8 flex items-end justify-between border-b border-white/5 pb-8">
               <div className="space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Price</p>
-                <p className="text-5xl font-bold text-amber-500 tracking-tighter">${listing.price.toLocaleString()}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
+                  Price
+                </p>
+                <p className="text-5xl font-bold tracking-tighter text-amber-500">
+                  {listingPrice}
+                </p>
               </div>
+
               <div className="text-right">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-600">Availability</p>
-                <p className="font-serif text-2xl text-white italic">{listing.quantity}</p>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
+                  Availability
+                </p>
+                <p className="font-serif text-2xl italic text-white">
+                  {listing.quantity}
+                </p>
               </div>
             </div>
-            
-            <div className="mt-8 flex items-center gap-6">
-              <div className="flex items-center gap-2 text-slate-400 text-[10px] uppercase tracking-widest font-black">
+
+            <div className="mt-8 flex flex-wrap items-center gap-6">
+              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
                 <MapPin className="h-4 w-4 text-amber-500/50" />
-                <span>{listing.location}</span>
+                <span>{displayListingLocation(listing)}</span>
                 {distance !== null && (
-                  <span className="text-amber-500/60 ml-2 border-l border-white/10 pl-4">{formatDistance(distance)} RADIUS</span>
+                  <span className="ml-2 border-l border-white/10 pl-4 text-amber-500/60">
+                    {formatDistance(distance)} radius
+                  </span>
                 )}
               </div>
             </div>
 
-            {/* Dynamic Metadata */}
+            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-white/5 bg-black/30 p-4">
+                <MapPin className="h-4 w-4 text-amber-500" />
+                <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
+                  GPS Status
+                </p>
+                <p className={`mt-1 text-xs font-bold ${listingPoint ? 'text-green-400' : 'text-amber-400'}`}>
+                  {listingPoint ? 'Geo-tagged' : 'Seller location only'}
+                </p>
+              </div>
+
+              <Link
+                to="/map"
+                className="rounded-2xl border border-white/5 bg-black/30 p-4 transition hover:border-amber-500/30"
+              >
+                <Navigation className="h-4 w-4 text-amber-500" />
+                <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
+                  Map View
+                </p>
+                <p className="mt-1 text-xs font-bold text-white">
+                  Open nearby map
+                </p>
+              </Link>
+
+              <Link
+                to="/drivers"
+                className="rounded-2xl border border-green-500/20 bg-green-500/10 p-4 transition hover:bg-green-500 hover:text-black"
+              >
+                <Truck className="h-4 w-4 text-green-400" />
+                <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-green-400">
+                  Delivery
+                </p>
+                <p className="mt-1 text-xs font-bold text-white">
+                  Find a driver
+                </p>
+              </Link>
+            </div>
+
             {listing.metadata && Object.keys(listing.metadata).length > 0 && (
               <div className="mt-8 grid grid-cols-2 gap-4">
-                {Object.entries(listing.metadata).map(([key, val]) => (
-                  <div key={key} className="rounded-xl bg-black/20 p-4 border border-white/5">
-                    <p className="text-[8px] font-black uppercase tracking-widest text-slate-600 mb-1">{key}</p>
-                    <p className="text-sm font-serif text-white">{val}</p>
+                {Object.entries(listing.metadata).map(([key, value]) => (
+                  <div key={key} className="rounded-xl border border-white/5 bg-black/20 p-4">
+                    <p className="mb-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
+                      {key}
+                    </p>
+                    <p className="font-serif text-sm text-white">{value}</p>
                   </div>
                 ))}
               </div>
             )}
 
             <div className="mt-12 flex-1">
-              <h3 className="text-[10px] uppercase tracking-[0.3em] text-slate-500 font-bold mb-4 flex items-center gap-2">
+              <h3 className="mb-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.3em] text-slate-500">
                 <Scale className="h-3 w-3" />
                 Product Description
               </h3>
-              <p className="text-slate-400 leading-relaxed text-sm whitespace-pre-wrap font-serif italic border-l-2 border-amber-500/10 pl-6">"{listing.description}"</p>
+              <p className="whitespace-pre-wrap border-l-2 border-amber-500/10 pl-6 font-serif text-sm italic leading-relaxed text-slate-400">
+                "{listing.description}"
+              </p>
             </div>
 
-            <div className="mt-12 group rounded-3xl bg-black/40 p-6 border border-white/5 transition-all hover:border-amber-500/20">
+            <div className="group mt-12 rounded-3xl border border-white/5 bg-black/40 p-6 transition-all hover:border-amber-500/20">
               <div className="flex items-center gap-5">
                 <div className="relative">
-                  <img 
-                    src={seller?.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${listing.ownerId}`} 
-                    className="h-14 w-14 rounded-full border-2 border-white/10 grayscale-[0.3] group-hover:grayscale-0 transition-all" 
-                    alt=""
+                  <img
+                    src={
+                      seller?.photoURL ||
+                      `https://api.dicebear.com/7.x/avataaars/svg?seed=${listing.ownerId}`
+                    }
+                    className="h-14 w-14 rounded-full border-2 border-white/10 grayscale-[0.3] transition-all group-hover:grayscale-0"
+                    alt={displaySellerName(seller)}
                   />
-                  {seller?.lastActiveAt && (Date.now() - seller.lastActiveAt.toMillis() < 1000 * 60 * 15) && (
-                    <div className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-green-500 border-2 border-brand-card shadow-lg" />
+                  {sellerActive && (
+                    <div className="absolute -right-1 -top-1 h-4 w-4 rounded-full border-2 border-brand-card bg-green-500 shadow-lg" />
                   )}
                 </div>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <p className="font-serif text-lg text-white">{seller?.displayName || 'Marketplace Seller'}</p>
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate font-serif text-lg text-white">
+                          {displaySellerName(seller)}
+                        </p>
+
                         {seller?.verificationStatus === 'verified' && (
-                          <div className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 border border-amber-500/20">
+                          <div className="flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5">
                             <ShieldCheck className="h-3 w-3 text-amber-500" />
-                            <span className="text-[8px] font-bold uppercase tracking-wider text-amber-500">Verified Seller</span>
+                            <span className="text-[8px] font-bold uppercase tracking-wider text-amber-500">
+                              Verified Seller
+                            </span>
                           </div>
                         )}
                       </div>
-                      
-                      {user && user.uid !== listing.ownerId && (
-                        <button
-                          onClick={(e) => { e.preventDefault(); toggleFollow(); }}
-                          disabled={followingLoading}
-                          className={`flex items-center gap-2 rounded-lg px-4 py-2 text-[8px] font-black uppercase tracking-widest transition-all ${
-                            isFollowing 
-                              ? 'bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10' 
-                              : 'bg-white text-black hover:bg-amber-500'
-                          }`}
-                        >
-                          {followingLoading ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : isFollowing ? (
-                            <><UserMinus className="h-3 w-3" /> Unfollow</>
-                          ) : (
-                            <><UserPlus className="h-3 w-3" /> Follow</>
-                          )}
-                        </button>
-                      )}
+
+                      <div className="mt-1 flex flex-wrap items-center gap-3">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">
+                          {seller?.totalTrades || 0} Trades
+                        </p>
+                        <div className="h-1 w-1 rounded-full bg-slate-800" />
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">
+                          {seller?.followersCount || 0} Followers
+                        </p>
+                        <div className="h-1 w-1 rounded-full bg-slate-800" />
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-green-500/80">
+                          Typically responds in about 2h
+                        </p>
+                      </div>
                     </div>
-                     <div className="flex items-center gap-3 mt-1">
-                       <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">{seller?.totalTrades || 0} Trades</p>
-                       <div className="h-1 w-1 rounded-full bg-slate-800" />
-                       <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">{seller?.followersCount || 0} Followers</p>
-                       <div className="h-1 w-1 rounded-full bg-slate-800" />
-                       <p className="text-[9px] font-bold uppercase tracking-widest text-green-500/80">Typically responds in ~2h</p>
-                     </div>
-                 </div>
-                 <div className="flex items-center justify-between">
+
+                    {user && user.uid !== listing.ownerId && (
+                      <button
+                        onClick={event => {
+                          event.preventDefault();
+                          toggleFollow();
+                        }}
+                        disabled={followingLoading}
+                        className={`flex items-center gap-2 rounded-lg px-4 py-2 text-[8px] font-black uppercase tracking-widest transition-all ${
+                          isFollowing
+                            ? 'border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
+                            : 'bg-white text-black hover:bg-amber-500'
+                        }`}
+                      >
+                        {followingLoading ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : isFollowing ? (
+                          <>
+                            <UserMinus className="h-3 w-3" />
+                            Unfollow
+                          </>
+                        ) : (
+                          <>
+                            <UserPlus className="h-3 w-3" />
+                            Follow
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between">
                     <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider">
                       <div className="flex items-center gap-1 text-amber-500">
                         <Star className="h-3 w-3 fill-amber-500" />
                         {seller?.averageRating?.toFixed(1) || '0.0'}
                       </div>
-                      <span className="text-slate-600">• {seller?.totalTrades || 0} Successful Trades</span>
+                      <span className="text-slate-600">
+                        • {seller?.totalTrades || 0} Successful Trades
+                      </span>
                     </div>
-                    {seller?.lastActiveAt && (
-                      <span className="text-[9px] font-mono text-slate-500 italic">Usually responds within 1 hour</span>
-                    )}
                   </div>
                 </div>
               </div>
+            </div>
 
-               {listing.ownerId === user?.uid && (
-                <div className="mt-12 rounded-3xl bg-amber-500/10 p-8 border border-amber-500/20 space-y-6">
-                  <div className="flex items-center gap-4">
-                    <div className="p-3 rounded-2xl bg-amber-500 text-black">
-                      <Scale className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <h3 className="font-serif text-2xl text-white">Boost Visibility</h3>
-                      <p className="text-[10px] uppercase tracking-widest text-slate-500">Reach up to 10x more traders in your region</p>
-                    </div>
+            {listing.ownerId === user?.uid && (
+              <div className="mt-12 space-y-6 rounded-3xl border border-amber-500/20 bg-amber-500/10 p-8">
+                <div className="flex items-center gap-4">
+                  <div className="rounded-2xl bg-amber-500 p-3 text-black">
+                    <Scale className="h-6 w-6" />
                   </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <button
-                      onClick={() => handleBoostListing('standard', 2000)}
-                      className="p-5 rounded-2xl bg-black/40 border border-white/5 text-left group hover:border-amber-500/50 transition-all"
-                    >
-                      <h4 className="font-serif text-lg text-white group-hover:text-amber-500">Standard Boost</h4>
-                      <p className="text-[9px] uppercase tracking-widest text-slate-500 mt-1">7 Days Priority Placement</p>
-                      <p className="text-xl font-bold text-white mt-4 tracking-tighter">2,000 CFA</p>
-                    </button>
-                    <button
-                      onClick={() => handleBoostListing('premium', 5000)}
-                      className="p-5 rounded-2xl bg-black/40 border border-white/5 text-left group hover:border-amber-500/50 transition-all border-l-4 border-l-amber-500"
-                    >
-                      <h4 className="font-serif text-lg text-white group-hover:text-amber-500">Premium Boost</h4>
-                      <p className="text-[9px] uppercase tracking-widest text-slate-500 mt-1">30 Days Top Placement & Badging</p>
-                      <p className="text-xl font-bold text-white mt-4 tracking-tighter">5,000 CFA</p>
-                    </button>
+                  <div>
+                    <h3 className="font-serif text-2xl text-white">Boost Visibility</h3>
+                    <p className="text-[10px] uppercase tracking-widest text-slate-500">
+                      Reach up to 10x more traders in your region
+                    </p>
                   </div>
-                  
-                  <p className="text-[8px] text-slate-600 uppercase tracking-widest text-center italic">Boosted listings appear at the top of category searches and the home feed.</p>
                 </div>
-              )}
 
-              <div className="mt-8">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <button
+                    onClick={() => handleBoostListing('standard', 2000)}
+                    className="group rounded-2xl border border-white/5 bg-black/40 p-5 text-left transition-all hover:border-amber-500/50"
+                  >
+                    <h4 className="font-serif text-lg text-white group-hover:text-amber-500">
+                      Standard Boost
+                    </h4>
+                    <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
+                      7 Days Priority Placement
+                    </p>
+                    <p className="mt-4 text-xl font-bold tracking-tighter text-white">
+                      {formatMoney(2000, 'XAF', 'fr-CM')}
+                    </p>
+                  </button>
+
+                  <button
+                    onClick={() => handleBoostListing('premium', 5000)}
+                    className="group rounded-2xl border border-l-4 border-white/5 border-l-amber-500 bg-black/40 p-5 text-left transition-all hover:border-amber-500/50"
+                  >
+                    <h4 className="font-serif text-lg text-white group-hover:text-amber-500">
+                      Premium Boost
+                    </h4>
+                    <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
+                      30 Days Top Placement and Badging
+                    </p>
+                    <p className="mt-4 text-xl font-bold tracking-tighter text-white">
+                      {formatMoney(5000, 'XAF', 'fr-CM')}
+                    </p>
+                  </button>
+                </div>
+
+                <p className="text-center text-[8px] uppercase tracking-widest text-slate-600">
+                  Boosted listings appear at the top of category searches and the home feed.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-8">
               {profile?.verificationStatus === 'verified' ? (
                 listing.status === 'active' ? (
                   <div className="space-y-4">
-                    <div className="flex flex-col sm:flex-row gap-4">
+                    <div className="flex flex-col gap-4 sm:flex-row">
                       <button
                         onClick={startTrade}
                         disabled={trading || listing.ownerId === user?.uid}
-                        className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-white py-6 text-[11px] font-bold uppercase tracking-widest text-black transition-all hover:bg-amber-500 shadow-2xl active:scale-[0.98] disabled:opacity-50"
+                        className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-white py-6 text-[11px] font-bold uppercase tracking-widest text-black shadow-2xl transition-all hover:bg-amber-500 active:scale-[0.98] disabled:opacity-50"
                       >
-                        {trading ? <Loader2 className="h-5 w-5 animate-spin" /> : <><CreditCard className="h-5 w-5" /> {listing.ownerId === user?.uid ? 'Editing your listing' : 'Start Secure Trade'}</>}
+                        {trading ? (
+                          <Loader2 className="h-5 w-5 animate-spin" />
+                        ) : (
+                          <>
+                            <CreditCard className="h-5 w-5" />
+                            {listing.ownerId === user?.uid
+                              ? 'Editing your listing'
+                              : 'Start Secure Trade'}
+                          </>
+                        )}
                       </button>
-                      
+
                       {listing.ownerId !== user?.uid && (
                         <button
                           onClick={startTrade}
                           className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-white/10 bg-brand-card py-6 text-[11px] font-bold uppercase tracking-widest text-white transition-all hover:bg-white/5 active:scale-[0.98]"
                         >
-                          <MessageCircle className="h-5 w-5" /> Ask Seller
+                          <MessageCircle className="h-5 w-5" />
+                          Ask Seller
                         </button>
                       )}
                     </div>
-                    
+
                     {listing.ownerId !== user?.uid && (
-                      <div className="flex flex-col items-center gap-3 pt-4 border-t border-white/5">
-                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-500/10 border border-green-500/20">
+                      <div className="flex flex-col items-center gap-3 border-t border-white/5 pt-4">
+                        <div className="flex items-center gap-2 rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1.5">
                           <ShieldCheck className="h-3 w-3 text-green-500" />
-                          <span className="text-[9px] font-bold uppercase tracking-widest text-green-500">Escrow Protected Listing</span>
+                          <span className="text-[9px] font-bold uppercase tracking-widest text-green-500">
+                            Escrow Protected Listing
+                          </span>
                         </div>
-                        <p className="text-[9px] text-slate-500 uppercase tracking-widest text-center italic">Funds are released only when you confirm receipt.</p>
+                        <p className="text-center text-[9px] uppercase tracking-widest text-slate-500">
+                          Funds are released only when you confirm receipt. Delivery can be requested after trade starts.
+                        </p>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className="flex w-full items-center justify-center gap-4 rounded-2xl bg-white/5 py-6 text-[11px] font-bold uppercase tracking-widest text-slate-600 border border-white/5 cursor-not-allowed">
+                  <div className="flex w-full cursor-not-allowed items-center justify-center gap-4 rounded-2xl border border-white/5 bg-white/5 py-6 text-[11px] font-bold uppercase tracking-widest text-slate-600">
                     Sold Out
                   </div>
                 )
               ) : (
                 <div className="flex items-start gap-4 rounded-2xl border border-amber-600/20 bg-amber-500/5 p-6 text-[10px] text-slate-400">
                   <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
-                  <p className="uppercase tracking-widest leading-loose">Identity verification required to start a trade. Please complete your profile verification first.</p>
+                  <p className="uppercase leading-loose tracking-widest">
+                    Identity verification required to start a trade. Please complete your profile verification first.
+                  </p>
                 </div>
               )}
             </div>
@@ -495,20 +811,41 @@ export default function ListingDetail() {
       {nearby.length > 0 && (
         <section className="space-y-6">
           <div className="flex items-center justify-between px-4">
-            <h2 className="font-serif text-2xl text-white">Similar Listings Nearby</h2>
-            <Link to="/" className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+            <h2 className="font-serif text-2xl text-white">
+              Similar Listings Nearby
+            </h2>
+            <Link
+              to="/"
+              className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-slate-500"
+            >
               View All <ArrowRight className="h-3 w-3" />
             </Link>
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 px-2">
-            {nearby.map((l) => (
-              <Link key={l.id} to={`/listing/${l.id}`} className="group space-y-3">
-                <div className="aspect-square overflow-hidden rounded-3xl bg-slate-900 border border-white/5">
-                  {l.images?.[0] && <img src={l.images[0]} className="h-full w-full object-cover grayscale-[0.5] group-hover:grayscale-0 transition-all group-hover:scale-105" alt="" />}
+
+          <div className="grid grid-cols-2 gap-6 px-2 lg:grid-cols-4">
+            {nearby.map(item => (
+              <Link key={item.id} to={`/listing/${item.id}`} className="group space-y-3">
+                <div className="aspect-square overflow-hidden rounded-3xl border border-white/5 bg-slate-900">
+                  {item.images?.[0] ? (
+                    <img
+                      src={item.images[0]}
+                      className="h-full w-full object-cover grayscale-[0.5] transition-all group-hover:scale-105 group-hover:grayscale-0"
+                      alt={item.title}
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-slate-800">
+                      <Package className="h-8 w-8" />
+                    </div>
+                  )}
                 </div>
+
                 <div className="px-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">${l.price.toLocaleString()}</p>
-                  <h4 className="font-serif text-sm text-white truncate">{l.title}</h4>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">
+                    {formatListingPrice(item)}
+                  </p>
+                  <h4 className="truncate font-serif text-sm text-white">
+                    {item.title}
+                  </h4>
                 </div>
               </Link>
             ))}
