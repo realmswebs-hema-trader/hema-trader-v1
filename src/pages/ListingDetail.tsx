@@ -19,6 +19,7 @@ import {
   AlertCircle,
   ArrowRight,
   CreditCard,
+  Eye,
   Loader2,
   MapPin,
   MessageCircle,
@@ -106,14 +107,16 @@ const formatMoney = (
   currencyCode = 'XAF',
   locale = 'fr-CM'
 ) => {
+  const normalizedCurrency = currencyCode === 'CFA' ? 'XAF' : currencyCode;
+
   try {
     return new Intl.NumberFormat(locale, {
       style: 'currency',
-      currency: currencyCode,
-      maximumFractionDigits: zeroDecimalCurrencies.has(currencyCode) ? 0 : 2
+      currency: normalizedCurrency,
+      maximumFractionDigits: zeroDecimalCurrencies.has(normalizedCurrency) ? 0 : 2
     }).format(amount || 0);
   } catch {
-    return `${currencyCode} ${(amount || 0).toLocaleString()}`;
+    return `${normalizedCurrency} ${(amount || 0).toLocaleString()}`;
   }
 };
 
@@ -297,7 +300,13 @@ export default function ListingDetail() {
   }, [id]);
 
   const startTrade = async () => {
-    if (!user || !profile || !listing) return;
+    if (!listing) return;
+
+    if (!user || !profile) {
+      alert('Please sign in to start a trade.');
+      navigate('/');
+      return;
+    }
 
     if (profile.verificationStatus !== 'verified') {
       alert('Please complete your identity verification to start trading. It helps keep the marketplace safe.');
@@ -315,6 +324,7 @@ export default function ListingDetail() {
     try {
       const tradeData = {
         listingId: listing.id,
+        listingTitle: listing.title,
         buyerId: user.uid,
         sellerId: listing.ownerId,
         amount: listing.price,
@@ -334,7 +344,9 @@ export default function ListingDetail() {
 
       await addDoc(collection(db, 'trades', docRef.id, 'messages'), {
         senderId: 'system',
+        type: 'system',
         text: `Trade initiated for ${listing.title}. You can now discuss terms and delivery with the other party.`,
+        readBy: [],
         createdAt: serverTimestamp()
       });
 
@@ -396,9 +408,9 @@ export default function ListingDetail() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-5xl space-y-12 pb-20 animate-pulse">
-        <div className="aspect-[2/1] rounded-[3rem] bg-white/5" />
-        <div className="h-40 rounded-[3rem] bg-white/5" />
+      <div className="mx-auto max-w-6xl space-y-8 pb-20 animate-pulse">
+        <div className="h-[460px] rounded-[2rem] bg-white/5" />
+        <div className="h-32 rounded-[2rem] bg-white/5" />
       </div>
     );
   }
@@ -436,115 +448,143 @@ export default function ListingDetail() {
   const sellerActive =
     seller?.lastActiveAt &&
     Date.now() - getMillis(seller.lastActiveAt) < 1000 * 60 * 15;
+  const isOwnListing = listing.ownerId === user?.uid;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-12 pb-20">
-      <div className="overflow-hidden rounded-[3rem] border border-white/5 bg-brand-card shadow-2xl">
-        <div className="grid grid-cols-1 lg:grid-cols-2">
-          <div className="aspect-square border-r border-white/5 bg-slate-900">
-            {listing.images?.[0] ? (
-              <img
-                src={listing.images[0]}
-                alt={listing.title}
-                className="h-full w-full object-cover grayscale-[0.2] transition-all duration-1000 hover:grayscale-0"
-              />
-            ) : (
-              <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/20 text-center">
-                <div className="rounded-3xl border border-white/10 bg-black/30 p-6">
-                  <Package className="h-12 w-12 text-amber-500/50" />
+    <div className="mx-auto max-w-6xl space-y-8 pb-20">
+      <div className="overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card shadow-2xl">
+        <div className="grid grid-cols-1 lg:grid-cols-[0.95fr_1.05fr]">
+          <div className="relative min-h-[280px] border-b border-white/5 bg-slate-900 lg:border-b-0 lg:border-r">
+            <div className="aspect-[4/3] h-full max-h-[520px] w-full">
+              {listing.images?.[0] ? (
+                <img
+                  src={listing.images[0]}
+                  alt={listing.title}
+                  className="h-full w-full object-cover grayscale-[0.15] transition-all duration-700 hover:grayscale-0"
+                />
+              ) : (
+                <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/20 text-center">
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-5">
+                    <Package className="h-10 w-10 text-amber-500/50" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-600">
+                      No product photo yet
+                    </p>
+                    <p className="mt-2 max-w-xs text-xs text-slate-500">
+                      Ask the seller for photos before paying into escrow.
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-600">
-                    No product photo yet
-                  </p>
-                  <p className="mt-2 max-w-xs text-xs text-slate-500">
-                    Ask the seller for photos before paying into escrow.
-                  </p>
-                </div>
-              </div>
-            )}
+              )}
+            </div>
+
+            <div className="absolute left-4 top-4 rounded-full border border-white/10 bg-black/70 px-3 py-1.5 backdrop-blur-md">
+              <p className="text-[8px] font-black uppercase tracking-widest text-amber-500">
+                {listing.category}
+              </p>
+            </div>
+
+            <div
+              className={`absolute right-4 top-4 rounded-full border px-3 py-1.5 backdrop-blur-md ${
+                listing.status === 'active'
+                  ? 'border-green-500/20 bg-green-500/10 text-green-400'
+                  : 'border-red-500/20 bg-red-500/10 text-red-400'
+              }`}
+            >
+              <p className="text-[8px] font-black uppercase tracking-widest">
+                {listing.status === 'active' ? 'Available' : 'Sold Out'}
+              </p>
+            </div>
           </div>
 
-          <div className="flex flex-col p-8 md:p-14">
+          <div className="flex flex-col p-6 md:p-8">
             {listing.isBoosted && (
-              <div className="mb-4 flex w-max items-center gap-2 rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-500/20 to-amber-600/20 px-4 py-2 shadow-lg shadow-amber-500/5">
-                <Star className="h-4 w-4 animate-pulse fill-amber-500 text-amber-500" />
-                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">
+              <div className="mb-4 flex w-max items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                <Star className="h-4 w-4 fill-amber-500 text-amber-500" />
+                <span className="text-[9px] font-black uppercase tracking-widest text-amber-500">
                   {listing.boostTier} Priority Listing
                 </span>
               </div>
             )}
 
-            <div className="mb-8 flex items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-amber-500">
-                  {listing.category}
-                </span>
-
-                {(seller?.totalTrades || 0) >= 5 && (
-                  <div className="flex items-center gap-2 rounded-lg border border-green-500/20 bg-green-500/10 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-green-500">
-                    <ShieldCheck className="h-3 w-3" />
-                    Community Choice
-                  </div>
-                )}
-              </div>
-
-              <div
-                className={`rounded-full border px-4 py-1.5 text-[10px] font-black uppercase tracking-widest ${
-                  listing.status === 'active'
-                    ? 'border-green-500/20 bg-green-500/10 text-green-500'
-                    : 'border-red-500/20 bg-red-500/10 text-red-500'
-                }`}
-              >
-                Status: {listing.status === 'active' ? 'Available' : 'Sold Out'}
-              </div>
-            </div>
-
-            <h1 className="font-serif text-5xl leading-tight tracking-tighter text-white">
+            <h1 className="font-serif text-3xl leading-tight tracking-tight text-white md:text-4xl">
               {listing.title}
             </h1>
 
-            <div className="mt-8 flex items-end justify-between border-b border-white/5 pb-8">
-              <div className="space-y-1">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
+            <div className="mt-5 grid gap-4 border-b border-white/5 pb-5 sm:grid-cols-[1fr_auto] sm:items-end">
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-widest text-slate-600">
                   Price
                 </p>
-                <p className="text-5xl font-bold tracking-tighter text-amber-500">
+                <p className="mt-1 text-4xl font-black tracking-tight text-amber-500 md:text-5xl">
                   {listingPrice}
                 </p>
               </div>
 
-              <div className="text-right">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-600">
+              <div className="sm:text-right">
+                <p className="text-[9px] font-black uppercase tracking-widest text-slate-600">
                   Availability
                 </p>
-                <p className="font-serif text-2xl italic text-white">
+                <p className="mt-1 font-serif text-xl italic text-white">
                   {listing.quantity}
                 </p>
               </div>
             </div>
 
-            <div className="mt-8 flex flex-wrap items-center gap-6">
-              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
-                <MapPin className="h-4 w-4 text-amber-500/50" />
-                <span>{displayListingLocation(listing)}</span>
-                {distance !== null && (
-                  <span className="ml-2 border-l border-white/10 pl-4 text-amber-500/60">
-                    {formatDistance(distance)} radius
-                  </span>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <button
+                onClick={startTrade}
+                disabled={trading || isOwnListing || listing.status !== 'active'}
+                className="flex items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {trading ? (
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                ) : (
+                  <CreditCard className="h-5 w-5" />
                 )}
-              </div>
+                {isOwnListing ? 'Your Listing' : 'Buy / Open Trade'}
+              </button>
+
+              <button
+                onClick={startTrade}
+                disabled={trading || isOwnListing || listing.status !== 'active'}
+                className="flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 py-4 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <MessageCircle className="h-5 w-5" />
+                Ask Seller
+              </button>
             </div>
 
-            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            {isOwnListing && (
+              <p className="mt-3 rounded-xl border border-green-500/20 bg-green-500/10 p-3 text-center text-[9px] font-black uppercase tracking-widest text-green-400">
+                Buyers will see the trade button on this listing.
+              </p>
+            )}
+
+            {!isOwnListing && (
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-green-500/20 bg-green-500/10 p-3">
+                <ShieldCheck className="h-4 w-4 text-green-400" />
+                <span className="text-[9px] font-black uppercase tracking-widest text-green-400">
+                  Escrow protected. Delivery can be requested after trade starts.
+                </span>
+              </div>
+            )}
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
               <div className="rounded-2xl border border-white/5 bg-black/30 p-4">
                 <MapPin className="h-4 w-4 text-amber-500" />
                 <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
-                  GPS Status
+                  Location
                 </p>
-                <p className={`mt-1 text-xs font-bold ${listingPoint ? 'text-green-400' : 'text-amber-400'}`}>
-                  {listingPoint ? 'Geo-tagged' : 'Seller location only'}
+                <p className="mt-1 truncate text-xs font-bold text-white">
+                  {displayListingLocation(listing)}
                 </p>
+                {distance !== null && (
+                  <p className="mt-1 text-[8px] font-black uppercase tracking-widest text-amber-500">
+                    {formatDistance(distance)}
+                  </p>
+                )}
               </div>
 
               <Link
@@ -553,10 +593,10 @@ export default function ListingDetail() {
               >
                 <Navigation className="h-4 w-4 text-amber-500" />
                 <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
-                  Map View
+                  Map
                 </p>
                 <p className="mt-1 text-xs font-bold text-white">
-                  Open nearby map
+                  Open nearby
                 </p>
               </Link>
 
@@ -569,15 +609,15 @@ export default function ListingDetail() {
                   Delivery
                 </p>
                 <p className="mt-1 text-xs font-bold text-white">
-                  Find a driver
+                  Find driver
                 </p>
               </Link>
             </div>
 
             {listing.metadata && Object.keys(listing.metadata).length > 0 && (
-              <div className="mt-8 grid grid-cols-2 gap-4">
+              <div className="mt-5 grid grid-cols-2 gap-3">
                 {Object.entries(listing.metadata).map(([key, value]) => (
-                  <div key={key} className="rounded-xl border border-white/5 bg-black/20 p-4">
+                  <div key={key} className="rounded-xl border border-white/5 bg-black/20 p-3">
                     <p className="mb-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
                       {key}
                     </p>
@@ -587,230 +627,135 @@ export default function ListingDetail() {
               </div>
             )}
 
-            <div className="mt-12 flex-1">
-              <h3 className="mb-4 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.3em] text-slate-500">
+            <div className="mt-6">
+              <h3 className="mb-3 flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
                 <Scale className="h-3 w-3" />
                 Product Description
               </h3>
-              <p className="whitespace-pre-wrap border-l-2 border-amber-500/10 pl-6 font-serif text-sm italic leading-relaxed text-slate-400">
+              <p className="line-clamp-5 whitespace-pre-wrap border-l-2 border-amber-500/10 pl-4 font-serif text-sm italic leading-relaxed text-slate-400">
                 "{listing.description}"
               </p>
-            </div>
-
-            <div className="group mt-12 rounded-3xl border border-white/5 bg-black/40 p-6 transition-all hover:border-amber-500/20">
-              <div className="flex items-center gap-5">
-                <div className="relative">
-                  <img
-                    src={
-                      seller?.photoURL ||
-                      `https://api.dicebear.com/7.x/avataaars/svg?seed=${listing.ownerId}`
-                    }
-                    className="h-14 w-14 rounded-full border-2 border-white/10 grayscale-[0.3] transition-all group-hover:grayscale-0"
-                    alt={displaySellerName(seller)}
-                  />
-                  {sellerActive && (
-                    <div className="absolute -right-1 -top-1 h-4 w-4 rounded-full border-2 border-brand-card bg-green-500 shadow-lg" />
-                  )}
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate font-serif text-lg text-white">
-                          {displaySellerName(seller)}
-                        </p>
-
-                        {seller?.verificationStatus === 'verified' && (
-                          <div className="flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5">
-                            <ShieldCheck className="h-3 w-3 text-amber-500" />
-                            <span className="text-[8px] font-bold uppercase tracking-wider text-amber-500">
-                              Verified Seller
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="mt-1 flex flex-wrap items-center gap-3">
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">
-                          {seller?.totalTrades || 0} Trades
-                        </p>
-                        <div className="h-1 w-1 rounded-full bg-slate-800" />
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">
-                          {seller?.followersCount || 0} Followers
-                        </p>
-                        <div className="h-1 w-1 rounded-full bg-slate-800" />
-                        <p className="text-[9px] font-bold uppercase tracking-widest text-green-500/80">
-                          Typically responds in about 2h
-                        </p>
-                      </div>
-                    </div>
-
-                    {user && user.uid !== listing.ownerId && (
-                      <button
-                        onClick={event => {
-                          event.preventDefault();
-                          toggleFollow();
-                        }}
-                        disabled={followingLoading}
-                        className={`flex items-center gap-2 rounded-lg px-4 py-2 text-[8px] font-black uppercase tracking-widest transition-all ${
-                          isFollowing
-                            ? 'border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
-                            : 'bg-white text-black hover:bg-amber-500'
-                        }`}
-                      >
-                        {followingLoading ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : isFollowing ? (
-                          <>
-                            <UserMinus className="h-3 w-3" />
-                            Unfollow
-                          </>
-                        ) : (
-                          <>
-                            <UserPlus className="h-3 w-3" />
-                            Follow
-                          </>
-                        )}
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="mt-4 flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider">
-                      <div className="flex items-center gap-1 text-amber-500">
-                        <Star className="h-3 w-3 fill-amber-500" />
-                        {seller?.averageRating?.toFixed(1) || '0.0'}
-                      </div>
-                      <span className="text-slate-600">
-                        • {seller?.totalTrades || 0} Successful Trades
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {listing.ownerId === user?.uid && (
-              <div className="mt-12 space-y-6 rounded-3xl border border-amber-500/20 bg-amber-500/10 p-8">
-                <div className="flex items-center gap-4">
-                  <div className="rounded-2xl bg-amber-500 p-3 text-black">
-                    <Scale className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <h3 className="font-serif text-2xl text-white">Boost Visibility</h3>
-                    <p className="text-[10px] uppercase tracking-widest text-slate-500">
-                      Reach up to 10x more traders in your region
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <button
-                    onClick={() => handleBoostListing('standard', 2000)}
-                    className="group rounded-2xl border border-white/5 bg-black/40 p-5 text-left transition-all hover:border-amber-500/50"
-                  >
-                    <h4 className="font-serif text-lg text-white group-hover:text-amber-500">
-                      Standard Boost
-                    </h4>
-                    <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
-                      7 Days Priority Placement
-                    </p>
-                    <p className="mt-4 text-xl font-bold tracking-tighter text-white">
-                      {formatMoney(2000, 'XAF', 'fr-CM')}
-                    </p>
-                  </button>
-
-                  <button
-                    onClick={() => handleBoostListing('premium', 5000)}
-                    className="group rounded-2xl border border-l-4 border-white/5 border-l-amber-500 bg-black/40 p-5 text-left transition-all hover:border-amber-500/50"
-                  >
-                    <h4 className="font-serif text-lg text-white group-hover:text-amber-500">
-                      Premium Boost
-                    </h4>
-                    <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
-                      30 Days Top Placement and Badging
-                    </p>
-                    <p className="mt-4 text-xl font-bold tracking-tighter text-white">
-                      {formatMoney(5000, 'XAF', 'fr-CM')}
-                    </p>
-                  </button>
-                </div>
-
-                <p className="text-center text-[8px] uppercase tracking-widest text-slate-600">
-                  Boosted listings appear at the top of category searches and the home feed.
-                </p>
-              </div>
-            )}
-
-            <div className="mt-8">
-              {profile?.verificationStatus === 'verified' ? (
-                listing.status === 'active' ? (
-                  <div className="space-y-4">
-                    <div className="flex flex-col gap-4 sm:flex-row">
-                      <button
-                        onClick={startTrade}
-                        disabled={trading || listing.ownerId === user?.uid}
-                        className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-white py-6 text-[11px] font-bold uppercase tracking-widest text-black shadow-2xl transition-all hover:bg-amber-500 active:scale-[0.98] disabled:opacity-50"
-                      >
-                        {trading ? (
-                          <Loader2 className="h-5 w-5 animate-spin" />
-                        ) : (
-                          <>
-                            <CreditCard className="h-5 w-5" />
-                            {listing.ownerId === user?.uid
-                              ? 'Editing your listing'
-                              : 'Start Secure Trade'}
-                          </>
-                        )}
-                      </button>
-
-                      {listing.ownerId !== user?.uid && (
-                        <button
-                          onClick={startTrade}
-                          className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-white/10 bg-brand-card py-6 text-[11px] font-bold uppercase tracking-widest text-white transition-all hover:bg-white/5 active:scale-[0.98]"
-                        >
-                          <MessageCircle className="h-5 w-5" />
-                          Ask Seller
-                        </button>
-                      )}
-                    </div>
-
-                    {listing.ownerId !== user?.uid && (
-                      <div className="flex flex-col items-center gap-3 border-t border-white/5 pt-4">
-                        <div className="flex items-center gap-2 rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1.5">
-                          <ShieldCheck className="h-3 w-3 text-green-500" />
-                          <span className="text-[9px] font-bold uppercase tracking-widest text-green-500">
-                            Escrow Protected Listing
-                          </span>
-                        </div>
-                        <p className="text-center text-[9px] uppercase tracking-widest text-slate-500">
-                          Funds are released only when you confirm receipt. Delivery can be requested after trade starts.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex w-full cursor-not-allowed items-center justify-center gap-4 rounded-2xl border border-white/5 bg-white/5 py-6 text-[11px] font-bold uppercase tracking-widest text-slate-600">
-                    Sold Out
-                  </div>
-                )
-              ) : (
-                <div className="flex items-start gap-4 rounded-2xl border border-amber-600/20 bg-amber-500/5 p-6 text-[10px] text-slate-400">
-                  <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
-                  <p className="uppercase leading-loose tracking-widest">
-                    Identity verification required to start a trade. Please complete your profile verification first.
-                  </p>
-                </div>
-              )}
             </div>
           </div>
         </div>
       </div>
 
+      <section className="grid gap-4 lg:grid-cols-[1fr_360px]">
+        <div className="rounded-3xl border border-white/5 bg-brand-card p-6 shadow-xl">
+          <div className="flex items-center gap-5">
+            <div className="relative">
+              <img
+                src={
+                  seller?.photoURL ||
+                  `https://api.dicebear.com/7.x/avataaars/svg?seed=${listing.ownerId}`
+                }
+                className="h-14 w-14 rounded-full border-2 border-white/10 object-cover grayscale-[0.3]"
+                alt={displaySellerName(seller)}
+              />
+              {sellerActive && (
+                <div className="absolute -right-1 -top-1 h-4 w-4 rounded-full border-2 border-brand-card bg-green-500 shadow-lg" />
+              )}
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="truncate font-serif text-xl text-white">
+                  {displaySellerName(seller)}
+                </p>
+
+                {seller?.verificationStatus === 'verified' && (
+                  <div className="flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5">
+                    <ShieldCheck className="h-3 w-3 text-amber-500" />
+                    <span className="text-[8px] font-bold uppercase tracking-wider text-amber-500">
+                      Verified
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">
+                  {seller?.totalTrades || 0} Trades
+                </p>
+                <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500">
+                  {seller?.followersCount || 0} Followers
+                </p>
+                <div className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-widest text-amber-500">
+                  <Star className="h-3 w-3 fill-amber-500" />
+                  {seller?.averageRating?.toFixed(1) || '0.0'}
+                </div>
+              </div>
+            </div>
+
+            {user && user.uid !== listing.ownerId && (
+              <button
+                onClick={toggleFollow}
+                disabled={followingLoading}
+                className={`flex items-center gap-2 rounded-xl px-4 py-3 text-[8px] font-black uppercase tracking-widest transition-all ${
+                  isFollowing
+                    ? 'border border-white/10 bg-white/5 text-slate-400 hover:bg-white/10'
+                    : 'bg-white text-black hover:bg-amber-500'
+                }`}
+              >
+                {followingLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : isFollowing ? (
+                  <>
+                    <UserMinus className="h-3 w-3" />
+                    Unfollow
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="h-3 w-3" />
+                    Follow
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {listing.ownerId === user?.uid && (
+          <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-6">
+            <h3 className="font-serif text-xl text-white">Boost Visibility</h3>
+            <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
+              Reach more traders in your region
+            </p>
+
+            <div className="mt-5 grid gap-3">
+              <button
+                onClick={() => handleBoostListing('standard', 2000)}
+                className="rounded-2xl border border-white/5 bg-black/40 p-4 text-left transition hover:border-amber-500/50"
+              >
+                <h4 className="font-serif text-base text-white">Standard Boost</h4>
+                <p className="mt-1 text-[8px] uppercase tracking-widest text-slate-500">
+                  7 Days Priority
+                </p>
+                <p className="mt-3 text-lg font-bold text-white">
+                  {formatMoney(2000, 'XAF', 'fr-CM')}
+                </p>
+              </button>
+
+              <button
+                onClick={() => handleBoostListing('premium', 5000)}
+                className="rounded-2xl border border-l-4 border-white/5 border-l-amber-500 bg-black/40 p-4 text-left transition hover:border-amber-500/50"
+              >
+                <h4 className="font-serif text-base text-white">Premium Boost</h4>
+                <p className="mt-1 text-[8px] uppercase tracking-widest text-slate-500">
+                  30 Days Top Placement
+                </p>
+                <p className="mt-3 text-lg font-bold text-white">
+                  {formatMoney(5000, 'XAF', 'fr-CM')}
+                </p>
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
       {nearby.length > 0 && (
         <section className="space-y-6">
-          <div className="flex items-center justify-between px-4">
+          <div className="flex items-center justify-between px-2">
             <h2 className="font-serif text-2xl text-white">
               Similar Listings Nearby
             </h2>
@@ -822,14 +767,14 @@ export default function ListingDetail() {
             </Link>
           </div>
 
-          <div className="grid grid-cols-2 gap-6 px-2 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
             {nearby.map(item => (
-              <Link key={item.id} to={`/listing/${item.id}`} className="group space-y-3">
-                <div className="aspect-square overflow-hidden rounded-3xl border border-white/5 bg-slate-900">
+              <Link key={item.id} to={`/listing/${item.id}`} className="group overflow-hidden rounded-2xl border border-white/5 bg-brand-card">
+                <div className="aspect-[4/3] bg-slate-900">
                   {item.images?.[0] ? (
                     <img
                       src={item.images[0]}
-                      className="h-full w-full object-cover grayscale-[0.5] transition-all group-hover:scale-105 group-hover:grayscale-0"
+                      className="h-full w-full object-cover grayscale-[0.4] transition-all group-hover:scale-105 group-hover:grayscale-0"
                       alt={item.title}
                     />
                   ) : (
@@ -839,13 +784,17 @@ export default function ListingDetail() {
                   )}
                 </div>
 
-                <div className="px-1">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">
+                <div className="space-y-2 p-4">
+                  <p className="truncate text-[9px] font-black uppercase tracking-widest text-amber-500">
                     {formatListingPrice(item)}
                   </p>
-                  <h4 className="truncate font-serif text-sm text-white">
+                  <h4 className="line-clamp-2 font-serif text-sm text-white">
                     {item.title}
                   </h4>
+                  <div className="flex items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500">
+                    <Eye className="h-3 w-3" />
+                    Open listing
+                  </div>
                 </div>
               </Link>
             ))}
