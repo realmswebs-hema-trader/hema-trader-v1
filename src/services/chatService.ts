@@ -3,7 +3,8 @@ import {
   collection,
   doc,
   serverTimestamp,
-  updateDoc
+  updateDoc,
+  writeBatch
 } from 'firebase/firestore';
 
 import { db } from '../lib/firebase';
@@ -22,6 +23,9 @@ interface SendTradeMessageInput {
   text: string;
   recipientIds: string[];
   sendNotification: SendNotificationFn;
+  listingId?: string;
+  status?: 'sent' | 'delivered' | 'read';
+  mirrorToLegacyThread?: boolean;
 }
 
 interface SendSystemMessageInput {
@@ -30,7 +34,70 @@ interface SendSystemMessageInput {
   recipientIds?: string[];
   sendNotification?: SendNotificationFn;
   title?: string;
+  listingId?: string;
+  status?: 'sent' | 'delivered' | 'read';
+  mirrorToLegacyThread?: boolean;
 }
+
+const uniqueIds = (ids: string[] = []) =>
+  Array.from(new Set(ids.filter(Boolean)));
+
+const cleanMessageText = (text: string) => text.trim();
+
+const createMessageDocument = ({
+  tradeId,
+  listingId = '',
+  senderId,
+  senderName,
+  senderPhotoURL = '',
+  recipientIds,
+  text,
+  type,
+  status = 'sent'
+}: {
+  tradeId: string;
+  listingId?: string;
+  senderId: string;
+  senderName: string;
+  senderPhotoURL?: string;
+  recipientIds: string[];
+  text: string;
+  type: 'user' | 'system';
+  status?: 'sent' | 'delivered' | 'read';
+}) => ({
+  tradeId,
+  listingId,
+  userId: senderId,
+  senderId,
+  senderName,
+  senderPhotoURL,
+  recipientIds: uniqueIds(recipientIds),
+  participants: uniqueIds([senderId, ...recipientIds]),
+  text,
+  type,
+  status,
+  readBy: senderId === 'system' ? [] : [senderId],
+  createdAt: serverTimestamp(),
+  updatedAt: serverTimestamp()
+});
+
+const updateTradeLastMessage = async ({
+  tradeId,
+  text,
+  senderId
+}: {
+  tradeId: string;
+  text: string;
+  senderId: string;
+}) => {
+  await updateDoc(doc(db, 'trades', tradeId), {
+    lastMessage: text,
+    lastMessageAt: serverTimestamp(),
+    lastMessageSenderId: senderId,
+    [`typing.${senderId}`]: false,
+    updatedAt: serverTimestamp()
+  });
+};
 
 export const sendTradeMessage = async ({
   tradeId,
@@ -39,33 +106,49 @@ export const sendTradeMessage = async ({
   senderPhotoURL,
   text,
   recipientIds,
-  sendNotification
+  sendNotification,
+  listingId = '',
+  status = 'sent',
+  mirrorToLegacyThread = true
 }: SendTradeMessageInput) => {
-  const cleanText = text.trim();
+  const cleanText = cleanMessageText(text);
 
   if (!cleanText) return;
 
-  await addDoc(collection(db, 'trades', tradeId, 'messages'), {
+  const messageData = createMessageDocument({
     tradeId,
+    listingId,
     senderId,
     senderName,
-    senderPhotoURL: senderPhotoURL || '',
+    senderPhotoURL,
+    recipientIds,
     text: cleanText,
     type: 'user',
-    readBy: [senderId],
-    createdAt: serverTimestamp()
+    status
   });
 
-  await updateDoc(doc(db, 'trades', tradeId), {
-    lastMessage: cleanText,
-    lastMessageAt: serverTimestamp(),
-    lastMessageSenderId: senderId,
-    [`typing.${senderId}`]: false,
-    updatedAt: serverTimestamp()
+  if (mirrorToLegacyThread) {
+    const batch = writeBatch(db);
+
+    const flatMessageRef = doc(collection(db, 'messages'));
+    const legacyMessageRef = doc(collection(db, 'trades', tradeId, 'messages'));
+
+    batch.set(flatMessageRef, messageData);
+    batch.set(legacyMessageRef, messageData);
+
+    await batch.commit();
+  } else {
+    await addDoc(collection(db, 'messages'), messageData);
+  }
+
+  await updateTradeLastMessage({
+    tradeId,
+    text: cleanText,
+    senderId
   });
 
-  const uniqueRecipients = Array.from(
-    new Set(recipientIds.filter(id => id && id !== senderId))
+  const uniqueRecipients = uniqueIds(
+    recipientIds.filter(id => id !== senderId)
   );
 
   await Promise.all(
@@ -89,33 +172,50 @@ export const sendSystemTradeMessage = async ({
   text,
   recipientIds = [],
   sendNotification,
-  title = 'Trade Update'
+  title = 'Trade Update',
+  listingId = '',
+  status = 'sent',
+  mirrorToLegacyThread = true
 }: SendSystemMessageInput) => {
-  const cleanText = text.trim();
+  const cleanText = cleanMessageText(text);
 
   if (!cleanText) return;
 
-  await addDoc(collection(db, 'trades', tradeId, 'messages'), {
+  const messageData = createMessageDocument({
     tradeId,
+    listingId,
     senderId: 'system',
     senderName: 'Hema Trader',
     senderPhotoURL: '',
+    recipientIds,
     text: cleanText,
     type: 'system',
-    readBy: [],
-    createdAt: serverTimestamp()
+    status
   });
 
-  await updateDoc(doc(db, 'trades', tradeId), {
-    lastMessage: cleanText,
-    lastMessageAt: serverTimestamp(),
-    lastMessageSenderId: 'system',
-    updatedAt: serverTimestamp()
+  if (mirrorToLegacyThread) {
+    const batch = writeBatch(db);
+
+    const flatMessageRef = doc(collection(db, 'messages'));
+    const legacyMessageRef = doc(collection(db, 'trades', tradeId, 'messages'));
+
+    batch.set(flatMessageRef, messageData);
+    batch.set(legacyMessageRef, messageData);
+
+    await batch.commit();
+  } else {
+    await addDoc(collection(db, 'messages'), messageData);
+  }
+
+  await updateTradeLastMessage({
+    tradeId,
+    text: cleanText,
+    senderId: 'system'
   });
 
   if (!sendNotification) return;
 
-  const uniqueRecipients = Array.from(new Set(recipientIds.filter(Boolean)));
+  const uniqueRecipients = uniqueIds(recipientIds);
 
   await Promise.all(
     uniqueRecipients.map(recipientId =>
@@ -137,6 +237,7 @@ export const setTradeTyping = async (
   isTyping: boolean
 ) => {
   await updateDoc(doc(db, 'trades', tradeId), {
-    [`typing.${userId}`]: isTyping
+    [`typing.${userId}`]: isTyping,
+    updatedAt: serverTimestamp()
   });
 };
