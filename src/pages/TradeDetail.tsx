@@ -31,6 +31,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react';
 
 import { db } from '../lib/firebase';
+import { toGeoPoint, type GeoPoint } from '../utils/geoUtils';
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import DeliveryRequestPanel from '../components/delivery/DeliveryRequestPanel';
@@ -126,6 +127,13 @@ interface Trade {
     | 'disputed'
     | 'cancelled';
   createdAt: any;
+  priceDisplay?: string;
+  currency?: string;
+  currencyCode?: string;
+  currencyLocale?: string;
+  currencyLabel?: string;
+  deliveryPickupAddress?: string;
+  deliveryPickupLocation?: GeoPoint | null;
   platformFee?: number;
   deliveryFee?: number;
   driverId?: string;
@@ -148,6 +156,14 @@ interface Listing {
   quantity: string;
   category: string;
   images: string[];
+  location?: string;
+  locationName?: string;
+  latitude?: number;
+  longitude?: number;
+  currentLocation?: {
+    latitude?: number;
+    longitude?: number;
+  };
 }
 
 interface Message {
@@ -175,8 +191,66 @@ interface AppProfile {
   phoneNumber?: string;
   latitude?: number;
   longitude?: number;
+  currentLocation?: {
+    latitude?: number;
+    longitude?: number;
+  };
+  location?: string;
+  city?: string;
+  country?: string;
   photoURL?: string;
 }
+
+const zeroDecimalCurrencies = new Set(['XAF', 'XOF', 'UGX', 'RWF']);
+
+const formatMoney = (
+  amount: number,
+  currencyCode = 'XAF',
+  locale = 'fr-CM'
+) => {
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: currencyCode,
+      maximumFractionDigits: zeroDecimalCurrencies.has(currencyCode) ? 0 : 2
+    }).format(amount || 0);
+  } catch {
+    return `${currencyCode} ${(amount || 0).toLocaleString()}`;
+  }
+};
+
+const getTradeCurrency = (trade: Trade | null) =>
+  trade?.currencyCode || trade?.currency || 'XAF';
+
+const getTradeLocale = (trade: Trade | null) =>
+  trade?.currencyLocale || 'fr-CM';
+
+const formatTradeAmount = (trade: Trade | null, amount?: number) => {
+  if (!trade) return formatMoney(amount || 0);
+
+  if (typeof amount === 'undefined' && trade.priceDisplay) {
+    return trade.priceDisplay;
+  }
+
+  return formatMoney(
+    amount ?? trade.amount,
+    getTradeCurrency(trade),
+    getTradeLocale(trade)
+  );
+};
+
+const getEscrowAmountXaf = (trade: Trade) => {
+  const currency = getTradeCurrency(trade);
+
+  if (currency === 'USD') return Math.round(trade.amount * 650);
+
+  return Math.round(trade.amount);
+};
+
+const buildDropoffAddress = (profileData: AppProfile | null) =>
+  profileData?.location ||
+  [profileData?.city, profileData?.country].filter(Boolean).join(', ') ||
+  '';
 
 export default function TradeDetail() {
   const { id } = useParams();
@@ -298,7 +372,7 @@ export default function TradeDetail() {
       return;
     }
 
-    const amountInCFA = trade.amount * 650;
+    const amountInCFA = getEscrowAmountXaf(trade);
     const txRef = `trade_${trade.id}_${Date.now()}`;
 
     setUpdating(true);
@@ -614,7 +688,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: id,
-        text: `New offer submitted: $${amount.toLocaleString()}. Awaiting peer response.`,
+        text: `New offer submitted: ${formatTradeAmount(trade, amount)}. Awaiting peer response.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
         title: 'New Price Offer'
@@ -624,7 +698,7 @@ export default function TradeDetail() {
 
       await sendNotification(recipientId, {
         title: 'New Price Offer',
-        body: `${profileData?.displayName || profileData?.name || 'User'} proposed $${amount.toLocaleString()}`,
+        body: `${profileData?.displayName || profileData?.name || 'User'} proposed ${formatTradeAmount(trade, amount)}`,
         type: 'offer',
         targetId: id,
         targetType: 'trade',
@@ -672,7 +746,7 @@ export default function TradeDetail() {
       if (offerSenderId && offerSenderId !== user.uid) {
         await sendNotification(offerSenderId, {
           title: `Offer ${status === 'accepted' ? 'Accepted' : 'Declined'}`,
-          body: `Your $${amount.toLocaleString()} offer has been ${status}.`,
+          body: `Your ${formatTradeAmount(trade, amount)} offer has been ${status}.`,
           type: 'offer',
           targetId: id,
           targetType: 'trade',
@@ -682,7 +756,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: id,
-        text: `Offer for $${amount.toLocaleString()} ${status}. Order updated.`,
+        text: `Offer for ${formatTradeAmount(trade, amount)} ${status}. Order updated.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
         title: `Offer ${status === 'accepted' ? 'Accepted' : 'Declined'}`
@@ -731,7 +805,7 @@ export default function TradeDetail() {
         bestDrivers.map(driver =>
           sendNotification(driver.id, {
             title: 'New Delivery Opportunity',
-            body: `Nearby delivery request for ${listing?.title || 'an order'}. Earn ${driverCommission} CFA.`,
+            body: `Nearby delivery request for ${listing?.title || 'an order'}. Earn ${formatMoney(driverCommission, 'XAF', 'fr-CM')}.`,
             type: 'delivery',
             targetId: id,
             targetType: 'trade',
@@ -765,7 +839,7 @@ export default function TradeDetail() {
 
       await sendSystemTradeMessage({
         tradeId: id,
-        text: `Driver assigned for delivery. Delivery fee of ${deliveryFee.toLocaleString()} CFA applied.`,
+        text: `Driver assigned for delivery. Delivery fee of ${formatMoney(deliveryFee, 'XAF', 'fr-CM')} applied.`,
         recipientIds: [trade.buyerId, trade.sellerId, driverId],
         sendNotification,
         title: 'Driver Assigned'
@@ -952,11 +1026,11 @@ export default function TradeDetail() {
 
           <div className="text-right">
             <p className="text-[10px] font-bold uppercase tracking-wider text-amber-500">
-              ${trade.amount}
+              {formatTradeAmount(trade)}
             </p>
             {trade.platformFee && (
               <p className="mt-1 text-[7px] font-black uppercase tracking-widest text-slate-600">
-                Fee: -${trade.platformFee.toFixed(2)}
+                Fee: -{formatTradeAmount(trade, trade.platformFee)}
               </p>
             )}
             <p className="mt-1 text-[8px] font-bold uppercase tracking-wider text-slate-700">
@@ -1334,7 +1408,7 @@ export default function TradeDetail() {
                       Fee
                     </span>
                     <span className="text-[8px] font-black uppercase tracking-widest text-white">
-                      {trade.deliveryFee || 0} CFA
+                      {formatMoney(trade.deliveryFee || 0, 'XAF', 'fr-CM')}
                     </span>
                   </div>
                 </div>
@@ -1433,7 +1507,7 @@ export default function TradeDetail() {
 
                         <div className="flex items-baseline gap-1">
                           <p className="text-xl font-bold tracking-tight text-white">
-                            ${offer.amount.toLocaleString()}
+                            {formatTradeAmount(trade, offer.amount)}
                           </p>
                           {offer.status === 'pending' && (
                             <p className="animate-pulse text-[8px] font-black uppercase text-amber-500/50">
@@ -1492,7 +1566,7 @@ export default function TradeDetail() {
                       min="1"
                       value={newOfferAmount}
                       onChange={e => setNewOfferAmount(e.target.value)}
-                      placeholder="New Valuation ($)"
+                      placeholder={`New Valuation (${getTradeCurrency(trade)})`}
                       className="w-full rounded-lg border border-white/5 bg-black/40 px-4 py-2 text-sm text-white focus:border-amber-500 focus:outline-none"
                     />
                     <div className="flex gap-2">
@@ -1703,6 +1777,23 @@ export default function TradeDetail() {
                 buyerId={trade.buyerId}
                 sellerId={trade.sellerId}
                 packageValue={trade.amount}
+                currency={trade.currency}
+                currencyCode={getTradeCurrency(trade)}
+                currencyLocale={getTradeLocale(trade)}
+                currencyLabel={trade.currencyLabel}
+                defaultPackageType={listing?.category}
+                defaultPickupAddress={
+                  trade.deliveryPickupAddress ||
+                  listing?.locationName ||
+                  listing?.location ||
+                  'Seller pickup location'
+                }
+                defaultPickupLocation={
+                  toGeoPoint(trade.deliveryPickupLocation) ||
+                  toGeoPoint(listing)
+                }
+                defaultDropoffAddress={buildDropoffAddress(profileData)}
+                defaultDropoffLocation={toGeoPoint(profileData)}
                 onCreated={() => setShowDeliveryRequestPanel(false)}
               />
 
