@@ -3,7 +3,6 @@ import {
   collection,
   getDocs,
   limit,
-  orderBy,
   query,
   where
 } from 'firebase/firestore';
@@ -150,7 +149,11 @@ export default function Trades() {
     let isMounted = true;
 
     const fetchLedger = async () => {
-      if (!user) return;
+      if (!user) {
+        setLoading(false);
+        setListingsLoading(false);
+        return;
+      }
 
       try {
         setLoading(true);
@@ -160,25 +163,23 @@ export default function Trades() {
         const tradesRef = collection(db, 'trades');
         const listingsRef = collection(db, 'listings');
 
+        // No orderBy here: avoids composite-index failure while we sort locally.
         const qBuyer = query(
           tradesRef,
           where('buyerId', '==', user.uid),
-          orderBy('createdAt', 'desc'),
-          limit(30)
+          limit(50)
         );
 
         const qSeller = query(
           tradesRef,
           where('sellerId', '==', user.uid),
-          orderBy('createdAt', 'desc'),
-          limit(30)
+          limit(50)
         );
 
         const qListings = query(
           listingsRef,
           where('ownerId', '==', user.uid),
-          orderBy('createdAt', 'desc'),
-          limit(30)
+          limit(50)
         );
 
         const [buyerSnap, sellerSnap, listingSnap] = await Promise.all([
@@ -275,7 +276,7 @@ export default function Trades() {
           <p className="font-serif text-xl italic text-red-500">
             We could not load your trades.
           </p>
-          <p className="mt-4 text-[10px] uppercase tracking-wider text-slate-600">
+          <p className="mt-4 break-words text-[10px] uppercase tracking-wider text-slate-600">
             {error}
           </p>
         </div>
