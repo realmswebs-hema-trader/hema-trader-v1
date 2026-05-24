@@ -219,13 +219,14 @@ export default function CreateListing() {
   const uploadListingImagesSafely = async () => {
     const imageUrls: string[] = [];
     const failedImageNames: string[] = [];
+    const sellerId = profile?.userId || user?.uid || 'unknown';
 
     for (const image of images) {
       try {
         const safeName = image.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const imageRef = ref(
           storage,
-          `listings/${profile?.userId || user?.uid || 'unknown'}/${Date.now()}_${safeName}`
+          `listings/${sellerId}/${Date.now()}_${safeName}`
         );
 
         const snapshot = await uploadBytes(imageRef, image);
@@ -244,10 +245,58 @@ export default function CreateListing() {
     };
   };
 
+  const notifyFollowersOfNewListing = async (listingId: string) => {
+    if (!user) return;
+
+    try {
+      const followersQ = query(
+        collection(db, 'follows'),
+        where('followingId', '==', user.uid),
+        limit(100)
+      );
+
+      const followersSnap = await getDocs(followersQ);
+      const followerIds = Array.from(
+        new Set(
+          followersSnap.docs
+            .map(followerDoc => followerDoc.data().followerId)
+            .filter((followerId: string) => followerId && followerId !== user.uid)
+        )
+      );
+
+      if (followerIds.length === 0) return;
+
+      const sellerName =
+        profile?.displayName ||
+        profile?.name ||
+        user.displayName ||
+        'A seller you follow';
+
+      const listingTitle = formData.title.trim() || 'a new product';
+
+      await Promise.allSettled(
+        followerIds.map(followerId =>
+          sendNotification(followerId, {
+            title: `New from ${sellerName}`,
+            body: `${sellerName} posted ${listingTitle}.`,
+            type: 'new_listing',
+            targetId: listingId,
+            targetType: 'listing',
+            actionUrl: `/listing/${listingId}`,
+            senderId: user.uid,
+            senderName: sellerName
+          })
+        )
+      );
+    } catch (notificationError) {
+      console.error('Follower notification failed:', notificationError);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!profile) return;
+    if (!profile || !user) return;
 
     if (profile.verificationStatus !== 'verified') {
       alert('Verification protocol required for listing initialization.');
@@ -270,6 +319,7 @@ export default function CreateListing() {
         );
       }
 
+      const sellerId = profile.userId || user.uid;
       const listingLatitude = activeLocation?.latitude ?? null;
       const listingLongitude = activeLocation?.longitude ?? null;
       const priceValue = parseFloat(formData.price) || 0;
@@ -284,8 +334,8 @@ export default function CreateListing() {
               : 'failed';
 
       const listingDoc = await addDoc(collection(db, 'listings'), {
-        ownerId: profile.userId,
-        sellerId: profile.userId,
+        ownerId: sellerId,
+        sellerId,
         title: formData.title.trim(),
         description: formData.description.trim(),
         price: priceValue,
@@ -316,30 +366,12 @@ export default function CreateListing() {
         imageUploadStatus,
         failedImageNames,
         status: 'active',
+        stockStatus: 'in_stock',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
 
-      if (user) {
-        const followersQ = query(
-          collection(db, 'follows'),
-          where('followingId', '==', user.uid),
-          limit(100)
-        );
-
-        const followersSnap = await getDocs(followersQ);
-
-        followersSnap.docs.forEach(followerDoc => {
-          const followerId = followerDoc.data().followerId;
-
-          sendNotification(followerId, {
-            title: `New from ${profile.displayName || 'Marketplace'}`,
-            body: `Just posted: ${formData.title}`,
-            type: 'new_listing',
-            targetId: listingDoc.id
-          });
-        });
-      }
+      await notifyFollowersOfNewListing(listingDoc.id);
 
       navigate('/');
     } catch (error) {
