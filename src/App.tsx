@@ -34,6 +34,7 @@ import CreateListing from './pages/CreateListing';
 import Profile from './pages/Profile';
 import Trades from './pages/Trades';
 import TradeDetail from './pages/TradeDetail';
+import Inbox from './pages/Inbox';
 import DriverDashboard from './pages/DriverDashboard';
 import DriverDeliveries from './pages/DriverDeliveries';
 import DriverDiscovery from './pages/DriverDiscovery';
@@ -270,6 +271,24 @@ function AppRoutes() {
             element={
               <PrivateRoute>
                 <TradeDetail />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/inbox"
+            element={
+              <PrivateRoute>
+                <Inbox />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/messages"
+            element={
+              <PrivateRoute>
+                <Inbox />
               </PrivateRoute>
             }
           />
