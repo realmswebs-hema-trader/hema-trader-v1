@@ -870,6 +870,48 @@ export default function TradeDetail() {
     }
   };
 
+  const handleCancelTrade = async () => {
+    if (!trade || !user || (!isBuyer && !isSeller)) return;
+
+    const confirmed = window.confirm(
+      'Cancel this pending trade? No escrow payment has been made, and the product will stay available.'
+    );
+
+    if (!confirmed) return;
+
+    setUpdating(true);
+
+    try {
+      await updateDoc(doc(db, 'trades', trade.id), {
+        status: 'cancelled',
+        cancellationReason: 'Buyer or seller cancelled during bargaining.',
+        cancelledBy: user.uid,
+        cancelledAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await updateDoc(doc(db, 'listings', trade.listingId), {
+        status: 'active',
+        stockStatus: 'in_stock',
+        updatedAt: serverTimestamp()
+      });
+
+      await sendSystemTradeMessage({
+        tradeId: trade.id,
+        listingId: trade.listingId,
+        text: 'This trade was cancelled during bargaining. No escrow payment was made.',
+        recipientIds: [trade.buyerId, trade.sellerId],
+        sendNotification,
+        title: 'Trade Cancelled'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `trades/${trade.id}/cancel`);
+      alert('Could not cancel this trade. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   const handleOpenDispute = async () => {
     if (!trade || !user) return;
 
@@ -1365,6 +1407,10 @@ export default function TradeDetail() {
     trade.status === 'pending' &&
     !pendingItemOffer;
 
+  const canCancelPendingTrade =
+    trade.status === 'pending' &&
+    (isBuyer || isSeller);
+
   const canNegotiateDelivery =
     Boolean(trade.driverId) &&
     trade.deliveryStatus === 'accepted' &&
@@ -1426,9 +1472,18 @@ export default function TradeDetail() {
     });
   }
 
+  if (trade.status === 'cancelled') {
+    steps.push({
+      key: 'cancelled',
+      label: 'Cancelled',
+      description: 'Trade closed before escrow payment',
+      icon: AlertCircle
+    });
+  }
+
   const rawStep =
-    trade.status === 'disputed'
-      ? 4
+    trade.status === 'disputed' || trade.status === 'cancelled'
+      ? steps.length - 1
       : trade.status === 'completed'
         ? 3
         : trade.status === 'shipped' || trade.driverId
@@ -1506,6 +1561,17 @@ export default function TradeDetail() {
             <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 text-center text-[10px] uppercase tracking-widest text-amber-500">
               Waiting for price offer response
             </div>
+          )}
+
+          {canCancelPendingTrade && (
+            <button
+              onClick={handleCancelTrade}
+              disabled={updating}
+              className="flex w-full items-center justify-center gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 py-5 text-[10px] font-bold uppercase tracking-widest text-red-500 shadow-2xl disabled:opacity-50"
+            >
+              <AlertCircle className="h-4 w-4" />
+              Cancel Trade
+            </button>
           )}
 
           {canSelectDriver && (
@@ -1785,7 +1851,9 @@ export default function TradeDetail() {
                           ? 'In Transit'
                           : trade.status === 'disputed'
                             ? 'Dispute Open'
-                            : 'Finalized'}
+                            : trade.status === 'cancelled'
+                              ? 'Cancelled'
+                              : 'Finalized'}
                   </span>
                 </div>
               </div>
@@ -1947,6 +2015,17 @@ export default function TradeDetail() {
                   Payment unlocks after pending offer is answered.
                 </p>
               )}
+
+              {canCancelPendingTrade && (
+                <button
+                  onClick={handleCancelTrade}
+                  disabled={updating}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 py-3 text-[9px] font-black uppercase tracking-widest text-red-500 transition-all hover:bg-red-500/20 disabled:opacity-50"
+                >
+                  <AlertCircle className="h-4 w-4" />
+                  Cancel Trade
+                </button>
+              )}
             </div>
 
             <div className="space-y-4 border-t border-white/5 pt-6">
@@ -1954,7 +2033,10 @@ export default function TradeDetail() {
                 Delivery
               </h4>
 
-              {trade.status !== 'funded' && trade.status !== 'shipped' && trade.status !== 'completed' ? (
+              {trade.status !== 'funded' &&
+              trade.status !== 'shipped' &&
+              trade.status !== 'completed' &&
+              trade.status !== 'cancelled' ? (
                 <p className="text-center font-serif text-[9px] italic uppercase leading-relaxed tracking-widest text-slate-600">
                   Driver selection unlocks after buyer pays item escrow.
                 </p>
@@ -2260,6 +2342,16 @@ export default function TradeDetail() {
                       Rate this transaction
                     </button>
                   )}
+                </div>
+              )}
+
+              {trade.status === 'cancelled' && (
+                <div className="space-y-4 rounded-2xl border border-slate-500/20 bg-white/5 p-6 text-center">
+                  <AlertCircle className="mx-auto h-10 w-10 text-slate-500" />
+                  <p className="font-serif text-lg text-white">Trade Cancelled</p>
+                  <p className="text-[9px] uppercase leading-relaxed tracking-widest text-slate-500">
+                    This bargain was closed before escrow payment.
+                  </p>
                 </div>
               )}
 
