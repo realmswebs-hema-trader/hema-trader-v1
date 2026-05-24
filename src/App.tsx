@@ -35,6 +35,7 @@ import Profile from './pages/Profile';
 import Trades from './pages/Trades';
 import TradeDetail from './pages/TradeDetail';
 import Inbox from './pages/Inbox';
+import Wallet from './pages/Wallet';
 import DriverDashboard from './pages/DriverDashboard';
 import DriverDeliveries from './pages/DriverDeliveries';
 import DriverDiscovery from './pages/DriverDiscovery';
@@ -298,6 +299,15 @@ function AppRoutes() {
             element={
               <PrivateRoute>
                 <TradeDetail />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/wallet"
+            element={
+              <PrivateRoute>
+                <Wallet />
               </PrivateRoute>
             }
           />
