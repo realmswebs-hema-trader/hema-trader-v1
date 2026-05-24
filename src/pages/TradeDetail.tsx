@@ -51,18 +51,12 @@ import {
   sendSystemTradeMessage,
   setTradeTyping
 } from '../services/chatService';
+import { openEscrowDispute } from '../services/escrowService';
 import {
-  markEscrowPaymentStarted,
-  verifyEscrowPayment,
-  confirmDeliveryAndRequestPayout,
-  openEscrowDispute
-} from '../services/escrowService';
-
-declare global {
-  interface Window {
-    FlutterwaveCheckout?: (options: any) => void;
-  }
-}
+  payDeliveryFromWallet,
+  payTradeFromWallet,
+  releaseTradeEscrow
+} from '../services/walletService';
 
 const OperationType = {
   READ: 'read',
@@ -266,7 +260,12 @@ const getTradeLocale = (trade: Trade | null) =>
 const formatTradeAmount = (trade: Trade | null, amount?: number) => {
   if (!trade) return formatMoney(amount || 0);
 
-  if (typeof amount === 'undefined' && trade.priceDisplay) {
+  if (
+    typeof amount === 'undefined' &&
+    trade.priceDisplay &&
+    !trade.agreedAmount &&
+    !trade.priceAgreementStatus
+  ) {
     return trade.priceDisplay;
   }
 
@@ -275,14 +274,6 @@ const formatTradeAmount = (trade: Trade | null, amount?: number) => {
     getTradeCurrency(trade),
     getTradeLocale(trade)
   );
-};
-
-const getEscrowAmountXaf = (trade: Trade) => {
-  const currency = getTradeCurrency(trade);
-
-  if (currency === 'USD') return Math.round(trade.amount * 650);
-
-  return Math.round(trade.amount);
 };
 
 const buildDropoffAddress = (profileData: AppProfile | null) =>
@@ -343,17 +334,6 @@ export default function TradeDetail() {
     : [];
 
   useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://checkout.flutterwave.com/v3.js';
-    script.async = true;
-    document.body.appendChild(script);
-
-    return () => {
-      script.parentNode?.removeChild(script);
-    };
-  }, []);
-
-  useEffect(() => {
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
@@ -409,177 +389,52 @@ export default function TradeDetail() {
     }, 3000);
   };
 
-  const verifyPaymentOnServer = async (transactionId: string) => {
-    const activeTradeId = trade?.id || id;
-
-    if (!activeTradeId || !trade || !user) return;
+  const handlePayment = async () => {
+    if (!trade || !user || !isBuyer) return;
 
     setUpdating(true);
 
     try {
-      await verifyEscrowPayment({
-        tradeId: activeTradeId,
-        transactionId,
-        userId: user.uid
-      });
+      await payTradeFromWallet(user, trade.id);
 
       await sendSystemTradeMessage({
-        tradeId: activeTradeId,
+        tradeId: trade.id,
         listingId: trade.listingId,
-        text: `Payment secured in escrow for ${listing?.title || 'this order'}. Seller: prepare the item. Buyer can now choose a delivery driver.`,
+        text: `Buyer funded item escrow from Hema Wallet for ${listing?.title || 'this order'}. Seller can now prepare the item.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
-        title: 'Payment Secured'
+        title: 'Escrow Funded'
       });
     } catch (err) {
-      console.error('Verification error:', err);
-      alert('Error verifying payment. Please contact support if payment was completed.');
-    } finally {
-      setUpdating(false);
-    }
-  };
-
-  const handlePayment = async () => {
-    if (!trade || !user || !profileData || !isBuyer) return;
-
-    const publicKey = import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY;
-
-    if (!publicKey) {
-      alert('Payment gateway is not configured.');
-      return;
-    }
-
-    if (!window.FlutterwaveCheckout) {
-      alert('Payment gateway is still loading. Please try again in a moment.');
-      return;
-    }
-
-    const amountInCFA = getEscrowAmountXaf(trade);
-    const txRef = `trade_${trade.id}_${Date.now()}`;
-
-    setUpdating(true);
-
-    try {
-      await markEscrowPaymentStarted({
-        tradeId: trade.id,
-        buyerId: trade.buyerId,
-        sellerId: trade.sellerId,
-        amount: amountInCFA,
-        currency: 'XAF',
-        txRef
-      });
-
-      window.FlutterwaveCheckout({
-        public_key: publicKey,
-        tx_ref: txRef,
-        amount: amountInCFA,
-        currency: 'XAF',
-        payment_options: 'mobilemoneyfranco, card',
-        customer: {
-          email: user.email || '',
-          phone_number: profileData.phoneNumber || '',
-          name: profileData.displayName || profileData.name || 'Marketplace User'
-        },
-        callback: (data: any) => {
-          if (data.status === 'successful') {
-            verifyPaymentOnServer(data.transaction_id);
-          }
-        },
-        onclose: () => {
-          console.log('Payment closed');
-        },
-        customizations: {
-          title: 'Hema Trader Escrow',
-          description: `Payment for ${listing?.title || 'trade order'}`,
-          logo: 'https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_92x30dp.png'
-        }
-      });
-    } catch (err) {
-      console.error('Payment start failed:', err);
-      alert('Could not start escrow payment. Please try again.');
+      alert(err instanceof Error ? err.message : 'Could not pay from Hema Wallet.');
     } finally {
       setUpdating(false);
     }
   };
 
   const handleDeliveryPayment = async () => {
-    if (!trade || !user || !profileData || !isBuyer) return;
+    if (!trade || !user || !isBuyer) return;
 
     if (!trade.driverId || !trade.deliveryFee) {
       alert('Agree on a delivery fee with the driver first.');
       return;
     }
 
-    const publicKey = import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY;
-
-    if (!publicKey) {
-      alert('Payment gateway is not configured.');
-      return;
-    }
-
-    if (!window.FlutterwaveCheckout) {
-      alert('Payment gateway is still loading. Please try again in a moment.');
-      return;
-    }
-
-    const deliveryAmount = Math.round(trade.deliveryFee);
-    const txRef = `delivery_${trade.id}_${Date.now()}`;
-
     setUpdating(true);
 
     try {
-      window.FlutterwaveCheckout({
-        public_key: publicKey,
-        tx_ref: txRef,
-        amount: deliveryAmount,
-        currency: 'XAF',
-        payment_options: 'mobilemoneyfranco, card',
-        customer: {
-          email: user.email || '',
-          phone_number: profileData.phoneNumber || '',
-          name: profileData.displayName || profileData.name || 'Marketplace User'
-        },
-        callback: async (data: any) => {
-          if (data.status !== 'successful' || !trade) return;
+      await payDeliveryFromWallet(user, trade.id);
 
-          setUpdating(true);
-
-          try {
-            await updateDoc(doc(db, 'trades', trade.id), {
-              deliveryPaymentStatus: 'paid',
-              deliveryPaymentTxRef: txRef,
-              deliveryPaymentTransactionId: String(data.transaction_id || ''),
-              deliveryBargainStatus: 'paid',
-              updatedAt: serverTimestamp()
-            });
-
-            await sendSystemTradeMessage({
-              tradeId: trade.id,
-              listingId: trade.listingId,
-              text: `Delivery fee paid: ${formatMoney(deliveryAmount, 'XAF', 'fr-CM')}. Driver can now share their delivery contact with the buyer and proceed to pickup.`,
-              recipientIds: [trade.buyerId, trade.sellerId, trade.driverId],
-              sendNotification,
-              title: 'Delivery Payment Secured'
-            });
-          } catch (err) {
-            handleFirestoreError(err, OperationType.UPDATE, `trades/${trade.id}/delivery-payment`);
-            alert('Delivery payment was received, but we could not update the trade. Contact support.');
-          } finally {
-            setUpdating(false);
-          }
-        },
-        onclose: () => {
-          console.log('Delivery payment closed');
-        },
-        customizations: {
-          title: 'Hema Trader Delivery',
-          description: `Delivery for ${listing?.title || 'trade order'}`,
-          logo: 'https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_92x30dp.png'
-        }
+      await sendSystemTradeMessage({
+        tradeId: trade.id,
+        listingId: trade.listingId,
+        text: `Delivery escrow funded from Hema Wallet: ${formatMoney(trade.deliveryFee || 0, 'XAF', 'fr-CM')}. Driver can now proceed to pickup after coordination.`,
+        recipientIds: [trade.buyerId, trade.sellerId, trade.driverId],
+        sendNotification,
+        title: 'Delivery Escrow Funded'
       });
     } catch (err) {
-      console.error('Delivery payment start failed:', err);
-      alert('Could not start delivery payment. Please try again.');
+      alert(err instanceof Error ? err.message : 'Could not pay delivery from Hema Wallet.');
     } finally {
       setUpdating(false);
     }
@@ -782,58 +637,42 @@ export default function TradeDetail() {
   };
 
   const handleConfirmDelivery = async () => {
-    if (!trade || !user) return;
+    if (!trade || !user || !isBuyer) return;
 
     setUpdating(true);
 
     try {
-      await confirmDeliveryAndRequestPayout({
-        tradeId: trade.id,
-        buyerId: trade.buyerId,
-        sellerId: trade.sellerId,
-        driverId: trade.driverId,
-        amount: trade.amount,
-        deliveryFee: trade.deliveryFee,
-        driverCommission: trade.driverCommission,
-        sendNotification
-      });
-
-      const soldExpiresAt = Timestamp.fromDate(
-        new Date(Date.now() + 24 * 60 * 60 * 1000)
-      );
-
-      await updateDoc(doc(db, 'listings', trade.listingId), {
-        status: 'sold',
-        stockStatus: 'sold',
-        soldAt: serverTimestamp(),
-        soldExpiresAt,
-        soldByTradeId: trade.id,
-        updatedAt: serverTimestamp()
-      });
-
-      await sendSystemTradeMessage({
-        tradeId: trade.id,
-        listingId: trade.listingId,
-        text: 'Buyer confirmed delivery. This listing is now marked sold and will stay out of active stock unless the seller marks it back in stock.',
-        recipientIds: tradeRecipientIds,
-        sendNotification,
-        title: 'Trade Completed'
-      });
+      await releaseTradeEscrow(user, trade.id);
 
       try {
-        await fetch('/api/trades/finalize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tradeId: trade.id, userId: user.uid })
+        const soldExpiresAt = Timestamp.fromDate(
+          new Date(Date.now() + 24 * 60 * 60 * 1000)
+        );
+
+        await updateDoc(doc(db, 'listings', trade.listingId), {
+          status: 'sold',
+          stockStatus: 'sold',
+          soldAt: serverTimestamp(),
+          soldExpiresAt,
+          soldByTradeId: trade.id,
+          updatedAt: serverTimestamp()
         });
-      } catch (err) {
-        console.error('Server finalization failed:', err);
+
+        await sendSystemTradeMessage({
+          tradeId: trade.id,
+          listingId: trade.listingId,
+          text: 'Buyer confirmed delivery. Escrow released to the seller and driver Hema Wallet balances.',
+          recipientIds: tradeRecipientIds,
+          sendNotification,
+          title: 'Escrow Released'
+        });
+      } catch (postReleaseError) {
+        handleFirestoreError(postReleaseError, OperationType.UPDATE, `trades/${trade.id}/post-release-ui`);
       }
 
       setShowRating(true);
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `trades/${trade.id}/confirm-delivery`);
-      alert('Could not confirm delivery. Please try again.');
+      alert(err instanceof Error ? err.message : 'Could not release escrow. Please try again.');
     } finally {
       setUpdating(false);
     }
@@ -1172,10 +1011,10 @@ export default function TradeDetail() {
         text:
           offerType === 'delivery'
             ? `Delivery offer for ${formatMoney(amount, 'XAF', 'fr-CM')} ${status}. ${
-                status === 'accepted' ? 'Buyer can now pay the delivery fee.' : 'You may submit another delivery offer.'
+                status === 'accepted' ? 'Buyer can now pay the delivery fee from Hema Wallet.' : 'You may submit another delivery offer.'
               }`
             : `Item price offer for ${formatTradeAmount(trade, amount)} ${status}. ${
-                status === 'accepted' ? 'Buyer can now pay escrow.' : 'You may submit another item offer.'
+                status === 'accepted' ? 'Buyer can now fund escrow from Hema Wallet.' : 'You may submit another item offer.'
               }`,
         recipientIds: [trade.buyerId, trade.sellerId, trade.driverId || ''],
         sendNotification,
@@ -1443,7 +1282,7 @@ export default function TradeDetail() {
     {
       key: 'funded',
       label: 'Escrow',
-      description: 'Buyer pays securely before delivery',
+      description: 'Buyer funds escrow from Hema Wallet',
       icon: ShieldCheck
     },
     {
@@ -1458,7 +1297,7 @@ export default function TradeDetail() {
       description:
         trade.escrowStatus === 'release_pending_server_payout'
           ? 'Delivery confirmed. Payout is queued securely.'
-          : 'Trade closed and funds released',
+          : 'Trade closed and wallet funds released',
       icon: CheckCircle2
     }
   ];
@@ -1551,7 +1390,7 @@ export default function TradeDetail() {
               ) : (
                 <>
                   <Smartphone className="h-4 w-4" />
-                  Pay Item Escrow
+                  Pay From Wallet
                 </>
               )}
             </button>
@@ -1591,7 +1430,7 @@ export default function TradeDetail() {
               className="flex w-full items-center justify-center gap-3 rounded-2xl bg-green-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl disabled:opacity-50"
             >
               <CreditCard className="h-4 w-4" />
-              Pay Delivery Fee
+              Pay Delivery From Wallet
             </button>
           )}
 
@@ -2004,7 +1843,7 @@ export default function TradeDetail() {
                   ) : (
                     <>
                       <Smartphone className="h-4 w-4" />
-                      Pay Item Escrow
+                      Pay From Wallet
                     </>
                   )}
                 </button>
@@ -2038,7 +1877,7 @@ export default function TradeDetail() {
               trade.status !== 'completed' &&
               trade.status !== 'cancelled' ? (
                 <p className="text-center font-serif text-[9px] italic uppercase leading-relaxed tracking-widest text-slate-600">
-                  Driver selection unlocks after buyer pays item escrow.
+                  Driver selection unlocks after buyer funds item escrow.
                 </p>
               ) : null}
 
@@ -2261,7 +2100,7 @@ export default function TradeDetail() {
                   className="flex w-full items-center justify-center gap-2 rounded-xl bg-green-500 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-black shadow-xl hover:bg-green-400 disabled:opacity-50"
                 >
                   <CreditCard className="h-4 w-4" />
-                  Pay Delivery Fee
+                  Pay Delivery From Wallet
                 </button>
               )}
 
