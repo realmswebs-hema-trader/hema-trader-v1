@@ -11,6 +11,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  Timestamp,
   updateDoc,
   where
 } from 'firebase/firestore';
@@ -33,6 +34,10 @@ import { AnimatePresence, motion } from 'motion/react';
 
 import { db } from '../lib/firebase';
 import { toGeoPoint, type GeoPoint } from '../utils/geoUtils';
+import {
+  playNotificationSound,
+  unlockNotificationSound
+} from '../utils/notificationSound';
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import DeliveryRequestPanel from '../components/delivery/DeliveryRequestPanel';
@@ -327,6 +332,7 @@ export default function TradeDetail() {
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSoundMessageIdRef = useRef<string | null>(null);
 
   const isBuyer = Boolean(user?.uid && trade?.buyerId && user.uid === trade.buyerId);
   const isSeller = Boolean(user?.uid && trade?.sellerId && user.uid === trade.sellerId);
@@ -352,6 +358,33 @@ export default function TradeDetail() {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    const unlock = () => unlockNotificationSound();
+
+    window.addEventListener('pointerdown', unlock, { once: true });
+    window.addEventListener('keydown', unlock, { once: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, []);
+
+  useEffect(() => {
+    const latest = messages[messages.length - 1];
+
+    if (!latest || !user) return;
+
+    const alreadyPlayed = lastSoundMessageIdRef.current === latest.id;
+    const isIncoming = latest.senderId !== user.uid && latest.senderId !== 'system';
+
+    if (!alreadyPlayed && isIncoming) {
+      playNotificationSound();
+    }
+
+    lastSoundMessageIdRef.current = latest.id;
+  }, [messages, user]);
 
   const setTypingStatus = async (isTyping: boolean) => {
     if (!id || !user) return;
@@ -765,10 +798,23 @@ export default function TradeDetail() {
         sendNotification
       });
 
+      const soldExpiresAt = Timestamp.fromDate(
+        new Date(Date.now() + 24 * 60 * 60 * 1000)
+      );
+
+      await updateDoc(doc(db, 'listings', trade.listingId), {
+        status: 'sold',
+        stockStatus: 'sold',
+        soldAt: serverTimestamp(),
+        soldExpiresAt,
+        soldByTradeId: trade.id,
+        updatedAt: serverTimestamp()
+      });
+
       await sendSystemTradeMessage({
         tradeId: trade.id,
         listingId: trade.listingId,
-        text: 'Buyer confirmed delivery. Escrow is now marked for secure server payout.',
+        text: 'Buyer confirmed delivery. This listing is now marked sold and will stay out of active stock unless the seller marks it back in stock.',
         recipientIds: tradeRecipientIds,
         sendNotification,
         title: 'Trade Completed'
@@ -788,6 +834,37 @@ export default function TradeDetail() {
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `trades/${trade.id}/confirm-delivery`);
       alert('Could not confirm delivery. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const markListingInStock = async () => {
+    if (!trade || !isSeller) return;
+
+    setUpdating(true);
+
+    try {
+      await updateDoc(doc(db, 'listings', trade.listingId), {
+        status: 'active',
+        stockStatus: 'in_stock',
+        soldAt: null,
+        soldExpiresAt: null,
+        soldByTradeId: null,
+        updatedAt: serverTimestamp()
+      });
+
+      await sendSystemTradeMessage({
+        tradeId: trade.id,
+        listingId: trade.listingId,
+        text: 'Seller marked this product as back in stock.',
+        recipientIds: [trade.buyerId, trade.sellerId],
+        sendNotification,
+        title: 'Back In Stock'
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `listings/${trade.listingId}/stock`);
+      alert('Could not mark this product as in stock.');
     } finally {
       setUpdating(false);
     }
@@ -2164,6 +2241,17 @@ export default function TradeDetail() {
                 <div className="space-y-4 rounded-2xl border border-green-500/20 bg-green-500/5 p-6 text-center">
                   <CheckCircle2 className="mx-auto h-10 w-10 text-green-500" />
                   <p className="font-serif text-lg text-white">Order Completed</p>
+
+                  {isSeller && (
+                    <button
+                      onClick={markListingInStock}
+                      disabled={updating}
+                      className="w-full rounded-xl bg-amber-500 py-3 text-[9px] font-black uppercase tracking-widest text-black transition-all hover:bg-amber-400 disabled:opacity-50"
+                    >
+                      Mark Product In Stock
+                    </button>
+                  )}
+
                   {!showRating && (
                     <button
                       onClick={() => setShowRating(true)}
