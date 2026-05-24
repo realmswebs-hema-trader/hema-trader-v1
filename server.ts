@@ -487,7 +487,11 @@ const completeSuccessfulWithdrawal = async (
   providerPayload: any
 ) => {
   const withdrawalRef = db.collection('withdrawalRequests').doc(withdrawalId);
-  const providerReference = String(providerPayload?.reference || providerPayload?.operator_reference || '');
+  const providerReference = String(
+    providerPayload?.reference ||
+    providerPayload?.operator_reference ||
+    ''
+  );
 
   await db.runTransaction(async tx => {
     const snap = await tx.get(withdrawalRef);
@@ -1508,8 +1512,34 @@ async function setupVite() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    const assetsPath = path.join(distPath, 'assets');
 
-    app.use(express.static(distPath));
+    app.use(
+      '/assets',
+      express.static(assetsPath, {
+        maxAge: '1y',
+        immutable: true
+      })
+    );
+
+    app.use(
+      express.static(distPath, {
+        etag: false,
+        lastModified: false,
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('index.html')) {
+            res.setHeader(
+              'Cache-Control',
+              'no-store, no-cache, must-revalidate, proxy-revalidate'
+            );
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+          } else {
+            res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+          }
+        }
+      })
+    );
 
     app.get('*', (req, res) => {
       if (req.path.startsWith('/api')) {
@@ -1517,6 +1547,12 @@ async function setupVite() {
         return;
       }
 
+      res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+      );
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
