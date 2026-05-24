@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import {
   Home,
+  Mail,
   Map,
   PlusSquare,
   ShoppingBag,
@@ -19,7 +20,8 @@ export default function BottomNav() {
   const navItems = [
     { icon: Home, label: 'Home', path: '/' },
     { icon: Map, label: 'Map', path: '/map', protected: true },
-    { icon: ShoppingBag, label: 'Trades', path: '/trades', protected: true }
+    { icon: ShoppingBag, label: 'Trades', path: '/trades', protected: true },
+    { icon: Mail, label: 'Inbox', path: '/inbox', protected: true }
   ];
 
   if (viewMode === 'seller' || profile?.roles?.includes('seller')) {
@@ -63,9 +65,12 @@ export default function BottomNav() {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 flex h-16 items-center justify-around border-t border-brand-border bg-brand-bg/95 px-2 backdrop-blur-md">
       {navItems.map(item => {
+        const isInboxItem = item.path === '/inbox';
+
         const isActive =
           location.pathname === item.path ||
-          (item.path !== '/' && location.pathname.startsWith(item.path));
+          (item.path !== '/' && location.pathname.startsWith(item.path)) ||
+          (isInboxItem && location.pathname.startsWith('/messages'));
 
         const isDisabled = item.protected && !user;
 
