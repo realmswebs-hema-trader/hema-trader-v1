@@ -6,8 +6,9 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
-import { FieldValue, getFirestore } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { distanceBetween } from 'geofire-common';
+import * as bcrypt from 'bcryptjs';
 
 dotenv.config();
 
@@ -31,6 +32,8 @@ const DEFAULT_WALLET_CURRENCY =
   process.env.DEFAULT_WALLET_CURRENCY || 'XAF';
 
 const PLATFORM_FEE_RATE = Number(process.env.PLATFORM_FEE_RATE || 0.02);
+const MAX_PIN_ATTEMPTS = 5;
+const PIN_LOCK_MINUTES = 15;
 
 type AuthRequest = express.Request & {
   user?: admin.auth.DecodedIdToken;
@@ -134,8 +137,67 @@ const getUserId = (req: AuthRequest) => {
 
 const walletRef = (userId: string) => db.collection('wallets').doc(userId);
 
+const walletSecurityRef = (userId: string) =>
+  db.collection('walletSecurity').doc(userId);
+
 const ledgerRef = (id: string) =>
   db.collection('walletTransactions').doc(id);
+
+const assertValidPinFormat = (pin: string) => {
+  if (!/^\d{4}$|^\d{6}$/.test(pin)) {
+    throw new Error('Wallet PIN must be 4 or 6 digits.');
+  }
+};
+
+const verifyWalletPinOrThrow = async (userId: string, pin: string) => {
+  assertValidPinFormat(pin);
+
+  const ref = walletSecurityRef(userId);
+  const snap = await ref.get();
+  const data = snap.data() || {};
+
+  if (!snap.exists || !data.pinHash) {
+    throw new Error('Create your Hema Wallet PIN first.');
+  }
+
+  const lockedUntil = data.lockedUntil?.toMillis?.() || 0;
+
+  if (lockedUntil > Date.now()) {
+    throw new Error('Wallet PIN is temporarily locked. Try again later.');
+  }
+
+  const isValid = await bcrypt.compare(pin, data.pinHash);
+
+  if (!isValid) {
+    const failedAttempts = Number(data.failedAttempts || 0) + 1;
+
+    await ref.set(
+      {
+        failedAttempts,
+        lockedUntil:
+          failedAttempts >= MAX_PIN_ATTEMPTS
+            ? Timestamp.fromDate(
+                new Date(Date.now() + PIN_LOCK_MINUTES * 60 * 1000)
+              )
+            : null,
+        updatedAt: now()
+      },
+      { merge: true }
+    );
+
+    throw new Error('Incorrect Wallet PIN.');
+  }
+
+  await ref.set(
+    {
+      failedAttempts: 0,
+      lockedUntil: null,
+      lastVerifiedAt: now(),
+      updatedAt: now()
+    },
+    { merge: true }
+  );
+};
 
 const ensureWalletInTransaction = async (
   tx: FirebaseFirestore.Transaction,
@@ -601,8 +663,9 @@ app.get(
       await ensureWalletInTransaction(tx, userId);
     });
 
-    const [walletSnap, txSnap, withdrawalsSnap] = await Promise.all([
+    const [walletSnap, securitySnap, txSnap, withdrawalsSnap] = await Promise.all([
       walletRef(userId).get(),
+      walletSecurityRef(userId).get(),
       db
         .collection('walletTransactions')
         .where('userId', '==', userId)
@@ -614,6 +677,8 @@ app.get(
         .limit(20)
         .get()
     ]);
+
+    const security = securitySnap.data() || {};
 
     const transactions = txSnap.docs
       .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
@@ -633,9 +698,100 @@ app.get(
 
     res.json({
       wallet: walletSnap.data(),
+      walletSecurity: {
+        hasPin: Boolean(security.pinHash),
+        failedAttempts: Number(security.failedAttempts || 0),
+        lockedUntil: security.lockedUntil || null
+      },
       transactions,
       withdrawals
     });
+  })
+);
+
+app.get(
+  '/api/wallet/security',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = getUserId(req);
+    const securitySnap = await walletSecurityRef(userId).get();
+    const security = securitySnap.data() || {};
+
+    res.json({
+      hasPin: Boolean(security.pinHash),
+      failedAttempts: Number(security.failedAttempts || 0),
+      lockedUntil: security.lockedUntil || null
+    });
+  })
+);
+
+app.post(
+  ['/api/wallet/create-pin', '/api/wallet/pin/set'],
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = getUserId(req);
+    const pin = String(req.body.pin || '');
+    const confirmPin = String(req.body.confirmPin || '');
+
+    if (pin !== confirmPin) {
+      res.status(400).json({ error: 'PIN confirmation does not match.' });
+      return;
+    }
+
+    assertValidPinFormat(pin);
+
+    const walletSnap = await walletRef(userId).get();
+    const wallet = walletSnap.data() || {};
+    const hasFundedAccount =
+      Number(wallet.availableBalance || 0) > 0 ||
+      Number(wallet.escrowBalance || 0) > 0 ||
+      Number(wallet.pendingWithdrawalBalance || 0) > 0 ||
+      Number(wallet.totalEarned || 0) > 0;
+
+    if (!hasFundedAccount) {
+      res.status(400).json({
+        error: 'Fund your Hema account before creating a transaction PIN.'
+      });
+      return;
+    }
+
+    const pinHash = await bcrypt.hash(pin, 12);
+
+    await walletSecurityRef(userId).set(
+      {
+        userId,
+        pinHash,
+        hasPin: true,
+        failedAttempts: 0,
+        lockedUntil: null,
+        createdAt: now(),
+        updatedAt: now()
+      },
+      { merge: true }
+    );
+
+    await sendNotification(userId, {
+      title: 'Wallet PIN Created',
+      body: 'Your Hema Wallet transaction PIN is now active.',
+      type: 'wallet',
+      targetType: 'wallet',
+      actionUrl: '/wallet'
+    });
+
+    res.json({ ok: true });
+  })
+);
+
+app.post(
+  '/api/wallet/verify-pin',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = getUserId(req);
+    const walletPin = String(req.body.walletPin || req.body.pin || '');
+
+    await verifyWalletPinOrThrow(userId, walletPin);
+
+    res.json({ ok: true });
   })
 );
 
@@ -767,7 +923,10 @@ app.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
+    const walletPin = String(req.body.walletPin || '');
     const tradeId = String(req.body.tradeId || '');
+
+    await verifyWalletPinOrThrow(userId, walletPin);
 
     if (!tradeId) {
       res.status(400).json({ error: 'Missing tradeId.' });
@@ -870,7 +1029,10 @@ app.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
+    const walletPin = String(req.body.walletPin || '');
     const tradeId = String(req.body.tradeId || '');
+
+    await verifyWalletPinOrThrow(userId, walletPin);
 
     if (!tradeId) {
       res.status(400).json({ error: 'Missing tradeId.' });
@@ -976,7 +1138,10 @@ app.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
+    const walletPin = String(req.body.walletPin || '');
     const tradeId = String(req.body.tradeId || '');
+
+    await verifyWalletPinOrThrow(userId, walletPin);
 
     if (!tradeId) {
       res.status(400).json({ error: 'Missing tradeId.' });
@@ -1164,6 +1329,7 @@ app.post(
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
+    const walletPin = String(req.body.walletPin || '');
     const amount = roundMoney(req.body.amount);
     const currency = req.body.currency || DEFAULT_WALLET_CURRENCY;
     const method = req.body.method || 'mobile_money';
@@ -1171,6 +1337,8 @@ app.post(
     const accountName = String(req.body.accountName || '');
     const reference = uniqueReference(`withdraw_${userId}`);
     const withdrawalRef = db.collection('withdrawalRequests').doc();
+
+    await verifyWalletPinOrThrow(userId, walletPin);
 
     if (amount <= 0) {
       res.status(400).json({ error: 'Enter a valid withdrawal amount.' });
