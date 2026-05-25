@@ -48,6 +48,7 @@ import {
   UserMinus,
   UserPlus,
   Users,
+  WalletCards,
   Zap
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -877,6 +878,16 @@ export default function Profile() {
                     </button>
                   )}
                 </>
+              )}
+
+              {isOwnProfile && (
+                <Link
+                  to="/wallet?fund=1"
+                  className="flex items-center gap-2 rounded-xl bg-amber-500 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-black shadow-xl hover:bg-amber-400"
+                >
+                  <WalletCards className="h-4 w-4" />
+                  Fund Your Hema Account
+                </Link>
               )}
 
               {isOwnProfile && founderAccount ? (
