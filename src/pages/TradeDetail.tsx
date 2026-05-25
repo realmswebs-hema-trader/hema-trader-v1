@@ -389,13 +389,29 @@ export default function TradeDetail() {
     }, 3000);
   };
 
+  const requestWalletPin = () => {
+    const pin = window.prompt('Enter your Hema Wallet PIN to authorize this transaction.');
+
+    if (!pin) return null;
+
+    if (!/^\d{4}$|^\d{6}$/.test(pin)) {
+      alert('Wallet PIN must be 4 or 6 digits.');
+      return null;
+    }
+
+    return pin;
+  };
+
   const handlePayment = async () => {
     if (!trade || !user || !isBuyer) return;
+
+    const walletPin = requestWalletPin();
+    if (!walletPin) return;
 
     setUpdating(true);
 
     try {
-      await payTradeFromWallet(user, trade.id);
+      await payTradeFromWallet(user, trade.id, walletPin);
 
       await sendSystemTradeMessage({
         tradeId: trade.id,
@@ -420,10 +436,13 @@ export default function TradeDetail() {
       return;
     }
 
+    const walletPin = requestWalletPin();
+    if (!walletPin) return;
+
     setUpdating(true);
 
     try {
-      await payDeliveryFromWallet(user, trade.id);
+      await payDeliveryFromWallet(user, trade.id, walletPin);
 
       await sendSystemTradeMessage({
         tradeId: trade.id,
@@ -639,10 +658,13 @@ export default function TradeDetail() {
   const handleConfirmDelivery = async () => {
     if (!trade || !user || !isBuyer) return;
 
+    const walletPin = requestWalletPin();
+    if (!walletPin) return;
+
     setUpdating(true);
 
     try {
-      await releaseTradeEscrow(user, trade.id);
+      await releaseTradeEscrow(user, trade.id, walletPin);
 
       try {
         const soldExpiresAt = Timestamp.fromDate(
