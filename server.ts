@@ -604,6 +604,8 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     service: 'Hema Trader Wallet + Escrow Engine',
     provider: 'campay',
+    walletApi: true,
+    timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
 });
@@ -654,7 +656,7 @@ app.get(
 );
 
 app.get(
-  '/api/wallet/me',
+  ['/api/wallet/me', '/api/wallet/me/'],
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
@@ -710,7 +712,7 @@ app.get(
 );
 
 app.get(
-  '/api/wallet/security',
+  ['/api/wallet/security', '/api/wallet/security/'],
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
@@ -796,7 +798,7 @@ app.post(
 );
 
 app.post(
-  '/api/wallet/topup/start',
+  ['/api/wallet/topup/start', '/api/campay/topup'],
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
@@ -862,7 +864,7 @@ app.post(
 );
 
 app.post(
-  '/api/wallet/topup/verify',
+  ['/api/wallet/topup/verify', '/api/campay/verify'],
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
@@ -1325,7 +1327,7 @@ app.post(
 );
 
 app.post(
-  '/api/wallet/withdraw',
+  ['/api/wallet/withdraw', '/api/campay/withdraw'],
   requireAuth,
   asyncRoute(async (req, res) => {
     const userId = getUserId(req);
@@ -1670,6 +1672,28 @@ app.get(
   })
 );
 
+app.use('/api', (_req, res) => {
+  res.status(404).json({
+    error:
+      'API route not found. Confirm the latest server.ts is deployed on Render.'
+  });
+});
+
+app.use(
+  (
+    err: unknown,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction
+  ) => {
+    console.error('Server error:', err);
+
+    res.status(400).json({
+      error: err instanceof Error ? err.message : 'Server request failed.'
+    });
+  }
+);
+
 async function setupVite() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1710,11 +1734,6 @@ async function setupVite() {
     );
 
     app.get('*', (req, res) => {
-      if (req.path.startsWith('/api')) {
-        res.status(404).json({ error: 'API route not found.' });
-        return;
-      }
-
       res.setHeader(
         'Cache-Control',
         'no-store, no-cache, must-revalidate, proxy-revalidate'
@@ -1753,20 +1772,5 @@ async function setupVite() {
     }
   }, 10000);
 }
-
-app.use(
-  (
-    err: unknown,
-    _req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction
-  ) => {
-    console.error('Server error:', err);
-
-    res.status(400).json({
-      error: err instanceof Error ? err.message : 'Server request failed.'
-    });
-  }
-);
 
 setupVite();
