@@ -29,6 +29,12 @@ const apiRequest = async <T>(
   return data as T;
 };
 
+export interface WalletSecurity {
+  hasPin: boolean;
+  failedAttempts: number;
+  lockedUntil: any;
+}
+
 export interface WalletOverview {
   wallet: {
     availableBalance: number;
@@ -39,12 +45,39 @@ export interface WalletOverview {
     currency: string;
     frozen?: boolean;
   };
+  walletSecurity?: WalletSecurity;
   transactions: any[];
   withdrawals: any[];
 }
 
 export const getWalletOverview = (user: User) =>
   apiRequest<WalletOverview>(user, '/api/wallet/me');
+
+export const getWalletSecurity = (user: User) =>
+  apiRequest<WalletSecurity>(user, '/api/wallet/security');
+
+export const setWalletPin = (
+  user: User,
+  input: {
+    pin: string;
+    confirmPin: string;
+  }
+) =>
+  apiRequest<any>(user, '/api/wallet/create-pin', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+
+export const verifyWalletPin = (
+  user: User,
+  input: {
+    walletPin: string;
+  }
+) =>
+  apiRequest<any>(user, '/api/wallet/verify-pin', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
 
 export const startWalletTopup = (
   user: User,
@@ -71,22 +104,34 @@ export const verifyWalletTopup = (
     body: JSON.stringify(input)
   });
 
-export const payTradeFromWallet = (user: User, tradeId: string) =>
+export const payTradeFromWallet = (
+  user: User,
+  tradeId: string,
+  walletPin: string
+) =>
   apiRequest<any>(user, '/api/trades/pay-from-wallet', {
     method: 'POST',
-    body: JSON.stringify({ tradeId })
+    body: JSON.stringify({ tradeId, walletPin })
   });
 
-export const payDeliveryFromWallet = (user: User, tradeId: string) =>
+export const payDeliveryFromWallet = (
+  user: User,
+  tradeId: string,
+  walletPin: string
+) =>
   apiRequest<any>(user, '/api/delivery/pay-from-wallet', {
     method: 'POST',
-    body: JSON.stringify({ tradeId })
+    body: JSON.stringify({ tradeId, walletPin })
   });
 
-export const releaseTradeEscrow = (user: User, tradeId: string) =>
+export const releaseTradeEscrow = (
+  user: User,
+  tradeId: string,
+  walletPin: string
+) =>
   apiRequest<any>(user, '/api/trades/release-escrow', {
     method: 'POST',
-    body: JSON.stringify({ tradeId })
+    body: JSON.stringify({ tradeId, walletPin })
   });
 
 export const withdrawFromWallet = (
@@ -94,6 +139,7 @@ export const withdrawFromWallet = (
   input: {
     amount: number;
     phoneNumber: string;
+    walletPin: string;
     method?: 'mobile_money' | 'bank';
     accountName?: string;
     currency?: string;
