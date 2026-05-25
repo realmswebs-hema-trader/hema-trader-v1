@@ -24,6 +24,7 @@ import {
 import { useAuth } from '../components/auth/AuthContext';
 import {
   getWalletOverview,
+  setWalletPin,
   startWalletTopup,
   verifyWalletTopup,
   withdrawFromWallet,
@@ -49,6 +50,8 @@ const getMillis = (value: any) => {
   return 0;
 };
 
+const isValidPin = (pin: string) => /^\d{4}$|^\d{6}$/.test(pin);
+
 export default function Wallet() {
   const { user, profile } = useAuth();
 
@@ -61,11 +64,24 @@ export default function Wallet() {
   const [topupPhone, setTopupPhone] = useState('');
   const [pendingTopup, setPendingTopup] = useState<any>(null);
 
+  const [pin, setPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [withdrawPhone, setWithdrawPhone] = useState('');
+  const [withdrawPin, setWithdrawPin] = useState('');
 
   const wallet = overview?.wallet;
+  const walletSecurity = overview?.walletSecurity;
   const currency = wallet?.currency || 'XAF';
+
+  const hasFundedWallet =
+    Number(wallet?.availableBalance || 0) > 0 ||
+    Number(wallet?.escrowBalance || 0) > 0 ||
+    Number(wallet?.pendingWithdrawalBalance || 0) > 0 ||
+    Number(wallet?.totalEarned || 0) > 0;
+
+  const needsPin = hasFundedWallet && !walletSecurity?.hasPin;
 
   const loadWallet = async () => {
     if (!user) return;
@@ -151,7 +167,7 @@ export default function Wallet() {
       if (result.status === 'PENDING') {
         setMessage('Payment is still pending. Confirm on your phone, then try again.');
       } else {
-        setMessage('Wallet funded successfully.');
+        setMessage('Wallet funded successfully. Create your transaction PIN to secure transfers.');
         setPendingTopup(null);
         setTopupAmount('');
         await loadWallet();
@@ -163,8 +179,51 @@ export default function Wallet() {
     }
   };
 
+  const handleCreatePin = async () => {
+    if (!user) return;
+
+    if (!isValidPin(pin)) {
+      setMessage('PIN must be 4 or 6 digits.');
+      return;
+    }
+
+    if (pin !== confirmPin) {
+      setMessage('PIN confirmation does not match.');
+      return;
+    }
+
+    setWorking(true);
+    setMessage('');
+
+    try {
+      await setWalletPin(user, {
+        pin,
+        confirmPin
+      });
+
+      setPin('');
+      setConfirmPin('');
+      setMessage('Transaction PIN created. Your Hema Wallet is now secured.');
+      await loadWallet();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Could not create PIN.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const handleWithdraw = async () => {
     if (!user) return;
+
+    if (!walletSecurity?.hasPin) {
+      setMessage('Create your transaction PIN before withdrawing.');
+      return;
+    }
+
+    if (!isValidPin(withdrawPin)) {
+      setMessage('Enter your 4 or 6 digit Wallet PIN to withdraw.');
+      return;
+    }
 
     setWorking(true);
     setMessage('');
@@ -173,12 +232,15 @@ export default function Wallet() {
       await withdrawFromWallet(user, {
         amount: Number(withdrawAmount),
         phoneNumber: withdrawPhone,
+        walletPin: withdrawPin,
         method: 'mobile_money',
         currency
       });
 
       setMessage('Withdrawal submitted.');
       setWithdrawAmount('');
+      setWithdrawPhone('');
+      setWithdrawPin('');
       await loadWallet();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Withdrawal failed.');
@@ -276,6 +338,50 @@ export default function Wallet() {
         </div>
       )}
 
+      {needsPin && (
+        <section className="rounded-[2rem] border border-amber-500/20 bg-amber-500/10 p-6 shadow-2xl">
+          <div className="mb-5 flex items-center gap-3">
+            <ShieldCheck className="h-5 w-5 text-amber-500" />
+            <div>
+              <h2 className="font-serif text-2xl text-white">
+                Create Your Transaction PIN
+              </h2>
+              <p className="mt-1 text-sm text-amber-100/70">
+                Your wallet has funds. Create a 4 or 6 digit PIN before paying sellers, drivers, or withdrawing.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+            <input
+              type="password"
+              inputMode="numeric"
+              maxLength={6}
+              value={pin}
+              onChange={event => setPin(event.target.value.replace(/\D/g, ''))}
+              placeholder="New PIN"
+              className="rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
+            />
+            <input
+              type="password"
+              inputMode="numeric"
+              maxLength={6}
+              value={confirmPin}
+              onChange={event => setConfirmPin(event.target.value.replace(/\D/g, ''))}
+              placeholder="Confirm PIN"
+              className="rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
+            />
+            <button
+              onClick={handleCreatePin}
+              disabled={working || !pin || !confirmPin}
+              className="rounded-xl bg-amber-500 px-6 py-4 text-[10px] font-black uppercase tracking-widest text-black disabled:opacity-50"
+            >
+              Secure Wallet
+            </button>
+          </div>
+        </section>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
         <section className="rounded-[2rem] border border-white/5 bg-brand-card p-6 shadow-2xl">
           <div className="mb-6 flex items-center gap-3">
@@ -347,6 +453,12 @@ export default function Wallet() {
                 </p>
               </div>
             ))}
+
+            {(overview?.transactions || []).length === 0 && (
+              <div className="rounded-2xl border border-white/5 bg-black/30 p-6 text-center text-sm text-slate-500">
+                No wallet transactions yet.
+              </div>
+            )}
           </div>
         </section>
 
@@ -413,14 +525,29 @@ export default function Wallet() {
                 placeholder="MTN/Orange payout number"
                 className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
               />
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={6}
+                value={withdrawPin}
+                onChange={event => setWithdrawPin(event.target.value.replace(/\D/g, ''))}
+                placeholder="Wallet PIN"
+                className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
+              />
 
               <button
                 onClick={handleWithdraw}
-                disabled={working || !withdrawAmount || !withdrawPhone}
+                disabled={working || !withdrawAmount || !withdrawPhone || !withdrawPin}
                 className="w-full rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-widest text-black disabled:opacity-50"
               >
                 Withdraw To Mobile Money
               </button>
+
+              {!walletSecurity?.hasPin && (
+                <p className="text-[10px] uppercase leading-relaxed tracking-widest text-slate-500">
+                  Create your transaction PIN before withdrawing.
+                </p>
+              )}
             </div>
           </div>
         </aside>
