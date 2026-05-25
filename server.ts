@@ -62,6 +62,37 @@ const normalizeCameroonPhone = (value: string) => {
   return digits;
 };
 
+const maskPhone = (value: unknown) => {
+  const digits = String(value || '');
+  if (digits.length < 6) return digits;
+  return `${digits.slice(0, 5)}****${digits.slice(-2)}`;
+};
+
+const getCampayErrorMessage = (payload: any) => {
+  if (!payload) return '';
+
+  if (typeof payload === 'string') return payload;
+  if (payload.error) return String(payload.error);
+  if (payload.message) return String(payload.message);
+  if (payload.detail) return String(payload.detail);
+  if (payload.status) return String(payload.status);
+
+  if (Array.isArray(payload.non_field_errors)) {
+    return payload.non_field_errors.join(' ');
+  }
+
+  const fieldMessages = Object.entries(payload)
+    .map(([key, value]) => {
+      if (Array.isArray(value)) return `${key}: ${value.join(' ')}`;
+      if (typeof value === 'string') return `${key}: ${value}`;
+      return '';
+    })
+    .filter(Boolean)
+    .join(' ');
+
+  return fieldMessages || JSON.stringify(payload);
+};
+
 const initializeFirebaseAdmin = () => {
   if (admin.apps.length > 0) return;
 
@@ -278,24 +309,43 @@ const assertWalletIsUsable = (wallet: any) => {
 };
 
 const getCampayToken = async () => {
+  if (CAMPAY_APP_USERNAME && CAMPAY_APP_PASSWORD) {
+    try {
+      const response = await axios.post(`${campayBaseUrl}/token/`, {
+        username: CAMPAY_APP_USERNAME,
+        password: CAMPAY_APP_PASSWORD
+      });
+
+      const token = response.data?.token;
+
+      if (!token) {
+        throw new Error('CamPay token response did not include a token.');
+      }
+
+      return token;
+    } catch (err) {
+      if (axios.isAxiosError(err)) {
+        const message = getCampayErrorMessage(err.response?.data);
+
+        console.error('CamPay token error:', {
+          status: err.response?.status,
+          response: err.response?.data
+        });
+
+        if (!CAMPAY_ACCESS_TOKEN) {
+          throw new Error(
+            message || `CamPay token request failed with status ${err.response?.status || 'unknown'}.`
+          );
+        }
+      } else if (!CAMPAY_ACCESS_TOKEN) {
+        throw err;
+      }
+    }
+  }
+
   if (CAMPAY_ACCESS_TOKEN) return CAMPAY_ACCESS_TOKEN;
 
-  if (!CAMPAY_APP_USERNAME || !CAMPAY_APP_PASSWORD) {
-    throw new Error('CamPay credentials are not configured.');
-  }
-
-  const response = await axios.post(`${campayBaseUrl}/token/`, {
-    username: CAMPAY_APP_USERNAME,
-    password: CAMPAY_APP_PASSWORD
-  });
-
-  const token = response.data?.token;
-
-  if (!token) {
-    throw new Error('CamPay token request failed.');
-  }
-
-  return token;
+  throw new Error('CamPay credentials are not configured.');
 };
 
 const campayRequest = async (
@@ -305,18 +355,45 @@ const campayRequest = async (
 ) => {
   const token = await getCampayToken();
 
-  const response = await axios.request({
-    method,
-    url: `${campayBaseUrl}${endpoint}`,
-    data,
-    headers: {
-      Authorization: `Token ${token}`,
-      'Content-Type': 'application/json'
-    },
-    timeout: 30000
-  });
+  try {
+    const response = await axios.request({
+      method,
+      url: `${campayBaseUrl}${endpoint}`,
+      data,
+      headers: {
+        Authorization: `Token ${token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000
+    });
 
-  return response.data;
+    return response.data;
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      const payload = err.response?.data;
+      const message = getCampayErrorMessage(payload);
+
+      console.error('CamPay API error:', {
+        status: err.response?.status,
+        endpoint,
+        method,
+        data: data
+          ? {
+              ...data,
+              from: maskPhone(data.from),
+              to: maskPhone(data.to)
+            }
+          : undefined,
+        response: payload
+      });
+
+      throw new Error(
+        message || `CamPay request failed with status ${err.response?.status || 'unknown'}.`
+      );
+    }
+
+    throw err;
+  }
 };
 
 const campayCollect = async ({
