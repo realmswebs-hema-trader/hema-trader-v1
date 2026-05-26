@@ -299,9 +299,11 @@ export default function CreateListing() {
     if (!profile || !user) return;
 
     if (profile.verificationStatus !== 'verified') {
-      alert('Verification protocol required for listing initialization.');
-      navigate('/profile');
-      return;
+      const proceed = window.confirm(
+        'Your account is not verified yet. You can still list items and trade, but buyers will see you as an unverified seller until you complete verification.\n\nContinue posting this listing?'
+      );
+
+      if (!proceed) return;
     }
 
     setLoading(true);
