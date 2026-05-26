@@ -121,10 +121,24 @@ service cloud.firestore {
     }
 
     function isValidMessage(data, tradeId) {
-      return data.senderId == request.auth.uid
+      return (data.senderId == request.auth.uid || (
+          data.senderId == 'system'
+          && data.type == 'system'
+          && data.senderName == 'Hema Trader'
+        ))
         && data.tradeId == tradeId
         && data.text is string && data.text.size() <= 2000
         && data.createdAt == request.time;
+    }
+
+    function isTradeParticipant(tradeId) {
+      let trade = get(/databases/$(database)/documents/trades/$(tradeId)).data;
+      return isSignedIn() && (
+        trade.buyerId == request.auth.uid ||
+        trade.sellerId == request.auth.uid ||
+        trade.driverId == request.auth.uid ||
+        isAdmin()
+      );
     }
 
     function isValidOffer(data) {
@@ -233,16 +247,14 @@ service cloud.firestore {
     }
 
     match /trades/{tradeId}/messages/{messageId} {
-      allow list, get: if isSignedIn() && (
-        get(/databases/$(database)/documents/trades/$(tradeId)).data.buyerId == request.auth.uid ||
-        get(/databases/$(database)/documents/trades/$(tradeId)).data.sellerId == request.auth.uid ||
-        isAdmin()
-      );
+      allow list, get: if isTradeParticipant(tradeId);
 
-      allow create: if isSignedIn() && isValidMessage(incoming(), tradeId) && (
-        get(/databases/$(database)/documents/trades/$(tradeId)).data.buyerId == request.auth.uid ||
-        get(/databases/$(database)/documents/trades/$(tradeId)).data.sellerId == request.auth.uid
-      );
+      allow create: if isValidMessage(incoming(), tradeId) && isTradeParticipant(tradeId);
+    }
+
+    match /messages/{messageId} {
+      allow list, get: if resource.data.tradeId is string && isTradeParticipant(resource.data.tradeId);
+      allow create: if incoming().tradeId is string && isValidMessage(incoming(), incoming().tradeId) && isTradeParticipant(incoming().tradeId);
     }
 
     match /trades/{tradeId}/offers/{offerId} {
