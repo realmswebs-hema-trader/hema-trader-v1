@@ -70,6 +70,7 @@ service cloud.firestore {
 
     function isValidListing(data) {
       return data.ownerId == request.auth.uid
+        && (data.sellerId == null || data.sellerId == request.auth.uid)
         && data.title is string && data.title.size() <= 100
         && data.price is number && data.price >= 0
         && data.status in ['active', 'sold', 'deleted']
@@ -84,6 +85,9 @@ service cloud.firestore {
 
     function isValidTrade(data) {
       return (data.buyerId == request.auth.uid || data.sellerId == request.auth.uid || isAdmin())
+        && data.buyerId is string
+        && data.sellerId is string
+        && data.buyerId != data.sellerId
         && data.status in ['pending', 'funded', 'shipped', 'completed', 'disputed', 'cancelled']
         && data.amount is number && data.amount >= 0
         && (data.isDisputed == null || data.isDisputed is bool)
@@ -226,7 +230,9 @@ service cloud.firestore {
 
       allow create: if isSignedIn() && isValidTrade(incoming()) && isValidId(tradeId)
         && incoming().buyerId == request.auth.uid
-        && get(/databases/$(database)/documents/listings/$(incoming().listingId)).data.status == 'active';
+        && get(/databases/$(database)/documents/listings/$(incoming().listingId)).data.status == 'active'
+        && incoming().sellerId == get(/databases/$(database)/documents/listings/$(incoming().listingId)).data.ownerId
+        && incoming().buyerId != get(/databases/$(database)/documents/listings/$(incoming().listingId)).data.ownerId;
 
       allow update: if (isSignedIn() && (isOwner(existing().buyerId) || isOwner(existing().sellerId) || isOwner(existing().driverId) || isAdmin())) 
         || (request.auth == null) // Allow server updates
