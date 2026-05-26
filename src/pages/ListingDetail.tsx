@@ -142,6 +142,14 @@ const displaySellerName = (seller: SellerProfile | null) =>
 const displayListingLocation = (listing: Listing) =>
   listing.locationName || listing.location || 'Cameroon';
 
+const getListingSellerId = (listing: Pick<Listing, 'ownerId' | 'sellerId'>) =>
+  listing.sellerId || listing.ownerId;
+
+const isListingOwnedBy = (
+  listing: Pick<Listing, 'ownerId' | 'sellerId'>,
+  userId?: string
+) => Boolean(userId && [listing.ownerId, listing.sellerId].filter(Boolean).includes(userId));
+
 export default function ListingDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -161,7 +169,14 @@ export default function ListingDetail() {
     if (!user || !listing) return;
 
     const checkFollow = async () => {
-      const followId = `${user.uid}_${listing.ownerId}`;
+      const sellerId = getListingSellerId(listing);
+
+      if (sellerId === user.uid) {
+        setIsFollowing(false);
+        return;
+      }
+
+      const followId = `${user.uid}_${sellerId}`;
       const followRef = doc(db, 'follows', followId);
       const followSnap = await getDoc(followRef);
 
@@ -174,9 +189,13 @@ export default function ListingDetail() {
   const toggleFollow = async () => {
     if (!user || !listing || !seller) return;
 
+    const sellerId = getListingSellerId(listing);
+
+    if (sellerId === user.uid) return;
+
     setFollowingLoading(true);
 
-    const followId = `${user.uid}_${listing.ownerId}`;
+    const followId = `${user.uid}_${sellerId}`;
     const followRef = doc(db, 'follows', followId);
 
     try {
@@ -187,7 +206,7 @@ export default function ListingDetail() {
           followingCount: increment(-1)
         });
 
-        await updateDoc(doc(db, 'users', listing.ownerId), {
+        await updateDoc(doc(db, 'users', sellerId), {
           followersCount: increment(-1)
         });
 
@@ -203,7 +222,7 @@ export default function ListingDetail() {
       } else {
         await setDoc(followRef, {
           followerId: user.uid,
-          followingId: listing.ownerId,
+          followingId: sellerId,
           createdAt: serverTimestamp()
         });
 
@@ -211,7 +230,7 @@ export default function ListingDetail() {
           followingCount: increment(1)
         });
 
-        await updateDoc(doc(db, 'users', listing.ownerId), {
+        await updateDoc(doc(db, 'users', sellerId), {
           followersCount: increment(1)
         });
 
@@ -225,7 +244,7 @@ export default function ListingDetail() {
             : null
         );
 
-        sendNotification(listing.ownerId, {
+        sendNotification(sellerId, {
           title: 'New Follower',
           body: `${profile?.displayName || 'Someone'} started following you.`,
           type: 'system',
@@ -262,7 +281,8 @@ export default function ListingDetail() {
 
           setListing(listingData);
 
-          const sellerSnap = await getDoc(doc(db, 'users', listingData.ownerId));
+          const sellerId = getListingSellerId(listingData);
+          const sellerSnap = await getDoc(doc(db, 'users', sellerId));
 
           if (isMounted && sellerSnap.exists()) {
             setSeller(sellerSnap.data() as SellerProfile);
@@ -314,8 +334,10 @@ export default function ListingDetail() {
       return;
     }
 
-    if (user.uid === listing.ownerId) {
-      alert('You cannot trade with yourself.');
+    const sellerId = getListingSellerId(listing);
+
+    if (isListingOwnedBy(listing, user.uid)) {
+      alert('This is your own listing. Buyers can start trades with you, but you cannot trade with or message yourself.');
       return;
     }
 
@@ -340,7 +362,7 @@ export default function ListingDetail() {
 
     try {
       const tradeRef = doc(collection(db, 'trades'));
-      const participantIds = [user.uid, listing.ownerId];
+      const participantIds = [user.uid, sellerId];
       const systemMessage =
         sellerVerificationStatus === 'verified'
           ? `Trade initiated for ${listing.title}. You can now discuss terms and delivery with the other party.`
@@ -352,7 +374,7 @@ export default function ListingDetail() {
         listingTitle: listing.title,
         userId: user.uid,
         buyerId: user.uid,
-        sellerId: listing.ownerId,
+        sellerId,
         participants: participantIds,
         amount: listing.price,
         priceDisplay: formatListingPrice(listing),
@@ -524,7 +546,8 @@ export default function ListingDetail() {
   const sellerActive =
     seller?.lastActiveAt &&
     Date.now() - getMillis(seller.lastActiveAt) < 1000 * 60 * 15;
-  const isOwnListing = listing.ownerId === user?.uid;
+  const sellerId = getListingSellerId(listing);
+  const isOwnListing = isListingOwnedBy(listing, user?.uid);
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 pb-20">
@@ -723,7 +746,7 @@ export default function ListingDetail() {
               <img
                 src={
                   seller?.photoURL ||
-                  `https://api.dicebear.com/7.x/avataaars/svg?seed=${listing.ownerId}`
+                  `https://api.dicebear.com/7.x/avataaars/svg?seed=${sellerId}`
                 }
                 className="h-14 w-14 rounded-full border-2 border-white/10 object-cover grayscale-[0.3]"
                 alt={displaySellerName(seller)}
@@ -763,7 +786,7 @@ export default function ListingDetail() {
               </div>
             </div>
 
-            {user && user.uid !== listing.ownerId && (
+            {user && user.uid !== sellerId && (
               <button
                 onClick={toggleFollow}
                 disabled={followingLoading}
@@ -791,7 +814,7 @@ export default function ListingDetail() {
           </div>
         </div>
 
-        {listing.ownerId === user?.uid && (
+        {isOwnListing && (
           <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-6">
             <h3 className="font-serif text-xl text-white">Boost Visibility</h3>
             <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
