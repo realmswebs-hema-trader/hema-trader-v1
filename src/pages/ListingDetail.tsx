@@ -42,6 +42,12 @@ import {
   toGeoPoint
 } from '../utils/geoUtils';
 
+const UNVERIFIED_TRADER_WARNING =
+  'Warning: this trader is unverified. You can continue, but keep communication inside Hema Trader, use escrow, and confirm delivery before releasing funds.';
+
+const UNVERIFIED_ACCOUNT_WARNING =
+  'Your account is not verified yet. You can still use Hema Trader, but other users will see you as an unverified trader until you complete verification.';
+
 interface Listing {
   id: string;
   title: string;
@@ -308,25 +314,46 @@ export default function ListingDetail() {
       return;
     }
 
-    if (profile.verificationStatus !== 'verified') {
-      alert('Please complete your identity verification to start trading. It helps keep the marketplace safe.');
-      navigate('/profile');
-      return;
-    }
-
     if (user.uid === listing.ownerId) {
       alert('You cannot trade with yourself.');
       return;
     }
 
+    const buyerVerificationStatus = profile.verificationStatus || 'unverified';
+    const sellerVerificationStatus = seller?.verificationStatus || 'unverified';
+    const warnings: string[] = [];
+
+    if (buyerVerificationStatus !== 'verified') {
+      warnings.push(UNVERIFIED_ACCOUNT_WARNING);
+    }
+
+    if (sellerVerificationStatus !== 'verified') {
+      warnings.push(UNVERIFIED_TRADER_WARNING);
+    }
+
+    if (warnings.length > 0) {
+      const proceed = window.confirm(`${warnings.join('\n\n')}\n\nContinue to secure trade?`);
+      if (!proceed) return;
+    }
+
     setTrading(true);
 
     try {
+      const tradeRef = doc(collection(db, 'trades'));
+      const participantIds = [user.uid, listing.ownerId];
+      const systemMessage =
+        sellerVerificationStatus === 'verified'
+          ? `Trade initiated for ${listing.title}. You can now discuss terms and delivery with the other party.`
+          : `Trade initiated for ${listing.title}. This seller is unverified, so keep communication in this chat and use escrow before exchanging goods or money.`;
+
       const tradeData = {
+        tradeId: tradeRef.id,
         listingId: listing.id,
         listingTitle: listing.title,
+        userId: user.uid,
         buyerId: user.uid,
         sellerId: listing.ownerId,
+        participants: participantIds,
         amount: listing.price,
         priceDisplay: formatListingPrice(listing),
         currency: listing.currencyCode || listing.currency || 'XAF',
@@ -336,21 +363,70 @@ export default function ListingDetail() {
         deliveryPickupLocation: toGeoPoint(listing),
         deliveryPickupAddress: displayListingLocation(listing),
         status: 'pending',
+        buyerVerificationStatus,
+        sellerVerificationStatus,
+        riskFlags: [
+          ...(buyerVerificationStatus !== 'verified' ? ['buyer_unverified'] : []),
+          ...(sellerVerificationStatus !== 'verified' ? ['seller_unverified'] : [])
+        ],
+        riskAcknowledgement: {
+          buyerId: user.uid,
+          buyerVerificationStatus,
+          sellerVerificationStatus,
+          acknowledgedAt: serverTimestamp()
+        },
+        listingSnapshot: {
+          title: listing.title,
+          category: listing.category,
+          quantity: listing.quantity || '',
+          image: listing.images?.[0] || '',
+          location: displayListingLocation(listing)
+        },
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
 
-      const docRef = await addDoc(collection(db, 'trades'), tradeData);
+      await setDoc(tradeRef, tradeData);
 
-      await addDoc(collection(db, 'trades', docRef.id, 'messages'), {
-        senderId: 'system',
-        type: 'system',
-        text: `Trade initiated for ${listing.title}. You can now discuss terms and delivery with the other party.`,
-        readBy: [],
-        createdAt: serverTimestamp()
+      const messageResults = await Promise.allSettled([
+        addDoc(collection(db, 'messages'), {
+          tradeId: tradeRef.id,
+          listingId: listing.id,
+          userId: 'system',
+          senderId: 'system',
+          senderName: 'Hema Trader',
+          senderPhotoURL: '',
+          recipientIds: participantIds,
+          participants: participantIds,
+          text: systemMessage,
+          type: 'system',
+          status: 'delivered',
+          readBy: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }),
+        addDoc(collection(db, 'trades', tradeRef.id, 'messages'), {
+          tradeId: tradeRef.id,
+          listingId: listing.id,
+          userId: 'system',
+          senderId: 'system',
+          senderName: 'Hema Trader',
+          type: 'system',
+          status: 'delivered',
+          text: systemMessage,
+          readBy: [],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        })
+      ]);
+
+      messageResults.forEach(result => {
+        if (result.status === 'rejected') {
+          console.warn('Trade system message failed:', result.reason);
+        }
       });
 
-      navigate(`/trade/${docRef.id}`);
+      navigate(`/trade/${tradeRef.id}`);
     } catch (err: any) {
       console.error('Start Trade Error:', err);
       alert(`Failed to initiate trade registry: ${err.message}`);
