@@ -5,10 +5,10 @@ import path from 'path';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import { createRequire } from 'module';
 import admin from 'firebase-admin';
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { distanceBetween } from 'geofire-common';
-import * as bcrypt from 'bcryptjs';
 
 dotenv.config();
 
@@ -34,6 +34,12 @@ const DEFAULT_WALLET_CURRENCY =
 const PLATFORM_FEE_RATE = Number(process.env.PLATFORM_FEE_RATE || 0.02);
 const MAX_PIN_ATTEMPTS = 5;
 const PIN_LOCK_MINUTES = 15;
+
+const require = createRequire(import.meta.url);
+const bcrypt = require('bcryptjs') as {
+  hash: (data: string, saltOrRounds: number) => Promise<string>;
+  compare: (data: string, encrypted: string) => Promise<boolean>;
+};
 
 type AuthRequest = express.Request & {
   user?: admin.auth.DecodedIdToken;
@@ -334,7 +340,8 @@ const getCampayToken = async () => {
 
         if (!CAMPAY_ACCESS_TOKEN) {
           throw new Error(
-            message || `CamPay token request failed with status ${err.response?.status || 'unknown'}.`
+            message ||
+              `CamPay token request failed with status ${err.response?.status || 'unknown'}.`
           );
         }
       } else if (!CAMPAY_ACCESS_TOKEN) {
@@ -388,7 +395,8 @@ const campayRequest = async (
       });
 
       throw new Error(
-        message || `CamPay request failed with status ${err.response?.status || 'unknown'}.`
+        message ||
+          `CamPay request failed with status ${err.response?.status || 'unknown'}.`
       );
     }
 
@@ -564,7 +572,9 @@ const completeWalletTopup = async (reference: string) => {
 
   await sendNotification(topup.userId, {
     title: 'Wallet Funded',
-    body: `Your Hema wallet was credited with ${topup.amount} ${topup.currency || DEFAULT_WALLET_CURRENCY}.`,
+    body: `Your Hema wallet was credited with ${topup.amount} ${
+      topup.currency || DEFAULT_WALLET_CURRENCY
+    }.`,
     type: 'wallet',
     targetType: 'wallet',
     actionUrl: '/wallet'
@@ -628,8 +638,8 @@ const completeSuccessfulWithdrawal = async (
   const withdrawalRef = db.collection('withdrawalRequests').doc(withdrawalId);
   const providerReference = String(
     providerPayload?.reference ||
-    providerPayload?.operator_reference ||
-    ''
+      providerPayload?.operator_reference ||
+      ''
   );
 
   await db.runTransaction(async tx => {
@@ -682,6 +692,7 @@ app.get('/api/health', (_req, res) => {
     service: 'Hema Trader Wallet + Escrow Engine',
     provider: 'campay',
     walletApi: true,
+    bcryptReady: typeof bcrypt.hash === 'function',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
@@ -1810,7 +1821,7 @@ async function setupVite() {
       })
     );
 
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.setHeader(
         'Cache-Control',
         'no-store, no-cache, must-revalidate, proxy-revalidate'
