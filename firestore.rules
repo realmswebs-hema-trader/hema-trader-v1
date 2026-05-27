@@ -2,7 +2,6 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-
     // =========================
     // HELPERS
     // =========================
@@ -46,13 +45,11 @@ service cloud.firestore {
     }
 
     function isTradeBuyer(tradeId) {
-      return isSignedIn() &&
-        tradeDoc(tradeId).buyerId == request.auth.uid;
+      return isSignedIn() && tradeDoc(tradeId).buyerId == request.auth.uid;
     }
 
     function isTradeSeller(tradeId) {
-      return isSignedIn() &&
-        tradeDoc(tradeId).sellerId == request.auth.uid;
+      return isSignedIn() && tradeDoc(tradeId).sellerId == request.auth.uid;
     }
 
     function isTradeDriver(tradeId) {
@@ -78,19 +75,25 @@ service cloud.firestore {
         && incoming().listingId == existing().listingId;
     }
 
+    function listingBelongsToUser(data) {
+      return isSignedIn() && (
+        data.ownerId == request.auth.uid ||
+        data.sellerId == request.auth.uid ||
+        data.userId == request.auth.uid ||
+        data.createdBy == request.auth.uid
+      );
+    }
+
     // =========================
     // VALIDATORS
     // =========================
 
     function isValidUser(data) {
-      let isAssigningAdmin =
-        data.roles is list &&
-        data.roles.hasAny(['admin']);
+      let isAssigningAdmin = data.roles is list && data.roles.hasAny(['admin']);
 
       return data.userId == request.auth.uid
-
+        && data.uid == request.auth.uid
         && data.roles is list
-
         && (!isAssigningAdmin || isAdmin())
 
         && (
@@ -105,12 +108,7 @@ service cloud.firestore {
 
         && (
           data.verificationStatus == null ||
-          data.verificationStatus in [
-            'unverified',
-            'pending',
-            'verified',
-            'rejected'
-          ]
+          data.verificationStatus in ['unverified', 'pending', 'verified', 'rejected']
         )
 
         && (
@@ -119,18 +117,33 @@ service cloud.firestore {
         )
 
         && (
+          data.name == null ||
+          (data.name is string && data.name.size() <= 100)
+        )
+
+        && (
+          data.displayNameKey == null ||
+          (data.displayNameKey is string && data.displayNameKey.size() <= 120)
+        )
+
+        && (
           data.email == null ||
-          (data.email is string && data.email.size() <= 100)
+          (data.email is string && data.email.size() <= 120)
+        )
+
+        && (
+          data.emailVerified == null ||
+          data.emailVerified is bool
         )
 
         && (
           data.phoneNumber == null ||
-          (data.phoneNumber is string && data.phoneNumber.size() <= 20)
+          (data.phoneNumber is string && data.phoneNumber.size() <= 30)
         )
 
         && (
           data.photoURL == null ||
-          (data.photoURL is string && data.photoURL.size() <= 500)
+          (data.photoURL is string && data.photoURL.size() <= 1000)
         )
 
         && (
@@ -150,29 +163,57 @@ service cloud.firestore {
 
         && (
           data.driverStatus == null ||
-          data.driverStatus in [
-            'available',
-            'busy',
-            'offline',
-            'on_trip',
-            'unavailable'
-          ]
+          data.driverStatus in ['available', 'busy', 'offline', 'on_trip', 'unavailable', 'online']
         )
 
         && (
           data.availability == null ||
-          data.availability in [
-            'available',
-            'busy',
-            'offline',
-            'on_trip',
-            'unavailable'
-          ]
+          data.availability in ['available', 'busy', 'offline', 'on_trip', 'unavailable', 'online']
         )
 
         && (
           data.vehicleType == null ||
           data.vehicleType is string
+        )
+
+        && (
+          data.isOnline == null ||
+          data.isOnline is bool
+        )
+
+        && (
+          data.online == null ||
+          data.online is bool
+        )
+
+        && (
+          data.currentLocation == null ||
+          data.currentLocation is map
+        )
+
+        && (
+          data.latitude == null ||
+          data.latitude is number
+        )
+
+        && (
+          data.longitude == null ||
+          data.longitude is number
+        )
+
+        && (
+          data.locationUpdatedAt == null ||
+          data.locationUpdatedAt is timestamp
+        )
+
+        && (
+          data.totalDeliveries == null ||
+          data.totalDeliveries is int
+        )
+
+        && (
+          data.completedDeliveries == null ||
+          data.completedDeliveries is int
         )
 
         && (
@@ -188,6 +229,11 @@ service cloud.firestore {
         && (
           data.averageRating == null ||
           data.averageRating is number
+        )
+
+        && (
+          data.ratingCount == null ||
+          data.ratingCount is int
         )
 
         && (
@@ -207,21 +253,12 @@ service cloud.firestore {
 
         && (
           data.sellerTier == null ||
-          data.sellerTier in [
-            'none',
-            'elite',
-            'trusted',
-            'official'
-          ]
+          data.sellerTier in ['none', 'elite', 'trusted', 'official']
         )
 
         && (
           data.driverTier == null ||
-          data.driverTier in [
-            'none',
-            'trusted',
-            'master'
-          ]
+          data.driverTier in ['none', 'trusted', 'master']
         )
 
         && (
@@ -266,12 +303,7 @@ service cloud.firestore {
 
         && (
           data.riskLevel == null ||
-          data.riskLevel in [
-            'none',
-            'low',
-            'medium',
-            'high'
-          ]
+          data.riskLevel in ['none', 'low', 'medium', 'high']
         )
 
         && (
@@ -296,13 +328,7 @@ service cloud.firestore {
     }
 
     function isValidListing(data) {
-
-      return (
-          data.ownerId == request.auth.uid ||
-          data.sellerId == request.auth.uid ||
-          data.userId == request.auth.uid ||
-          data.createdBy == request.auth.uid
-        )
+      return listingBelongsToUser(data)
 
         && data.title is string
         && data.title.size() <= 150
@@ -312,15 +338,7 @@ service cloud.firestore {
 
         && (
           data.status == null ||
-          data.status in [
-            'active',
-            'available',
-            'sold',
-            'deleted',
-            'cancelled',
-            'reserved',
-            'in_trade'
-          ]
+          data.status in ['active', 'available', 'sold', 'deleted', 'cancelled', 'reserved', 'in_trade']
         )
 
         && (
@@ -328,6 +346,7 @@ service cloud.firestore {
           data.category in [
             'Animals',
             'Farming Products',
+            'Farming products',
             'Electronics',
             'Equipment',
             'Seeds',
@@ -339,24 +358,32 @@ service cloud.firestore {
 
         && (
           data.inventoryType == null ||
-          data.inventoryType in [
-            'single',
-            'stock',
-            'single_product',
-            'multiple'
-          ]
+          data.inventoryType in ['single', 'stock', 'single_product', 'multiple']
         )
 
         && (
           data.listingStatus == null ||
-          data.listingStatus in [
-            'available',
-            'reserved',
-            'in_trade',
-            'sold',
-            'cancelled',
-            'active'
-          ]
+          data.listingStatus in ['available', 'reserved', 'in_trade', 'sold', 'cancelled', 'active']
+        )
+
+        && (
+          data.ownerId == null ||
+          data.ownerId is string
+        )
+
+        && (
+          data.sellerId == null ||
+          data.sellerId is string
+        )
+
+        && (
+          data.userId == null ||
+          data.userId is string
+        )
+
+        && (
+          data.createdBy == null ||
+          data.createdBy is string
         )
 
         && (
@@ -418,12 +445,7 @@ service cloud.firestore {
 
         && (
           data.imageUploadStatus == null ||
-          data.imageUploadStatus in [
-            'none',
-            'uploaded',
-            'partial',
-            'failed'
-          ]
+          data.imageUploadStatus in ['none', 'uploaded', 'partial', 'failed']
         )
 
         && (
@@ -494,10 +516,7 @@ service cloud.firestore {
 
         && (
           data.boostTier == null ||
-          data.boostTier in [
-            'standard',
-            'premium'
-          ]
+          data.boostTier in ['standard', 'premium']
         )
 
         && (
@@ -517,52 +536,380 @@ service cloud.firestore {
     }
 
     function isValidTrade(data) {
-      return (
-          data.buyerId == request.auth.uid ||
-          data.sellerId == request.auth.uid ||
-          isAdmin()
-        )
-
+      return (data.buyerId == request.auth.uid || data.sellerId == request.auth.uid || isAdmin())
         && data.buyerId is string
         && data.sellerId is string
         && data.buyerId != data.sellerId
-
-        && data.status in [
-          'pending',
-          'funded',
-          'shipped',
-          'completed',
-          'disputed',
-          'cancelled'
-        ]
-
+        && data.status in ['pending', 'funded', 'shipped', 'completed', 'disputed', 'cancelled']
         && data.amount is number
-        && data.amount >= 0;
+        && data.amount >= 0
+
+        && (
+          data.isDisputed == null ||
+          data.isDisputed is bool
+        )
+
+        && (
+          data.platformFee == null ||
+          data.platformFee is number
+        )
+
+        && (
+          data.deliveryFee == null ||
+          data.deliveryFee is number
+        )
+
+        && (
+          data.agreedDeliveryFee == null ||
+          data.agreedDeliveryFee is number
+        )
+
+        && (
+          data.deliveryFeePaid == null ||
+          data.deliveryFeePaid is number
+        )
+
+        && (
+          data.deliveryFeeAgreed == null ||
+          data.deliveryFeeAgreed is bool
+        )
+
+        && (
+          data.driverId == null ||
+          data.driverId is string
+        )
+
+        && (
+          data.assignedDriverId == null ||
+          data.assignedDriverId is string
+        )
+
+        && (
+          data.driverCommission == null ||
+          data.driverCommission is number
+        )
+
+        && (
+          data.deliveryStatus == null ||
+          data.deliveryStatus in [
+            'none',
+            'pending',
+            'assigned',
+            'accepted',
+            'delivery_requested',
+            'delivery_fee_paid',
+            'driver_en_route_to_pickup',
+            'product_picked_up',
+            'delivery_in_progress',
+            'picked_up',
+            'delivered',
+            'completed',
+            'rejected',
+            'cancelled'
+          ]
+        )
+
+        && (
+          data.deliveryNegotiationStatus == null ||
+          data.deliveryNegotiationStatus in [
+            'delivery_requested',
+            'driver_countered',
+            'buyer_countered',
+            'delivery_price_agreed',
+            'delivery_fee_paid',
+            'driver_en_route_to_pickup',
+            'product_picked_up',
+            'delivery_in_progress',
+            'delivered',
+            'completed',
+            'cancelled'
+          ]
+        )
+
+        && (
+          data.deliveryBargainStatus == null ||
+          data.deliveryBargainStatus is string
+        )
+
+        && (
+          data.deliveryType == null ||
+          data.deliveryType in ['pickup', 'delivery']
+        )
+
+        && (
+          data.deliveryRequestStatus == null ||
+          data.deliveryRequestStatus in [
+            'none',
+            'open',
+            'claimed',
+            'assigned',
+            'accepted',
+            'driver_rejected',
+            'cancelled'
+          ]
+        )
+
+        && (
+          data.deliveryPaymentStatus == null ||
+          data.deliveryPaymentStatus in ['unpaid', 'pending', 'pending_funding', 'paid', 'failed', 'refunded']
+        )
+
+        && (
+          data.deliveryPaymentRequiredAt == null ||
+          data.deliveryPaymentRequiredAt is timestamp
+        )
+
+        && (
+          data.deliveryPaymentDeadlineAt == null ||
+          data.deliveryPaymentDeadlineAt is timestamp
+        )
+
+        && (
+          data.refundProcessed == null ||
+          data.refundProcessed is bool
+        )
+
+        && (
+          data.refundProcessedAt == null ||
+          data.refundProcessedAt is timestamp
+        )
+
+        && (
+          data.autoCancelReason == null ||
+          data.autoCancelReason is string
+        )
+
+        && (
+          data.listingInventoryType == null ||
+          data.listingInventoryType in ['single', 'stock']
+        )
+
+        && (
+          data.listingStatusAtTradeStart == null ||
+          data.listingStatusAtTradeStart is string
+        )
+
+        && (
+          data.deliveryETA == null ||
+          data.deliveryETA is string
+        )
+
+        && (
+          data.paymentStatus == null ||
+          data.paymentStatus in ['awaiting', 'paid', 'failed', 'refunded', 'wallet_escrowed', 'released']
+        )
+
+        && (
+          data.productPaymentStatus == null ||
+          data.productPaymentStatus in ['unpaid', 'paid', 'refunded']
+        )
+
+        && (
+          data.paymentReference == null ||
+          data.paymentReference is string
+        )
+
+        && (
+          data.disputeStatus == null ||
+          data.disputeStatus in ['none', 'pending', 'reviewing', 'resolved']
+        )
+
+        && (
+          data.lastActivityAt == null ||
+          data.lastActivityAt is timestamp
+        )
+
+        && (
+          data.createdAt == null ||
+          data.createdAt is timestamp
+        )
+
+        && (
+          data.updatedAt == null ||
+          data.updatedAt is timestamp
+        );
     }
 
     function isValidNotification(data) {
       return data.title is string
-        && data.body is string;
+        && data.title.size() <= 200
+        && data.body is string
+        && data.body.size() <= 1000
+        && data.type in ['message', 'trade_update', 'offer', 'rating', 'system', 'new_listing', 'delivery', 'wallet']
+        && (
+          data.userId == null ||
+          data.userId is string
+        )
+        && (
+          data.recipientId == null ||
+          data.recipientId is string
+        )
+        && (
+          data.createdAt == null ||
+          data.createdAt is timestamp
+        )
+        && (
+          data.updatedAt == null ||
+          data.updatedAt is timestamp
+        );
+    }
+
+    function isValidReview(data) {
+      return data.reviewerId == request.auth.uid
+        && data.rating is number
+        && data.rating >= 1
+        && data.rating <= 5
+        && data.comment is string
+        && data.comment.size() <= 1000
+        && (
+          data.createdAt == null ||
+          data.createdAt is timestamp
+        );
+    }
+
+    function isValidMessage(data, tradeId) {
+      return (
+          data.senderId == request.auth.uid ||
+          (
+            data.senderId == 'system' &&
+            data.type == 'system' &&
+            data.senderName == 'Hema Trader'
+          )
+        )
+        && data.tradeId == tradeId
+        && data.text is string
+        && data.text.size() <= 2000
+        && (
+          data.createdAt == null ||
+          data.createdAt is timestamp
+        );
+    }
+
+    function isValidOffer(data) {
+      return data.senderId == request.auth.uid
+        && data.amount is number
+        && data.amount >= 0
+        && data.status in ['pending', 'accepted', 'declined']
+        && (
+          data.type == null ||
+          data.type in ['item', 'delivery']
+        )
+        && (
+          data.recipientId == null ||
+          data.recipientId is string
+        )
+        && (
+          data.createdAt == null ||
+          data.createdAt is timestamp
+        );
+    }
+
+    function isValidDeliveryRequest(data) {
+      return data.tradeId is string
+        && data.buyerId is string
+        && data.sellerId is string
+        && data.driverId is string
+        && data.listingId is string
+        && (
+          data.listingTitle == null ||
+          data.listingTitle is string
+        )
+        && (
+          data.pickupLocation == null ||
+          data.pickupLocation is string
+        )
+        && (
+          data.dropoffLocation == null ||
+          data.dropoffLocation is string
+        )
+        && data.proposedFee is number
+        && data.proposedFee >= 0
+        && (
+          data.counterFee == null ||
+          data.counterFee is number
+        )
+        && (
+          data.agreedFee == null ||
+          data.agreedFee is number
+        )
+        && (
+          data.currency == null ||
+          data.currency is string
+        )
+        && (
+          data.distanceKm == null ||
+          data.distanceKm is number
+        )
+        && data.status in [
+          'delivery_requested',
+          'accepted',
+          'declined',
+          'driver_countered',
+          'buyer_countered',
+          'price_agreed',
+          'delivery_fee_paid',
+          'driver_en_route_to_pickup',
+          'product_picked_up',
+          'delivery_in_progress',
+          'delivered',
+          'completed',
+          'cancelled'
+        ];
+    }
+
+    function isValidDriverRating(data) {
+      return data.raterId == request.auth.uid
+        && data.rating is int
+        && data.rating >= 1
+        && data.rating <= 5
+        && data.comment is string
+        && data.comment.size() <= 1000
+        && (
+          data.createdAt == null ||
+          data.createdAt is timestamp
+        );
+    }
+
+    function isValidReport(data) {
+      return data.reporterId == request.auth.uid
+        && data.status == 'pending'
+        && data.reason is string
+        && data.reason.size() <= 100
+        && data.description is string
+        && data.description.size() <= 1000
+        && (
+          data.createdAt == null ||
+          data.createdAt is timestamp
+        );
     }
 
     // =========================
-    // USERS
+    // COLLECTIONS
     // =========================
 
-    match /users/{userId} {
+    match /test/connection {
+      allow read: if true;
+    }
 
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /users/{userId} {
       allow get: if true;
       allow list: if true;
 
-      allow create: if
-        isOwner(userId)
-        && isValidUser(incoming());
+      allow create: if isOwner(userId) && isValidUser(incoming());
 
       allow update: if (
-
         isOwner(userId)
         && incoming().diff(existing()).affectedKeys().hasOnly([
-
+          'displayName',
+          'name',
+          'displayNameKey',
+          'phoneNumber',
+          'photoURL',
           'lastActiveAt',
           'fcmToken',
           'followersCount',
@@ -580,138 +927,309 @@ service cloud.firestore {
           'role',
           'activeRole',
           'isSeller',
-          'updatedAt',
-          'photoURL',
-          'displayName',
-          'name'
-
+          'totalDeliveries',
+          'completedDeliveries',
+          'deliveriesCount',
+          'avgDriverRating',
+          'averageRating',
+          'ratingCount',
+          'reliabilityScore',
+          'totalEarnings',
+          'warningCount',
+          'updatedAt'
         ])
-
+        && isValidUser(incoming())
       ) || isServer() || isAdmin();
     }
 
-    // =========================
-    // LISTINGS
-    // =========================
+    match /users/{userId}/notifications/{notificationId} {
+      allow list, get: if isOwner(userId);
+
+      allow create: if (isSignedIn() || isServer())
+        && isValidNotification(incoming())
+        && incoming().userId == userId;
+
+      allow update: if isOwner(userId)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'isRead',
+          'read',
+          'status',
+          'updatedAt'
+        ]);
+    }
+
+    match /follows/{followId} {
+      allow list: if isSignedIn()
+        && (
+          resource.data.followerId == request.auth.uid ||
+          resource.data.followingId == request.auth.uid
+        );
+
+      allow get: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && incoming().followerId == request.auth.uid;
+
+      allow delete: if isSignedIn()
+        && existing().followerId == request.auth.uid;
+    }
+
+    match /boosts/{boostId} {
+      allow create: if isSignedIn()
+        && incoming().userId == request.auth.uid;
+
+      allow read: if isSignedIn()
+        && (
+          resource.data.userId == request.auth.uid ||
+          isAdmin()
+        );
+    }
 
     match /listings/{listingId} {
-
       allow get: if true;
       allow list: if true;
 
-      allow create: if
-        isSignedIn()
+      allow create: if isSignedIn()
         && isValidListing(incoming())
+        && listingBelongsToUser(incoming())
         && (
-          incoming().ownerId == request.auth.uid ||
-          incoming().sellerId == request.auth.uid ||
-          incoming().userId == request.auth.uid ||
-          incoming().createdBy == request.auth.uid
-        );
+          incoming().status == null ||
+          incoming().status in ['active', 'available']
+        )
+        && (
+          incoming().listingStatus == null ||
+          incoming().listingStatus in ['available', 'active']
+        )
+        && incoming().activeTradeId == null;
 
-      allow update: if
-        isServer()
-        || isAdmin()
-        || (
-          isSignedIn()
-          && (
-            existing().ownerId == request.auth.uid ||
-            existing().sellerId == request.auth.uid ||
-            existing().userId == request.auth.uid ||
-            existing().createdBy == request.auth.uid
-          )
-          && isValidListing(incoming())
-        );
+      allow update: if isServer() || isAdmin() || (
+        isSignedIn()
+        && listingBelongsToUser(existing())
+        && listingBelongsToUser(incoming())
+        && isValidListing(incoming())
+        && !(
+          existing().inventoryType == 'single'
+          && existing().activeTradeId != null
+          && incoming().listingStatus == 'available'
+        )
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title',
+          'description',
+          'price',
+          'priceDisplay',
+          'currency',
+          'currencyCode',
+          'currencyLocale',
+          'currencyLabel',
+          'country',
+          'category',
+          'location',
+          'locationName',
+          'latitude',
+          'longitude',
+          'currentLocation',
+          'gpsAccuracy',
+          'gpsSource',
+          'isGeoTagged',
+          'quantity',
+          'metadata',
+          'images',
+          'failedImageNames',
+          'imageUploadStatus',
+          'status',
+          'stockStatus',
+          'inventoryType',
+          'listingStatus',
+          'activeTradeId',
+          'reservedAt',
+          'soldAt',
+          'isBoosted',
+          'boostTier',
+          'boostExpiresAt',
+          'updatedAt'
+        ])
+      );
 
-      allow delete: if
-        isAdmin()
-        || (
-          isSignedIn()
-          && (
-            existing().ownerId == request.auth.uid ||
-            existing().sellerId == request.auth.uid
-          )
-        );
+      allow delete: if isAdmin() || (
+        isSignedIn()
+        && listingBelongsToUser(existing())
+      );
     }
 
-    // =========================
-    // TRADES
-    // =========================
+    match /deliveryRequests/{requestId} {
+      allow get, list: if isSignedIn()
+        && (
+          resource.data.buyerId == request.auth.uid ||
+          resource.data.sellerId == request.auth.uid ||
+          resource.data.driverId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow create: if isServer() || (
+        isSignedIn()
+        && isValidDeliveryRequest(incoming())
+        && incoming().buyerId == request.auth.uid
+        && tradeDoc(incoming().tradeId).buyerId == request.auth.uid
+        && tradeDoc(incoming().tradeId).sellerId == incoming().sellerId
+        && tradeDoc(incoming().tradeId).listingId == incoming().listingId
+        && tradeDoc(incoming().tradeId).status in ['funded', 'shipped']
+      );
+
+      allow update: if isServer() || isAdmin() || (
+        isSignedIn()
+        && isValidDeliveryRequest(incoming())
+        && (
+          (
+            existing().driverId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status',
+              'counterFee',
+              'agreedFee',
+              'acceptedAt',
+              'declinedAt',
+              'pickupStartedAt',
+              'pickedUpAt',
+              'deliveryStartedAt',
+              'deliveredAt',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            existing().buyerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status',
+              'counterFee',
+              'agreedFee',
+              'updatedAt'
+            ])
+          )
+        )
+      );
+    }
 
     match /trades/{tradeId} {
+      allow get: if isTradeParticipant(tradeId) || isServer();
+      allow list: if isSignedIn() || isServer();
 
-      allow get: if isTradeParticipant(tradeId);
-      allow list: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidTrade(incoming())
+        && incoming().buyerId == request.auth.uid
+        && incoming().buyerId != incoming().sellerId
+        && listingDoc(incoming().listingId).status in ['active', 'available']
+        && (
+          listingDoc(incoming().listingId).listingStatus == null ||
+          listingDoc(incoming().listingId).listingStatus == 'available'
+        )
+        && (
+          listingDoc(incoming().listingId).inventoryType != 'single' ||
+          listingDoc(incoming().listingId).activeTradeId == null
+        )
+        && (
+          incoming().sellerId == listingDoc(incoming().listingId).ownerId ||
+          incoming().sellerId == listingDoc(incoming().listingId).sellerId ||
+          incoming().sellerId == listingDoc(incoming().listingId).userId ||
+          incoming().sellerId == listingDoc(incoming().listingId).createdBy
+        )
+        && incoming().buyerId != listingDoc(incoming().listingId).ownerId
+        && incoming().buyerId != listingDoc(incoming().listingId).sellerId
+        && incoming().buyerId != listingDoc(incoming().listingId).userId
+        && incoming().buyerId != listingDoc(incoming().listingId).createdBy;
 
-      allow create: if
+      allow update: if isServer() || isAdmin() || (
         isSignedIn()
-        && isValidTrade(incoming());
-
-      allow update: if
-        isServer()
-        || isAdmin()
-        || (
-          isSignedIn()
-          && isTradeParticipant(tradeId)
-          && immutableTradeParticipants()
-        );
+        && isTradeParticipant(tradeId)
+        && immutableTradeParticipants()
+        && !incoming().diff(existing()).affectedKeys().hasAny([
+          'paymentAmount',
+          'paymentCurrency',
+          'paymentProvider',
+          'deliveryPaymentAmount',
+          'deliveryPaymentCurrency',
+          'deliveryPaymentProvider',
+          'refundProcessed',
+          'refundProcessedAt'
+        ])
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'typing',
+          'updatedAt',
+          'lastActivityAt',
+          'isDisputed',
+          'disputeStatus',
+          'deliveryStatus',
+          'deliveryNegotiationStatus',
+          'deliveryBargainStatus',
+          'deliveryRequestStatus',
+          'driverId',
+          'assignedDriverId',
+          'deliveryETA',
+          'deliveryFee',
+          'agreedDeliveryFee',
+          'driverCommission',
+          'deliveryFeeAgreed',
+          'adminNote'
+        ])
+      );
     }
 
-    // =========================
-    // MESSAGES
-    // =========================
-
     match /trades/{tradeId}/messages/{messageId} {
-
       allow list, get: if isTradeParticipant(tradeId);
 
-      allow create: if
-        isTradeParticipant(tradeId);
+      allow create: if isValidMessage(incoming(), tradeId)
+        && isTradeParticipant(tradeId);
     }
 
     match /messages/{messageId} {
-
-      allow list, get: if
-        resource.data.tradeId is string
+      allow list, get: if resource.data.tradeId is string
         && isTradeParticipant(resource.data.tradeId);
 
-      allow create: if
-        incoming().tradeId is string
+      allow create: if incoming().tradeId is string
+        && isValidMessage(incoming(), incoming().tradeId)
         && isTradeParticipant(incoming().tradeId);
     }
 
-    // =========================
-    // REVIEWS
-    // =========================
+    match /trades/{tradeId}/offers/{offerId} {
+      allow list, get: if isTradeParticipant(tradeId);
+
+      allow create: if isSignedIn()
+        && isValidOffer(incoming())
+        && isTradeParticipant(tradeId)
+        && (
+          incoming().type != 'delivery' ||
+          isTradeBuyer(tradeId) ||
+          isTradeDriver(tradeId)
+        )
+        && incoming().status == 'pending';
+
+      allow update: if isSignedIn()
+        && isTradeParticipant(tradeId)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status',
+          'updatedAt'
+        ])
+        && incoming().status in ['accepted', 'declined']
+        && existing().senderId != request.auth.uid;
+    }
 
     match /reviews/{reviewId} {
-
       allow read: if true;
 
-      allow create: if
-        isSignedIn();
+      allow create: if isSignedIn()
+        && isValidReview(incoming())
+        && exists(/databases/$(database)/documents/trades/$(incoming().tradeId))
+        && tradeDoc(incoming().tradeId).status == 'completed';
     }
-
-    // =========================
-    // DRIVER RATINGS
-    // =========================
 
     match /driver_ratings/{ratingId} {
-
       allow read: if true;
 
-      allow create: if
-        isSignedIn();
+      allow create: if isSignedIn()
+        && isValidDriverRating(incoming())
+        && exists(/databases/$(database)/documents/trades/$(incoming().tradeId))
+        && tradeDoc(incoming().tradeId).deliveryStatus in ['delivered', 'completed'];
     }
 
-    // =========================
-    // REPORTS
-    // =========================
-
     match /reports/{reportId} {
-
-      allow get: if
-        isAdmin()
+      allow get: if isAdmin()
         || (
           isSignedIn()
           && resource.data.reporterId == request.auth.uid
@@ -719,53 +1237,82 @@ service cloud.firestore {
 
       allow list: if isAdmin();
 
-      allow create: if isSignedIn();
+      allow create: if isSignedIn()
+        && isValidReport(incoming());
 
-      allow update: if isAdmin();
+      allow update: if isAdmin()
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status',
+          'adminNote',
+          'updatedAt'
+        ]);
     }
-
-    // =========================
-    // NOTIFICATIONS
-    // =========================
-
-    match /notifications/{notifId} {
-
-      allow read: if
-        isSignedIn()
-        || isServer();
-
-      allow create: if
-        isSignedIn()
-        || isServer();
-
-      allow update: if
-        isAdmin()
-        || isServer();
-    }
-
-    // =========================
-    // WALLET
-    // =========================
 
     match /wallets/{walletId} {
       allow read: if isOwner(walletId) || isAdmin();
       allow write: if false;
     }
 
+    match /walletSecurity/{walletId} {
+      allow read: if isOwner(walletId) || isAdmin();
+      allow write: if false;
+    }
+
     match /walletTransactions/{transactionId} {
-      allow read: if
-        isSignedIn()
+      allow read: if isSignedIn()
         && (
-          resource.data.userId == request.auth.uid
-          || isAdmin()
+          resource.data.userId == request.auth.uid ||
+          isAdmin()
         );
 
       allow write: if false;
     }
 
-    // =========================
-    // FALLBACK
-    // =========================
+    match /walletTopups/{topupId} {
+      allow read: if isSignedIn()
+        && (
+          resource.data.userId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow write: if false;
+    }
+
+    match /withdrawalRequests/{withdrawalId} {
+      allow read: if isSignedIn()
+        && (
+          resource.data.userId == request.auth.uid ||
+          isAdmin()
+        );
+
+      allow write: if false;
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+
+      allow create: if isAdmin()
+        && (
+          incoming().createdAt == null ||
+          incoming().createdAt is timestamp
+        );
+    }
+
+    match /notifications/{notifId} {
+      allow read: if isSignedIn() || isServer();
+
+      allow create: if (isSignedIn() || isServer())
+        && isValidNotification(incoming());
+
+      allow update: if isAdmin()
+        || (
+          isServer()
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'status',
+            'updatedAt'
+          ])
+        );
+    }
 
     match /{document=**} {
       allow read, write: if false;
