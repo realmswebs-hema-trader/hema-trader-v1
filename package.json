@@ -10,7 +10,7 @@
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
     "render:start": "tsx server.ts",
-    "build": "node scripts/render-build-or-start.mjs",
+    "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
@@ -48,7 +48,6 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "typescript": "~5.8.2"
   }
 }
