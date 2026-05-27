@@ -19,6 +19,7 @@ import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
+  Clock,
   CreditCard,
   Loader2,
   MessageCircle,
@@ -53,10 +54,25 @@ import {
 } from '../services/chatService';
 import { openEscrowDispute } from '../services/escrowService';
 import {
+  INSUFFICIENT_DELIVERY_FUNDS_MESSAGE,
+  isInsufficientDeliveryFundsError,
   payDeliveryFromWallet,
   payTradeFromWallet,
-  releaseTradeEscrow
+  releaseTradeEscrow,
+  validateDeliveryWalletBalance
 } from '../services/walletService';
+import {
+  DELIVERY_AUTO_CANCEL_MESSAGE,
+  deliveryStatusLabel,
+  getDeliveryCountdown,
+  isDeliveryPaymentPendingFunding,
+  lockAgreedDeliveryFee,
+  markDeliveryFundingRequired,
+  requestDeliveryFromAvailableDrivers,
+  requestServerAutoCancelUnfundedDelivery,
+  sendDeliveryCounterOffer,
+  updateDriverTripStatus
+} from '../services/deliveryLogisticsService';
 
 const OperationType = {
   READ: 'read',
@@ -159,6 +175,24 @@ interface Trade {
   deliveryPaymentStatus?: string;
   deliveryPaymentTxRef?: string;
   deliveryPaymentTransactionId?: string;
+  deliveryNegotiationStatus?: string;
+  deliveryFeeAgreed?: boolean;
+  agreedDeliveryFee?: number;
+  deliveryFeePaid?: number;
+  assignedDriverId?: string;
+  deliveryPaymentRequiredAt?: any;
+  deliveryPaymentDeadlineAt?: any;
+  autoCancelReason?: string;
+  refundProcessed?: boolean;
+  refundProcessedAt?: any;
+  deliveryBroadcastDriverIds?: string[];
+  deliveryRequestIds?: string[];
+  pickupStartedAt?: any;
+  pickedUpAt?: any;
+  deliveryStartedAt?: any;
+  deliveredAt?: any;
+  listingInventoryType?: 'single' | 'stock';
+  listingStatusAtTradeStart?: string;
   logisticsOrderId?: string;
   escrowStatus?: string;
   paymentStatus?: string;
@@ -320,10 +354,13 @@ export default function TradeDetail() {
   const [showDriverSelection, setShowDriverSelection] = useState(false);
   const [showDeliveryRequestPanel, setShowDeliveryRequestPanel] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
+  const [deliveryFundingError, setDeliveryFundingError] = useState<string | null>(null);
+  const [deliveryCountdownTick, setDeliveryCountdownTick] = useState(0);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSoundMessageIdRef = useRef<string | null>(null);
+  const autoCancelRequestedRef = useRef(false);
 
   const isBuyer = Boolean(user?.uid && trade?.buyerId && user.uid === trade.buyerId);
   const isSeller = Boolean(user?.uid && trade?.sellerId && user.uid === trade.sellerId);
@@ -365,6 +402,58 @@ export default function TradeDetail() {
 
     lastSoundMessageIdRef.current = latest.id;
   }, [messages, user]);
+
+  useEffect(() => {
+    if (!trade || !isDeliveryPaymentPendingFunding(trade)) {
+      autoCancelRequestedRef.current = false;
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setDeliveryCountdownTick(Date.now());
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [
+    trade?.id,
+    trade?.deliveryPaymentStatus,
+    trade?.deliveryPaymentDeadlineAt,
+    trade?.status
+  ]);
+
+  useEffect(() => {
+    if (!trade || !user || !isBuyer || !isDeliveryPaymentPendingFunding(trade)) return;
+
+    const countdown = getDeliveryCountdown(trade);
+
+    if (!countdown.expired || autoCancelRequestedRef.current) return;
+
+    autoCancelRequestedRef.current = true;
+
+    requestServerAutoCancelUnfundedDelivery(user, trade.id)
+      .then(result => {
+        if (!result.cancelled) return;
+
+        return sendSystemTradeMessage({
+          tradeId: trade.id,
+          listingId: trade.listingId,
+          text: result.message || DELIVERY_AUTO_CANCEL_MESSAGE,
+          recipientIds: tradeRecipientIds,
+          sendNotification,
+          title: 'Trade Cancelled'
+        });
+      })
+      .catch(err => {
+        console.warn('Auto-cancel request failed:', err);
+        autoCancelRequestedRef.current = false;
+      });
+  }, [
+    trade?.id,
+    trade?.deliveryPaymentDeadlineAt,
+    deliveryCountdownTick,
+    user?.uid,
+    isBuyer
+  ]);
 
   const setTypingStatus = async (isTyping: boolean) => {
     if (!id || !user) return;
@@ -431,28 +520,57 @@ export default function TradeDetail() {
   const handleDeliveryPayment = async () => {
     if (!trade || !user || !isBuyer) return;
 
-    if (!trade.driverId || !trade.deliveryFee) {
+    const agreedFee = Number(trade.agreedDeliveryFee || trade.deliveryFee || 0);
+
+    if (!trade.driverId || agreedFee <= 0 || !trade.deliveryFeeAgreed) {
       alert('Agree on a delivery fee with the driver first.');
       return;
     }
 
-    const walletPin = requestWalletPin();
-    if (!walletPin) return;
-
     setUpdating(true);
+    setDeliveryFundingError(null);
 
     try {
-      await payDeliveryFromWallet(user, trade.id, walletPin);
+      const validation = await validateDeliveryWalletBalance(user, trade.id);
+
+      if (!validation.canPay) {
+        await markDeliveryFundingRequired(trade.id);
+        setDeliveryFundingError(validation.message || INSUFFICIENT_DELIVERY_FUNDS_MESSAGE);
+
+        await sendNotification(trade.buyerId, {
+          title: 'Fund Account Required',
+          body: INSUFFICIENT_DELIVERY_FUNDS_MESSAGE,
+          type: 'wallet',
+          targetId: trade.id,
+          targetType: 'trade',
+          actionUrl: '/wallet'
+        });
+
+        return;
+      }
+
+      const walletPin = requestWalletPin();
+      if (!walletPin) return;
+
+      await payDeliveryFromWallet(user, trade.id, walletPin, {
+        deliveryRequestId: trade.deliveryRequestId
+      });
 
       await sendSystemTradeMessage({
         tradeId: trade.id,
         listingId: trade.listingId,
-        text: `Delivery escrow funded from Hema Wallet: ${formatMoney(trade.deliveryFee || 0, 'XAF', 'fr-CM')}. Driver can now proceed to pickup after coordination.`,
+        text: `Delivery fee paid from Hema Wallet: ${formatMoney(agreedFee, getTradeCurrency(trade), getTradeLocale(trade))}. Driver can now start pickup.`,
         recipientIds: [trade.buyerId, trade.sellerId, trade.driverId],
         sendNotification,
-        title: 'Delivery Escrow Funded'
+        title: 'Delivery Fee Paid'
       });
     } catch (err) {
+      if (isInsufficientDeliveryFundsError(err)) {
+        await markDeliveryFundingRequired(trade.id);
+        setDeliveryFundingError(INSUFFICIENT_DELIVERY_FUNDS_MESSAGE);
+        return;
+      }
+
       alert(err instanceof Error ? err.message : 'Could not pay delivery from Hema Wallet.');
     } finally {
       setUpdating(false);
@@ -674,9 +792,11 @@ export default function TradeDetail() {
         await updateDoc(doc(db, 'listings', trade.listingId), {
           status: 'sold',
           stockStatus: 'sold',
+          listingStatus: 'sold',
           soldAt: serverTimestamp(),
           soldExpiresAt,
           soldByTradeId: trade.id,
+          activeTradeId: null,
           updatedAt: serverTimestamp()
         });
 
@@ -709,9 +829,11 @@ export default function TradeDetail() {
       await updateDoc(doc(db, 'listings', trade.listingId), {
         status: 'active',
         stockStatus: 'in_stock',
+        listingStatus: 'available',
         soldAt: null,
         soldExpiresAt: null,
         soldByTradeId: null,
+        activeTradeId: null,
         updatedAt: serverTimestamp()
       });
 
@@ -754,6 +876,8 @@ export default function TradeDetail() {
       await updateDoc(doc(db, 'listings', trade.listingId), {
         status: 'active',
         stockStatus: 'in_stock',
+        listingStatus: 'available',
+        activeTradeId: null,
         updatedAt: serverTimestamp()
       });
 
@@ -917,33 +1041,27 @@ export default function TradeDetail() {
     setUpdating(true);
 
     try {
-      await addDoc(collection(db, 'trades', id, 'offers'), {
-        type: 'delivery',
+      await sendDeliveryCounterOffer({
+        tradeId: id,
+        deliveryRequestId: trade.deliveryRequestId,
         senderId: user.uid,
-        recipientId,
-        amount,
-        status: 'pending',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-
-      await updateDoc(doc(db, 'trades', id), {
-        deliveryBargainStatus: 'negotiating',
-        updatedAt: serverTimestamp()
+        buyerId: trade.buyerId,
+        driverId: trade.driverId,
+        amount
       });
 
       await sendSystemTradeMessage({
         tradeId: id,
         listingId: trade.listingId,
-        text: `New delivery fee offer: ${formatMoney(amount, 'XAF', 'fr-CM')}. Awaiting response inside Hema Trader.`,
+        text: `${isBuyer ? 'Buyer' : 'Driver'} proposed a delivery fee of ${formatMoney(amount, getTradeCurrency(trade), getTradeLocale(trade))}.`,
         recipientIds: [trade.buyerId, trade.sellerId, trade.driverId],
         sendNotification,
-        title: 'Delivery Fee Offer'
+        title: isBuyer ? 'Buyer Countered Delivery Fee' : 'Driver Countered Delivery Fee'
       });
 
       await sendNotification(recipientId, {
-        title: 'Delivery Fee Offer',
-        body: `${profileData?.displayName || profileData?.name || 'User'} proposed ${formatMoney(amount, 'XAF', 'fr-CM')} for delivery.`,
+        title: 'Delivery Fee Counter Offer',
+        body: `${profileData?.displayName || profileData?.name || 'User'} proposed ${formatMoney(amount, getTradeCurrency(trade), getTradeLocale(trade))} for delivery.`,
         type: 'delivery',
         targetId: id,
         targetType: 'trade',
@@ -1002,12 +1120,10 @@ export default function TradeDetail() {
       }
 
       if (status === 'accepted' && offerType === 'delivery') {
-        await updateDoc(doc(db, 'trades', id), {
-          deliveryFee: amount,
-          driverCommission: amount * 0.8,
-          deliveryBargainStatus: 'accepted',
-          deliveryPaymentStatus: 'pending',
-          updatedAt: serverTimestamp()
+        await lockAgreedDeliveryFee({
+          tradeId: id,
+          deliveryRequestId: trade.deliveryRequestId,
+          amount
         });
       }
 
@@ -1018,7 +1134,7 @@ export default function TradeDetail() {
           }`,
           body:
             offerType === 'delivery'
-              ? `Your delivery offer of ${formatMoney(amount, 'XAF', 'fr-CM')} has been ${status}.`
+              ? `Your delivery offer of ${formatMoney(amount, getTradeCurrency(trade), getTradeLocale(trade))} has been ${status}.`
               : `Your item offer of ${formatTradeAmount(trade, amount)} has been ${status}.`,
           type: offerType === 'delivery' ? 'delivery' : 'offer',
           targetId: id,
@@ -1032,7 +1148,7 @@ export default function TradeDetail() {
         listingId: trade.listingId,
         text:
           offerType === 'delivery'
-            ? `Delivery offer for ${formatMoney(amount, 'XAF', 'fr-CM')} ${status}. ${
+            ? `Delivery offer for ${formatMoney(amount, getTradeCurrency(trade), getTradeLocale(trade))} ${status}. ${
                 status === 'accepted' ? 'Buyer can now pay the delivery fee from Hema Wallet.' : 'You may submit another delivery offer.'
               }`
             : `Item price offer for ${formatTradeAmount(trade, amount)} ${status}. ${
@@ -1053,50 +1169,59 @@ export default function TradeDetail() {
   };
 
   const broadcastRequest = async () => {
-    if (!id || !trade) return;
+    if (!id || !trade || !listing || !isBuyer) return;
 
-    const latitude = profileData?.latitude;
-    const longitude = profileData?.longitude;
+    if (trade.status !== 'funded') {
+      alert('You can request delivery after product payment is completed.');
+      return;
+    }
 
-    if (typeof latitude !== 'number' || typeof longitude !== 'number') {
-      alert('Add your delivery location before broadcasting to drivers.');
+    const proposedFeeInput = window.prompt('Propose a delivery fee in XAF.');
+    const proposedFee = Number(proposedFeeInput);
+
+    if (!Number.isFinite(proposedFee) || proposedFee <= 0) {
+      alert('Enter a valid delivery fee.');
       return;
     }
 
     setBroadcasting(true);
 
     try {
-      const bestDrivers = await findOptimalDrivers(latitude, longitude);
-
-      await updateDoc(doc(db, 'trades', id), {
-        deliveryRequestStatus: 'open',
-        deliveryBargainStatus: 'driver_search',
-        updatedAt: serverTimestamp()
+      const result = await requestDeliveryFromAvailableDrivers({
+        tradeId: id,
+        buyerId: trade.buyerId,
+        sellerId: trade.sellerId,
+        listingId: trade.listingId,
+        listingTitle: listing.title || 'Product delivery',
+        pickupLocation:
+          trade.deliveryPickupAddress ||
+          listing.locationName ||
+          listing.location ||
+          'Seller pickup location',
+        dropoffLocation: buildDropoffAddress(profileData) || 'Buyer delivery location',
+        proposedFee,
+        currency: getTradeCurrency(trade),
+        buyerInfo: {
+          name: profileData?.displayName || profileData?.name || user?.displayName || 'Buyer',
+          location: buildDropoffAddress(profileData)
+        },
+        sellerInfo: {
+          location: listing.locationName || listing.location || 'Seller pickup location'
+        },
+        sendNotification
       });
 
       await sendSystemTradeMessage({
         tradeId: id,
         listingId: trade.listingId,
-        text: `Delivery request broadcasted to ${bestDrivers.length} nearby drivers. The selected driver must accept, then delivery fee bargaining begins.`,
+        text: `Delivery request sent to ${result.driverCount} online available driver${result.driverCount === 1 ? '' : 's'}. Proposed fee: ${formatMoney(proposedFee, getTradeCurrency(trade), getTradeLocale(trade))}.`,
         recipientIds: [trade.buyerId, trade.sellerId],
         sendNotification,
-        title: 'Delivery Broadcast Sent'
+        title: 'Delivery Request Sent'
       });
-
-      await Promise.all(
-        bestDrivers.map(driver =>
-          sendNotification(driver.id, {
-            title: 'New Delivery Opportunity',
-            body: `Nearby delivery request for ${listing?.title || 'an order'}. Open the trade to accept and negotiate delivery fee.`,
-            type: 'delivery',
-            targetId: id,
-            targetType: 'trade',
-            actionUrl: `/trade/${id}`
-          })
-        )
-      );
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `trades/${id}/delivery-broadcast`);
+      const message = handleFirestoreError(err, OperationType.WRITE, `trades/${id}/delivery-request`);
+      alert(message);
     } finally {
       setBroadcasting(false);
     }
@@ -1110,10 +1235,14 @@ export default function TradeDetail() {
     try {
       await updateDoc(doc(db, 'trades', id), {
         driverId,
+        assignedDriverId: driverId,
         deliveryStatus: 'assigned',
         deliveryRequestStatus: 'assigned',
         deliveryBargainStatus: 'awaiting_driver_acceptance',
+        deliveryNegotiationStatus: 'delivery_requested',
         deliveryFee: 0,
+        agreedDeliveryFee: 0,
+        deliveryFeeAgreed: false,
         driverCommission: 0,
         deliveryPaymentStatus: 'unpaid',
         updatedAt: serverTimestamp()
@@ -1146,70 +1275,73 @@ export default function TradeDetail() {
   };
 
   const updateDeliveryStatus = async (tradeId: string, newStatus: string) => {
-    if (!trade || !user) return;
-
-    if (newStatus === 'picked_up' && trade.deliveryPaymentStatus !== 'paid') {
-      alert('Delivery fee must be paid before pickup can begin.');
-      return;
-    }
+    if (!trade || !user || !isDriver) return;
 
     setUpdating(true);
 
     try {
-      const updates: Record<string, any> = {
-        deliveryStatus: newStatus,
-        updatedAt: serverTimestamp()
+      if (
+        newStatus === 'driver_en_route_to_pickup' ||
+        newStatus === 'product_picked_up' ||
+        newStatus === 'delivery_in_progress' ||
+        newStatus === 'delivered'
+      ) {
+        await updateDriverTripStatus({
+          tradeId,
+          deliveryRequestId: trade.deliveryRequestId,
+          driverId: user.uid,
+          status: newStatus
+        });
+      } else {
+        const updates: Record<string, any> = {
+          deliveryStatus: newStatus,
+          deliveryNegotiationStatus: newStatus,
+          deliveryBargainStatus: newStatus,
+          updatedAt: serverTimestamp()
+        };
+
+        if (newStatus === 'accepted') {
+          updates.deliveryBargainStatus = 'negotiating_delivery_fee';
+          updates.deliveryRequestStatus = 'accepted';
+        }
+
+        if (newStatus === 'rejected') {
+          updates.driverId = '';
+          updates.assignedDriverId = '';
+          updates.deliveryRequestStatus = 'driver_rejected';
+          updates.deliveryFee = 0;
+          updates.agreedDeliveryFee = 0;
+          updates.deliveryFeeAgreed = false;
+          updates.driverCommission = 0;
+          updates.deliveryPaymentStatus = 'unpaid';
+        }
+
+        await updateDoc(doc(db, 'trades', tradeId), updates);
+      }
+
+      const messages: Record<string, string> = {
+        accepted:
+          'Driver accepted the delivery request. Buyer and driver can now bargain the delivery fee.',
+        rejected: 'Driver declined delivery. Buyer can request another available driver.',
+        driver_en_route_to_pickup: 'Driver is on the way to pick up the product from the seller.',
+        product_picked_up: 'Driver confirmed product pickup. Buyer and seller have been notified.',
+        delivery_in_progress: 'Driver has started final delivery to the buyer.',
+        delivered: 'Driver marked the delivery as delivered. Buyer should inspect and confirm receipt.'
       };
 
-      if (newStatus === 'accepted') {
-        updates.deliveryBargainStatus = 'negotiating_delivery_fee';
-      }
-
-      if (newStatus === 'rejected') {
-        updates.driverId = '';
-        updates.deliveryBargainStatus = 'rejected';
-        updates.deliveryRequestStatus = 'driver_rejected';
-        updates.deliveryFee = 0;
-        updates.driverCommission = 0;
-        updates.deliveryPaymentStatus = 'unpaid';
-      }
-
-      await updateDoc(doc(db, 'trades', tradeId), updates);
-
-      let message = '';
-
-      if (newStatus === 'accepted') {
-        message = 'Driver accepted the delivery request. Buyer and driver can now bargain delivery fee inside Hema Trader.';
-      }
-
-      if (newStatus === 'picked_up') {
-        message = 'Driver confirmed pickup. Items are now in transit.';
-      }
-
-      if (newStatus === 'delivered') {
-        message = 'Driver confirmed delivery. Buyer should inspect and confirm receipt.';
-      }
-
-      if (newStatus === 'rejected') {
-        message = 'Driver declined delivery. Buyer can select another available driver.';
-      }
-
-      if (message) {
+      if (messages[newStatus]) {
         await sendSystemTradeMessage({
           tradeId,
           listingId: trade.listingId,
-          text: message,
+          text: messages[newStatus],
           recipientIds: [trade.buyerId, trade.sellerId, trade.driverId || ''],
           sendNotification,
           title: 'Delivery Update'
         });
       }
-
-      if (newStatus === 'delivered' && isBuyer) {
-        setShowDriverRating(true);
-      }
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `trades/${tradeId}`);
+      const message = handleFirestoreError(err, OperationType.UPDATE, `trades/${tradeId}/delivery`);
+      alert(message);
     } finally {
       setUpdating(false);
     }
@@ -1274,20 +1406,48 @@ export default function TradeDetail() {
 
   const canNegotiateDelivery =
     Boolean(trade.driverId) &&
-    trade.deliveryStatus === 'accepted' &&
+    (trade.deliveryStatus === 'accepted' ||
+      trade.deliveryBargainStatus === 'negotiating_delivery_fee' ||
+      trade.deliveryNegotiationStatus === 'driver_countered' ||
+      trade.deliveryNegotiationStatus === 'buyer_countered') &&
     trade.deliveryPaymentStatus !== 'paid' &&
     (isBuyer || isDriver);
 
+  const deliveryCountdown = getDeliveryCountdown(trade);
+  const agreedDeliveryFee = Number(trade.agreedDeliveryFee || trade.deliveryFee || 0);
+
   const canPayDelivery =
     isBuyer &&
-    Number(trade.deliveryFee || 0) > 0 &&
-    trade.deliveryBargainStatus === 'accepted' &&
-    trade.deliveryPaymentStatus !== 'paid';
+    agreedDeliveryFee > 0 &&
+    Boolean(
+      trade.deliveryFeeAgreed ||
+        trade.deliveryNegotiationStatus === 'delivery_price_agreed' ||
+        trade.deliveryBargainStatus === 'accepted'
+    ) &&
+    trade.deliveryPaymentStatus !== 'paid' &&
+    trade.status !== 'cancelled';
 
-  const canDriverPickup =
+  const canDriverStartPickup =
     isDriver &&
-    trade.deliveryStatus === 'accepted' &&
-    trade.deliveryPaymentStatus === 'paid';
+    trade.deliveryPaymentStatus === 'paid' &&
+    (trade.deliveryStatus === 'accepted' ||
+      trade.deliveryStatus === 'delivery_fee_paid' ||
+      trade.deliveryNegotiationStatus === 'delivery_fee_paid');
+
+  const canDriverMarkPickedUp =
+    isDriver &&
+    trade.deliveryPaymentStatus === 'paid' &&
+    trade.deliveryStatus === 'driver_en_route_to_pickup';
+
+  const canDriverStartDelivery =
+    isDriver &&
+    trade.deliveryPaymentStatus === 'paid' &&
+    trade.deliveryStatus === 'product_picked_up';
+
+  const canDriverMarkDelivered =
+    isDriver &&
+    trade.deliveryPaymentStatus === 'paid' &&
+    trade.deliveryStatus === 'delivery_in_progress';
 
   const availableDrivers = drivers.filter(driver => {
     if (driver.id === user?.uid) return false;
@@ -1337,7 +1497,7 @@ export default function TradeDetail() {
     steps.push({
       key: 'cancelled',
       label: 'Cancelled',
-      description: 'Trade closed before escrow payment',
+      description: 'Trade closed and refunds are handled by Hema Trader',
       icon: AlertCircle
     });
   }
@@ -1347,7 +1507,7 @@ export default function TradeDetail() {
       ? steps.length - 1
       : trade.status === 'completed'
         ? 3
-        : trade.status === 'shipped' || trade.driverId
+        : trade.status === 'shipped' || trade.driverId || trade.deliveryRequestStatus
           ? 2
           : trade.status === 'funded'
             ? 1
@@ -1356,6 +1516,46 @@ export default function TradeDetail() {
   const currentStep = rawStep >= 0 ? rawStep : 0;
   const stepProgress =
     steps.length > 1 ? (currentStep / (steps.length - 1)) * 100 : 0;
+
+  const driverTripButtons = (
+    <>
+      {canDriverStartPickup && (
+        <button
+          onClick={() => updateDeliveryStatus(trade.id, 'driver_en_route_to_pickup')}
+          className="flex w-full items-center justify-center gap-3 rounded-2xl bg-amber-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
+        >
+          Go to Pickup
+        </button>
+      )}
+
+      {canDriverMarkPickedUp && (
+        <button
+          onClick={() => updateDeliveryStatus(trade.id, 'product_picked_up')}
+          className="flex w-full items-center justify-center gap-3 rounded-2xl bg-amber-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
+        >
+          Product Picked Up
+        </button>
+      )}
+
+      {canDriverStartDelivery && (
+        <button
+          onClick={() => updateDeliveryStatus(trade.id, 'delivery_in_progress')}
+          className="flex w-full items-center justify-center gap-3 rounded-2xl bg-green-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
+        >
+          Start Delivery
+        </button>
+      )}
+
+      {canDriverMarkDelivered && (
+        <button
+          onClick={() => updateDeliveryStatus(trade.id, 'delivered')}
+          className="flex w-full items-center justify-center gap-3 rounded-2xl bg-green-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
+        >
+          Mark Delivered
+        </button>
+      )}
+    </>
+  );
 
   return (
     <div className="mx-auto flex h-[calc(100vh-6rem)] max-w-6xl flex-col gap-6 md:h-[calc(100vh-8rem)]">
@@ -1389,9 +1589,9 @@ export default function TradeDetail() {
             <p className="text-[10px] font-bold uppercase tracking-wider text-amber-500">
               Item: {formatTradeAmount(trade)}
             </p>
-            {trade.deliveryFee ? (
+            {agreedDeliveryFee ? (
               <p className="mt-1 text-[8px] font-bold uppercase tracking-wider text-green-500">
-                Delivery: {formatMoney(trade.deliveryFee, 'XAF', 'fr-CM')}
+                Delivery: {formatMoney(agreedDeliveryFee, getTradeCurrency(trade), getTradeLocale(trade))}
               </p>
             ) : null}
             <p className="mt-1 text-[8px] font-bold uppercase tracking-wider text-slate-700">
@@ -1443,6 +1643,40 @@ export default function TradeDetail() {
               <Truck className="h-4 w-4" />
               Choose Driver
             </button>
+          )}
+
+          {canSelectDriver && (
+            <button
+              onClick={broadcastRequest}
+              disabled={broadcasting || trade.deliveryRequestStatus === 'open'}
+              className="flex w-full items-center justify-center gap-3 rounded-2xl border border-green-500/30 bg-green-500/10 py-5 text-[10px] font-bold uppercase tracking-widest text-green-400 shadow-2xl disabled:opacity-50"
+            >
+              {broadcasting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Truck className="h-4 w-4" />}
+              {trade.deliveryRequestStatus === 'open' ? 'Request Sent' : 'Request Delivery'}
+            </button>
+          )}
+
+          {(deliveryFundingError || deliveryCountdown.active) && (
+            <div className="space-y-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-center">
+              <Clock className="mx-auto h-5 w-5 text-red-400" />
+              <p className="text-[9px] font-black uppercase leading-relaxed tracking-widest text-red-300">
+                {deliveryFundingError || INSUFFICIENT_DELIVERY_FUNDS_MESSAGE}
+              </p>
+
+              {deliveryCountdown.active && (
+                <p className="text-2xl font-black tracking-tight text-white">
+                  {deliveryCountdown.label}
+                </p>
+              )}
+
+              <Link
+                to="/wallet"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-white py-3 text-[10px] font-black uppercase tracking-widest text-black"
+              >
+                <CreditCard className="h-4 w-4" />
+                Fund Account
+              </Link>
+            </div>
           )}
 
           {canPayDelivery && (
@@ -1500,23 +1734,7 @@ export default function TradeDetail() {
             </div>
           )}
 
-          {canDriverPickup && (
-            <button
-              onClick={() => updateDeliveryStatus(trade.id, 'picked_up')}
-              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-amber-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
-            >
-              Confirm Pick Up
-            </button>
-          )}
-
-          {isDriver && trade.deliveryStatus === 'picked_up' && (
-            <button
-              onClick={() => updateDeliveryStatus(trade.id, 'delivered')}
-              className="flex w-full items-center justify-center gap-3 rounded-2xl bg-green-500 py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl"
-            >
-              Confirm Delivery
-            </button>
-          )}
+          {driverTripButtons}
 
           {trade.status === 'shipped' && isBuyer && (
             <button
@@ -1705,7 +1923,7 @@ export default function TradeDetail() {
                     {trade.status === 'pending'
                       ? 'Bargaining Item Price'
                       : trade.status === 'funded'
-                        ? trade.driverId
+                        ? trade.driverId || trade.deliveryRequestStatus
                           ? 'Delivery Setup'
                           : 'Choose Driver'
                         : trade.status === 'shipped'
@@ -1924,7 +2142,7 @@ export default function TradeDetail() {
                       Status
                     </span>
                     <span className="text-[8px] font-black uppercase tracking-widest text-green-500">
-                      {trade.deliveryStatus || 'Assigned'}
+                      {deliveryStatusLabel(trade.deliveryStatus || trade.deliveryNegotiationStatus)}
                     </span>
                   </div>
 
@@ -1933,7 +2151,7 @@ export default function TradeDetail() {
                       Fee
                     </span>
                     <span className="text-[8px] font-black uppercase tracking-widest text-white">
-                      {formatMoney(trade.deliveryFee || 0, 'XAF', 'fr-CM')}
+                      {formatMoney(agreedDeliveryFee, getTradeCurrency(trade), getTradeLocale(trade))}
                     </span>
                   </div>
 
@@ -1942,7 +2160,7 @@ export default function TradeDetail() {
                       Payment
                     </span>
                     <span className="text-[8px] font-black uppercase tracking-widest text-amber-500">
-                      {trade.deliveryPaymentStatus || 'unpaid'}
+                      {deliveryStatusLabel(trade.deliveryPaymentStatus || 'unpaid')}
                     </span>
                   </div>
 
@@ -1981,8 +2199,8 @@ export default function TradeDetail() {
                       <>
                         <Truck className="h-4 w-4" />
                         {trade.deliveryRequestStatus === 'open'
-                          ? 'Broadcast Sent'
-                          : 'Broadcast Request'}
+                          ? 'Request Sent'
+                          : 'Request Delivery'}
                       </>
                     )}
                   </button>
@@ -2046,7 +2264,7 @@ export default function TradeDetail() {
                           </div>
 
                           <p className="text-xl font-bold tracking-tight text-white">
-                            {formatMoney(offer.amount, 'XAF', 'fr-CM')}
+                            {formatMoney(offer.amount, getTradeCurrency(trade), getTradeLocale(trade))}
                           </p>
 
                           {offer.status === 'pending' && offer.senderId !== user?.uid && (
@@ -2092,7 +2310,7 @@ export default function TradeDetail() {
                         min="1"
                         value={newDeliveryOfferAmount}
                         onChange={e => setNewDeliveryOfferAmount(e.target.value)}
-                        placeholder="Delivery fee in XAF"
+                        placeholder={`Delivery fee in ${getTradeCurrency(trade)}`}
                         className="w-full rounded-lg border border-white/5 bg-black/40 px-4 py-2 text-sm text-white focus:border-amber-500 focus:outline-none"
                       />
                       <div className="flex gap-2">
@@ -2115,6 +2333,29 @@ export default function TradeDetail() {
                 </div>
               )}
 
+              {(deliveryFundingError || deliveryCountdown.active) && (
+                <div className="space-y-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-center">
+                  <Clock className="mx-auto h-5 w-5 text-red-400" />
+                  <p className="text-[9px] font-black uppercase leading-relaxed tracking-widest text-red-300">
+                    {deliveryFundingError || INSUFFICIENT_DELIVERY_FUNDS_MESSAGE}
+                  </p>
+
+                  {deliveryCountdown.active && (
+                    <p className="text-2xl font-black tracking-tight text-white">
+                      {deliveryCountdown.label}
+                    </p>
+                  )}
+
+                  <Link
+                    to="/wallet"
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-white py-3 text-[10px] font-black uppercase tracking-widest text-black"
+                  >
+                    <CreditCard className="h-4 w-4" />
+                    Fund Account
+                  </Link>
+                </div>
+              )}
+
               {canPayDelivery && (
                 <button
                   onClick={handleDeliveryPayment}
@@ -2126,23 +2367,7 @@ export default function TradeDetail() {
                 </button>
               )}
 
-              {canDriverPickup && (
-                <button
-                  onClick={() => updateDeliveryStatus(trade.id, 'picked_up')}
-                  className="w-full rounded-xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-widest text-black"
-                >
-                  Confirm Pick Up
-                </button>
-              )}
-
-              {isDriver && trade.deliveryStatus === 'picked_up' && (
-                <button
-                  onClick={() => updateDeliveryStatus(trade.id, 'delivered')}
-                  className="w-full rounded-xl bg-green-500 py-4 text-[10px] font-black uppercase tracking-widest text-black"
-                >
-                  Confirm Delivery
-                </button>
-              )}
+              {driverTripButtons}
 
               {trade.deliveryRequestId && (
                 <Link
@@ -2211,7 +2436,9 @@ export default function TradeDetail() {
                   <AlertCircle className="mx-auto h-10 w-10 text-slate-500" />
                   <p className="font-serif text-lg text-white">Trade Cancelled</p>
                   <p className="text-[9px] uppercase leading-relaxed tracking-widest text-slate-500">
-                    This bargain was closed before escrow payment.
+                    {trade.autoCancelReason === 'delivery_payment_not_funded'
+                      ? DELIVERY_AUTO_CANCEL_MESSAGE
+                      : 'This bargain was closed before completion.'}
                   </p>
                 </div>
               )}
