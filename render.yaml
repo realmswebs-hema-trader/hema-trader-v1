@@ -1,11 +1,15 @@
 services:
   - type: web
     name: hema-trader-v1-web
-    runtime: node
+    env: node
     plan: free
-    buildCommand: npm install --include=dev && npm run build
-    startCommand: npm start
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
