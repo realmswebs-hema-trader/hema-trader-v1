@@ -93,11 +93,7 @@ const getCurrencyInfo = (profile: any) => {
   return countryCurrencyMap[countryKey] || countryCurrencyMap.cameroon;
 };
 
-const formatMoney = (
-  amount: number,
-  currencyCode: string,
-  locale: string
-) => {
+const formatMoney = (amount: number, currencyCode: string, locale: string) => {
   try {
     return new Intl.NumberFormat(locale, {
       style: 'currency',
@@ -240,7 +236,7 @@ export default function CreateListing() {
   const uploadListingImagesSafely = async () => {
     const imageUrls: string[] = [];
     const failedImageNames: string[] = [];
-    const sellerId = profile?.userId || user?.uid || 'unknown';
+    const sellerId = user?.uid || 'unknown';
 
     for (const image of images) {
       try {
@@ -317,9 +313,12 @@ export default function CreateListing() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!profile || !user) return;
+    if (!user) {
+      alert('Please sign in before posting a listing.');
+      return;
+    }
 
-    if (profile.verificationStatus !== 'verified') {
+    if (profile?.verificationStatus && profile.verificationStatus !== 'verified') {
       const proceed = window.confirm(
         'Your account is not verified yet. You can still list items and trade, but buyers will see you as an unverified seller until you complete verification.\n\nContinue posting this listing?'
       );
@@ -342,7 +341,7 @@ export default function CreateListing() {
         );
       }
 
-      const sellerId = profile.userId || user.uid;
+      const sellerId = user.uid;
       const listingLatitude = activeLocation?.latitude ?? null;
       const listingLongitude = activeLocation?.longitude ?? null;
       const priceValue = parseFloat(formData.price) || 0;
@@ -404,7 +403,11 @@ export default function CreateListing() {
       navigate('/');
     } catch (error) {
       console.error('Submit error', error);
-      alert('Listing authorization failed.');
+      alert(
+        error instanceof Error
+          ? `Listing authorization failed: ${error.message}`
+          : 'Listing authorization failed.'
+      );
     } finally {
       setLoading(false);
     }
