@@ -34,6 +34,12 @@ const DEFAULT_WALLET_CURRENCY =
 const PLATFORM_FEE_RATE = Number(process.env.PLATFORM_FEE_RATE || 0.02);
 const MAX_PIN_ATTEMPTS = 5;
 const PIN_LOCK_MINUTES = 15;
+const DELIVERY_PAYMENT_TIMEOUT_MS = 30 * 60 * 1000;
+const INSUFFICIENT_DELIVERY_FUNDS_CODE = 'INSUFFICIENT_DELIVERY_FUNDS';
+const INSUFFICIENT_DELIVERY_FUNDS_MESSAGE =
+  'Your Hema Trader balance is not enough to hire this driver. Please fund your account to continue delivery.';
+const DELIVERY_AUTO_CANCEL_MESSAGE =
+  'Delivery payment was not completed within 30 minutes. The trade has been cancelled and the buyer has been refunded.';
 
 const require = createRequire(import.meta.url);
 const bcrypt = require('bcryptjs') as {
@@ -312,6 +318,215 @@ const assertWalletIsUsable = (wallet: any) => {
   if (wallet?.frozen) {
     throw new Error('Wallet is frozen. Contact support.');
   }
+};
+
+const timestampToMillis = (value: any) => {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value.seconds === 'number') return value.seconds * 1000;
+  if (typeof value._seconds === 'number') return value._seconds * 1000;
+
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const deliveryPaymentDeadline = () =>
+  Timestamp.fromDate(new Date(Date.now() + DELIVERY_PAYMENT_TIMEOUT_MS));
+
+const getDeliveryFeeAmount = (trade: any) =>
+  roundMoney(trade.agreedDeliveryFee || trade.deliveryFee || trade.deliveryPaymentAmount);
+
+const getTradeCurrency = (trade: any) =>
+  trade.paymentCurrency ||
+  trade.currencyCode ||
+  trade.currency ||
+  DEFAULT_WALLET_CURRENCY;
+
+const isAdminUser = async (userId: string, email?: string) => {
+  if (email === 'realmswebs@gmail.com') return true;
+
+  const [adminSnap, userSnap] = await Promise.all([
+    db.collection('admins').doc(userId).get(),
+    db.collection('users').doc(userId).get()
+  ]);
+
+  const userData = userSnap.data() || {};
+
+  return (
+    adminSnap.exists ||
+    userData.isAdmin === true ||
+    userData.roles?.includes?.('admin')
+  );
+};
+
+const refundProductEscrowForTrade = async (
+  tradeId: string,
+  reason = 'delivery_payment_not_funded'
+) => {
+  const tradeRef = db.collection('trades').doc(tradeId);
+  let summary: any = null;
+
+  await db.runTransaction(async tx => {
+    const tradeSnap = await tx.get(tradeRef);
+
+    if (!tradeSnap.exists) throw new Error('Trade not found.');
+
+    const trade = tradeSnap.data() || {};
+
+    if (trade.refundProcessed === true) {
+      summary = {
+        tradeId,
+        cancelled: trade.status === 'cancelled',
+        refundProcessed: true,
+        alreadyRefunded: true,
+        buyerId: trade.buyerId,
+        sellerId: trade.sellerId,
+        driverId: trade.driverId || trade.assignedDriverId || '',
+        listingId: trade.listingId || ''
+      };
+      return;
+    }
+
+    const productWasFunded =
+      trade.paymentStatus === 'wallet_escrowed' ||
+      trade.escrowStatus === 'funded' ||
+      trade.status === 'funded' ||
+      trade.status === 'shipped';
+
+    if (!productWasFunded) {
+      throw new Error('Product payment has not been funded, so no refund is due.');
+    }
+
+    if (trade.status === 'completed') {
+      throw new Error('Completed trades cannot be automatically refunded.');
+    }
+
+    const amount = roundMoney(trade.paymentAmount || trade.amount);
+    const currency = getTradeCurrency(trade);
+
+    if (amount <= 0) {
+      throw new Error('Refund amount is invalid.');
+    }
+
+    const listingRef = trade.listingId
+      ? db.collection('listings').doc(trade.listingId)
+      : null;
+    const listingSnap = listingRef ? await tx.get(listingRef) : null;
+    const listing = listingSnap?.data() || {};
+    const isSingleListing =
+      trade.listingInventoryType === 'single' ||
+      listing.inventoryType === 'single';
+
+    const buyerWallet = await ensureWalletInTransaction(tx, trade.buyerId, currency);
+
+    if (Number(buyerWallet.escrowBalance || 0) < amount) {
+      throw new Error('Buyer escrow balance is lower than the refund amount.');
+    }
+
+    tx.set(
+      walletRef(trade.buyerId),
+      {
+        escrowBalance: FieldValue.increment(-amount),
+        availableBalance: FieldValue.increment(amount),
+        updatedAt: now()
+      },
+      { merge: true }
+    );
+
+    tx.update(tradeRef, {
+      status: 'cancelled',
+      escrowStatus: 'refunded',
+      paymentStatus: 'refunded',
+      deliveryRequestStatus: 'cancelled',
+      deliveryStatus: 'cancelled',
+      deliveryNegotiationStatus: 'cancelled',
+      deliveryBargainStatus: 'cancelled',
+      autoCancelReason: reason,
+      cancellationReason: DELIVERY_AUTO_CANCEL_MESSAGE,
+      refundProcessed: true,
+      refundProcessedAt: now(),
+      cancelledAt: now(),
+      updatedAt: now()
+    });
+
+    writeLedger(tx, `product_refund_${tradeId}`, {
+      userId: trade.buyerId,
+      tradeId,
+      listingId: trade.listingId || '',
+      type: 'product_refund',
+      amount,
+      currency,
+      direction: 'credit',
+      status: 'completed',
+      reason
+    });
+
+    if (listingRef && listingSnap?.exists && isSingleListing) {
+      if (listing.activeTradeId === tradeId && listing.listingStatus !== 'sold') {
+        tx.set(
+          listingRef,
+          {
+            status: 'active',
+            stockStatus: 'in_stock',
+            listingStatus: 'available',
+            activeTradeId: null,
+            reservedAt: null,
+            updatedAt: now()
+          },
+          { merge: true }
+        );
+      }
+    }
+
+    summary = {
+      tradeId,
+      cancelled: true,
+      refundProcessed: true,
+      amount,
+      currency,
+      buyerId: trade.buyerId,
+      sellerId: trade.sellerId,
+      driverId: trade.driverId || trade.assignedDriverId || '',
+      listingId: trade.listingId || ''
+    };
+  });
+
+  return summary;
+};
+
+const notifyAutoCancellation = async (summary: any) => {
+  if (!summary?.buyerId) return;
+
+  await Promise.all([
+    sendNotification(summary.buyerId, {
+      title: 'Trade Cancelled',
+      body: DELIVERY_AUTO_CANCEL_MESSAGE,
+      type: 'trade_update',
+      targetType: 'trade',
+      targetId: summary.tradeId,
+      actionUrl: `/trade/${summary.tradeId}`
+    }),
+    sendNotification(summary.sellerId, {
+      title: 'Trade Cancelled',
+      body: 'Delivery payment was not funded on time. The buyer has been refunded and the item is available again if eligible.',
+      type: 'trade_update',
+      targetType: 'trade',
+      targetId: summary.tradeId,
+      actionUrl: `/trade/${summary.tradeId}`
+    }),
+    summary.driverId
+      ? sendNotification(summary.driverId, {
+          title: 'Delivery Cancelled',
+          body: 'The delivery was cancelled because the buyer did not fund delivery on time.',
+          type: 'delivery',
+          targetType: 'trade',
+          targetId: summary.tradeId,
+          actionUrl: `/trade/${summary.tradeId}`
+        })
+      : Promise.resolve()
+  ]);
 };
 
 const getCampayToken = async () => {
@@ -1066,6 +1281,7 @@ app.post(
         status: buyerRisk.level === 'high' ? 'disputed' : 'funded',
         escrowStatus: buyerRisk.level === 'high' ? 'reviewing' : 'funded',
         paymentStatus: 'wallet_escrowed',
+        productPaymentStatus: 'paid',
         paymentProvider: 'hema_wallet',
         paymentAmount: amount,
         paymentCurrency: currency,
@@ -1114,6 +1330,84 @@ app.post(
   })
 );
 
+app.get(
+  '/api/delivery/validate-wallet',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = getUserId(req);
+    const tradeId = String(req.query.tradeId || req.body?.tradeId || '');
+
+    if (!tradeId) {
+      res.status(400).json({ error: 'Missing tradeId.' });
+      return;
+    }
+
+    const tradeRef = db.collection('trades').doc(tradeId);
+    let result: any = null;
+
+    await db.runTransaction(async tx => {
+      const tradeSnap = await tx.get(tradeRef);
+
+      if (!tradeSnap.exists) throw new Error('Trade not found.');
+
+      const trade = tradeSnap.data() || {};
+
+      if (trade.buyerId !== userId) {
+        throw new Error('Only the buyer can validate delivery payment.');
+      }
+
+      if (!trade.driverId && !trade.assignedDriverId) {
+        throw new Error('A driver must be selected first.');
+      }
+
+      if (trade.paymentStatus !== 'wallet_escrowed') {
+        throw new Error('Product payment must be completed before delivery can be paid.');
+      }
+
+      const amount = getDeliveryFeeAmount(trade);
+
+      if (amount <= 0 || !trade.deliveryFeeAgreed) {
+        throw new Error('Delivery fee has not been agreed yet.');
+      }
+
+      const currency = getTradeCurrency(trade);
+      const wallet = await ensureWalletInTransaction(tx, userId, currency);
+
+      assertWalletIsUsable(wallet);
+
+      const availableBalance = Number(wallet.availableBalance || 0);
+      const canPay =
+        trade.deliveryPaymentStatus === 'paid' ||
+        availableBalance >= amount;
+      const existingDeadline = trade.deliveryPaymentDeadlineAt || null;
+      const deadline = existingDeadline || deliveryPaymentDeadline();
+
+      if (!canPay) {
+        tx.update(tradeRef, {
+          deliveryPaymentStatus: 'pending_funding',
+          deliveryPaymentRequiredAt: trade.deliveryPaymentRequiredAt || now(),
+          deliveryPaymentDeadlineAt: deadline,
+          autoCancelReason: 'delivery_payment_not_funded',
+          updatedAt: now()
+        });
+      }
+
+      result = {
+        canPay,
+        availableBalance,
+        requiredAmount: amount,
+        shortfall: Math.max(amount - availableBalance, 0),
+        currency,
+        message: canPay ? '' : INSUFFICIENT_DELIVERY_FUNDS_MESSAGE,
+        deliveryPaymentRequiredAt: trade.deliveryPaymentRequiredAt || null,
+        deliveryPaymentDeadlineAt: deadline
+      };
+    });
+
+    res.json(result);
+  })
+);
+
 app.post(
   '/api/delivery/pay-from-wallet',
   requireAuth,
@@ -1121,6 +1415,7 @@ app.post(
     const userId = getUserId(req);
     const walletPin = String(req.body.walletPin || '');
     const tradeId = String(req.body.tradeId || '');
+    const requestDeliveryRequestId = String(req.body.deliveryRequestId || '');
 
     await verifyWalletPinOrThrow(userId, walletPin);
 
@@ -1130,6 +1425,7 @@ app.post(
     }
 
     const tradeRef = db.collection('trades').doc(tradeId);
+    let paymentResult: any = null;
 
     await db.runTransaction(async tx => {
       const tradeSnap = await tx.get(tradeRef);
@@ -1142,18 +1438,31 @@ app.post(
         throw new Error('Only the buyer can pay delivery escrow.');
       }
 
-      if (!trade.driverId) {
+      if (!trade.driverId && !trade.assignedDriverId) {
         throw new Error('A driver must be selected first.');
       }
 
-      if (trade.deliveryPaymentStatus === 'paid') {
-        throw new Error('Delivery escrow is already paid.');
+      if (trade.paymentStatus !== 'wallet_escrowed') {
+        throw new Error('Product payment must be completed before delivery can be paid.');
       }
 
-      const amount = roundMoney(trade.deliveryFee);
-      const currency = DEFAULT_WALLET_CURRENCY;
+      if (trade.deliveryPaymentStatus === 'paid') {
+        paymentResult = {
+          ok: true,
+          alreadyPaid: true,
+          status: 'paid',
+          tradeId,
+          deliveryRequestId: trade.deliveryRequestId || requestDeliveryRequestId || '',
+          agreedFee: getDeliveryFeeAmount(trade)
+        };
+        return;
+      }
 
-      if (amount <= 0) {
+      const amount = getDeliveryFeeAmount(trade);
+      const currency = getTradeCurrency(trade);
+      const driverId = trade.driverId || trade.assignedDriverId;
+
+      if (amount <= 0 || !trade.deliveryFeeAgreed) {
         throw new Error('Delivery fee has not been agreed yet.');
       }
 
@@ -1161,8 +1470,30 @@ app.post(
 
       assertWalletIsUsable(buyerWallet);
 
-      if (Number(buyerWallet.availableBalance || 0) < amount) {
-        throw new Error('Insufficient Hema wallet balance.');
+      const availableBalance = Number(buyerWallet.availableBalance || 0);
+
+      if (availableBalance < amount) {
+        const deadline = trade.deliveryPaymentDeadlineAt || deliveryPaymentDeadline();
+
+        tx.update(tradeRef, {
+          deliveryPaymentStatus: 'pending_funding',
+          deliveryPaymentRequiredAt: trade.deliveryPaymentRequiredAt || now(),
+          deliveryPaymentDeadlineAt: deadline,
+          autoCancelReason: 'delivery_payment_not_funded',
+          updatedAt: now()
+        });
+
+        paymentResult = {
+          ok: false,
+          code: INSUFFICIENT_DELIVERY_FUNDS_CODE,
+          message: INSUFFICIENT_DELIVERY_FUNDS_MESSAGE,
+          availableBalance,
+          requiredAmount: amount,
+          shortfall: amount - availableBalance,
+          currency,
+          deliveryPaymentDeadlineAt: deadline
+        };
+        return;
       }
 
       tx.set(
@@ -1177,13 +1508,33 @@ app.post(
 
       tx.update(tradeRef, {
         deliveryPaymentStatus: 'paid',
-        deliveryBargainStatus: 'paid',
+        deliveryNegotiationStatus: 'delivery_fee_paid',
+        deliveryBargainStatus: 'delivery_fee_paid',
+        deliveryStatus: 'delivery_fee_paid',
         deliveryPaymentProvider: 'hema_wallet',
         deliveryPaymentAmount: amount,
+        deliveryFeePaid: amount,
         deliveryPaymentCurrency: currency,
+        deliveryFeePaidAt: now(),
         deliveryPaidAt: now(),
+        assignedDriverId: driverId,
         updatedAt: now()
       });
+
+      const deliveryRequestId = trade.deliveryRequestId || requestDeliveryRequestId;
+
+      if (deliveryRequestId) {
+        tx.set(
+          db.collection('deliveryRequests').doc(deliveryRequestId),
+          {
+            status: 'delivery_fee_paid',
+            agreedFee: amount,
+            deliveryFeePaidAt: now(),
+            updatedAt: now()
+          },
+          { merge: true }
+        );
+      }
 
       writeLedger(tx, `delivery_escrow_hold_${tradeId}`, {
         userId,
@@ -1193,33 +1544,174 @@ app.post(
         direction: 'debit',
         status: 'held',
         tradeId,
-        counterpartyId: trade.driverId
+        deliveryRequestId: deliveryRequestId || '',
+        counterpartyId: driverId
       });
+
+      paymentResult = {
+        ok: true,
+        status: 'paid',
+        tradeId,
+        deliveryRequestId: deliveryRequestId || '',
+        agreedFee: amount,
+        deliveryFeePaid: amount,
+        walletTransactionId: `delivery_escrow_hold_${tradeId}`
+      };
     });
 
-    const tradeSnap = await tradeRef.get();
+    if (!paymentResult?.ok) {
+      const tradeSnap = await tradeRef.get();
+      const trade = tradeSnap.data() || {};
+
+      await sendNotification(trade.buyerId || userId, {
+        title: 'Fund Account Required',
+        body: INSUFFICIENT_DELIVERY_FUNDS_MESSAGE,
+        type: 'wallet',
+        targetType: 'trade',
+        targetId: tradeId,
+        actionUrl: '/wallet'
+      });
+
+      res.status(402).json(paymentResult);
+      return;
+    }
+
+    if (!paymentResult.alreadyPaid) {
+      const tradeSnap = await tradeRef.get();
+      const trade = tradeSnap.data() || {};
+
+      await Promise.all([
+        sendNotification(trade.buyerId, {
+          title: 'Delivery Fee Paid',
+          body: 'Delivery payment is locked until delivery is completed.',
+          type: 'delivery',
+          targetType: 'trade',
+          targetId: tradeId,
+          actionUrl: `/trade/${tradeId}`
+        }),
+        sendNotification(trade.driverId || trade.assignedDriverId, {
+          title: 'Delivery Payment Secured',
+          body: 'The buyer has locked your delivery fee in escrow. You can now start pickup.',
+          type: 'delivery',
+          targetType: 'trade',
+          targetId: tradeId,
+          actionUrl: `/trade/${tradeId}`
+        })
+      ]);
+    }
+
+    res.json(paymentResult);
+  })
+);
+
+app.post(
+  '/api/trades/auto-cancel-unfunded-delivery',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = getUserId(req);
+    const tradeId = String(req.body.tradeId || '');
+
+    if (!tradeId) {
+      res.status(400).json({ error: 'Missing tradeId.' });
+      return;
+    }
+
+    const tradeSnap = await db.collection('trades').doc(tradeId).get();
+
+    if (!tradeSnap.exists) {
+      res.status(404).json({ error: 'Trade not found.' });
+      return;
+    }
+
     const trade = tradeSnap.data() || {};
+    const isParticipant =
+      trade.buyerId === userId ||
+      trade.sellerId === userId ||
+      trade.driverId === userId ||
+      trade.assignedDriverId === userId;
 
-    await Promise.all([
-      sendNotification(trade.buyerId, {
-        title: 'Delivery Escrow Funded',
-        body: 'Delivery payment is locked until delivery is completed.',
-        type: 'delivery',
-        targetType: 'trade',
-        targetId: tradeId,
-        actionUrl: `/trade/${tradeId}`
-      }),
-      sendNotification(trade.driverId, {
-        title: 'Delivery Payment Secured',
-        body: 'The buyer has locked your delivery fee in escrow.',
-        type: 'delivery',
-        targetType: 'trade',
-        targetId: tradeId,
-        actionUrl: `/trade/${tradeId}`
-      })
-    ]);
+    if (!isParticipant && !(await isAdminUser(userId, req.user?.email))) {
+      res.status(403).json({ error: 'You cannot cancel this trade.' });
+      return;
+    }
 
-    res.json({ ok: true, status: 'paid' });
+    if (trade.deliveryPaymentStatus === 'paid') {
+      res.status(400).json({ error: 'Delivery payment has already been completed.' });
+      return;
+    }
+
+    if (trade.deliveryPaymentStatus !== 'pending_funding') {
+      res.status(400).json({ error: 'This trade is not waiting for delivery funding.' });
+      return;
+    }
+
+    const deadlineMillis = timestampToMillis(trade.deliveryPaymentDeadlineAt);
+
+    if (!deadlineMillis || deadlineMillis > Date.now()) {
+      res.status(400).json({ error: 'Delivery payment deadline has not expired yet.' });
+      return;
+    }
+
+    const summary = await refundProductEscrowForTrade(
+      tradeId,
+      'delivery_payment_not_funded'
+    );
+
+    await notifyAutoCancellation(summary);
+
+    res.json({
+      ok: true,
+      ...summary,
+      message: DELIVERY_AUTO_CANCEL_MESSAGE
+    });
+  })
+);
+
+app.post(
+  '/api/trades/refund-product-payment',
+  requireAuth,
+  asyncRoute(async (req, res) => {
+    const userId = getUserId(req);
+    const tradeId = String(req.body.tradeId || '');
+    const reason = String(req.body.reason || 'manual_product_refund');
+
+    if (!tradeId) {
+      res.status(400).json({ error: 'Missing tradeId.' });
+      return;
+    }
+
+    const tradeSnap = await db.collection('trades').doc(tradeId).get();
+
+    if (!tradeSnap.exists) {
+      res.status(404).json({ error: 'Trade not found.' });
+      return;
+    }
+
+    const trade = tradeSnap.data() || {};
+    const isAdmin = await isAdminUser(userId, req.user?.email);
+
+    if (!isAdmin && trade.status !== 'cancelled') {
+      res.status(403).json({
+        error: 'Only admins can refund an active funded trade.'
+      });
+      return;
+    }
+
+    const summary = await refundProductEscrowForTrade(tradeId, reason);
+
+    await sendNotification(summary.buyerId, {
+      title: 'Buyer Refunded',
+      body: 'Your product payment has been returned to your Hema Trader wallet.',
+      type: 'wallet',
+      targetType: 'trade',
+      targetId: tradeId,
+      actionUrl: '/wallet'
+    });
+
+    res.json({
+      ok: true,
+      ...summary
+    });
   })
 );
 
@@ -1274,6 +1766,15 @@ app.post(
           : 0;
 
       const totalHeld = amount + deliveryAmount;
+      const singleListingRef = trade.listingId
+        ? db.collection('listings').doc(trade.listingId)
+        : null;
+      const singleListingSnap = singleListingRef ? await tx.get(singleListingRef) : null;
+      const singleListing = singleListingSnap?.data() || {};
+      const isSingleListing =
+        trade.listingInventoryType === 'single' ||
+        singleListing.inventoryType === 'single';
+
       const buyerWallet = await ensureWalletInTransaction(tx, trade.buyerId, currency);
 
       if (Number(buyerWallet.escrowBalance || 0) < totalHeld) {
@@ -1368,11 +1869,31 @@ app.post(
         status: 'completed',
         escrowStatus: 'released',
         paymentStatus: 'released',
+        deliveryNegotiationStatus: trade.driverId
+          ? 'completed'
+          : trade.deliveryNegotiationStatus || null,
+        deliveryStatus: trade.driverId ? 'completed' : trade.deliveryStatus || null,
         sellerPayout,
         platformFee,
         completedAt: now(),
         updatedAt: now()
       });
+
+      if (singleListingRef && singleListingSnap?.exists && isSingleListing) {
+        tx.set(
+          singleListingRef,
+          {
+            status: 'sold',
+            stockStatus: 'sold',
+            listingStatus: 'sold',
+            activeTradeId: null,
+            soldAt: now(),
+            soldByTradeId: tradeId,
+            updatedAt: now()
+          },
+          { merge: true }
+        );
+      }
 
       releaseSummary = {
         sellerPayout,
@@ -1627,7 +2148,7 @@ app.all(
         }
 
         if (status === 'FAILED') {
-          await completeFailedWithdrawal(withdrawalDoc.id, 'CamPay marked payout failed.');
+          await completeFailedWithdrawal(withdrawDoc.id, 'CamPay marked payout failed.');
         }
 
         handled = true;
@@ -1859,6 +2380,41 @@ async function setupVite() {
       console.error('Notification queue error:', err);
     }
   }, 10000);
+
+  setInterval(async () => {
+    try {
+      const snap = await db
+        .collection('trades')
+        .where('deliveryPaymentStatus', '==', 'pending_funding')
+        .limit(50)
+        .get();
+
+      const expiredTrades = snap.docs.filter(docSnap => {
+        const trade = docSnap.data() || {};
+        const deadlineMillis = timestampToMillis(trade.deliveryPaymentDeadlineAt);
+        return deadlineMillis > 0 && deadlineMillis <= Date.now();
+      });
+
+      await Promise.all(
+        expiredTrades.map(async docSnap => {
+          try {
+            const summary = await refundProductEscrowForTrade(
+              docSnap.id,
+              'delivery_payment_not_funded'
+            );
+
+            if (summary?.refundProcessed) {
+              await notifyAutoCancellation(summary);
+            }
+          } catch (err) {
+            console.error(`Auto-cancel failed for trade ${docSnap.id}:`, err);
+          }
+        })
+      );
+    } catch (err) {
+      console.error('Delivery payment auto-cancel worker error:', err);
+    }
+  }, 60000);
 }
 
 setupVite();
