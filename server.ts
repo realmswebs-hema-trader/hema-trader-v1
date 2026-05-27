@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
@@ -17,7 +18,7 @@ const app = express();
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '2mb' }));
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 10000);
 
 const CAMPAY_BASE_URL =
   process.env.CAMPAY_BASE_URL ||
@@ -2148,7 +2149,7 @@ app.all(
         }
 
         if (status === 'FAILED') {
-          await completeFailedWithdrawal(withdrawDoc.id, 'CamPay marked payout failed.');
+         await completeFailedWithdrawal(withdrawalDoc.id, 'CamPay marked payout failed.');
         }
 
         handled = true;
@@ -2306,56 +2307,78 @@ app.use(
 async function setupVite() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        host: '0.0.0.0'
+      },
       appType: 'spa'
     });
 
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    const indexPath = path.join(distPath, 'index.html');
     const assetsPath = path.join(distPath, 'assets');
 
-    app.use(
-      '/assets',
-      express.static(assetsPath, {
-        maxAge: '1y',
-        immutable: true
-      })
-    );
+    console.log('Production static path:', distPath);
+    console.log('Frontend index exists:', fs.existsSync(indexPath));
 
-    app.use(
-      express.static(distPath, {
-        etag: false,
-        lastModified: false,
-        setHeaders: (res, filePath) => {
-          if (filePath.endsWith('index.html')) {
-            res.setHeader(
-              'Cache-Control',
-              'no-store, no-cache, must-revalidate, proxy-revalidate'
-            );
-            res.setHeader('Pragma', 'no-cache');
-            res.setHeader('Expires', '0');
-          } else {
-            res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+    if (fs.existsSync(assetsPath)) {
+      app.use(
+        '/assets',
+        express.static(assetsPath, {
+          maxAge: '1y',
+          immutable: true
+        })
+      );
+    }
+
+    if (fs.existsSync(distPath)) {
+      app.use(
+        express.static(distPath, {
+          etag: false,
+          lastModified: false,
+          setHeaders: (res, filePath) => {
+            if (filePath.endsWith('index.html')) {
+              res.setHeader(
+                'Cache-Control',
+                'no-store, no-cache, must-revalidate, proxy-revalidate'
+              );
+              res.setHeader('Pragma', 'no-cache');
+              res.setHeader('Expires', '0');
+            } else {
+              res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
+            }
           }
-        }
-      })
-    );
+        })
+      );
+    }
 
-    app.get('*', (_req, res) => {
+    app.get(/.*/, (_req, res) => {
+      if (!fs.existsSync(indexPath)) {
+        res.status(200).send(
+          'Hema Trader API is running, but the frontend build was not found. Run the Render build command before starting the server.'
+        );
+        return;
+      }
+
       res.setHeader(
         'Cache-Control',
         'no-store, no-cache, must-revalidate, proxy-revalidate'
       );
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
-      res.sendFile(path.join(distPath, 'index.html'));
+      res.sendFile(indexPath);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Hema Trader wallet server running at http://0.0.0.0:${PORT}`);
+    console.log(`Health check: http://0.0.0.0:${PORT}/api/health`);
   });
+
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
 
   setInterval(async () => {
     try {
@@ -2417,4 +2440,7 @@ async function setupVite() {
   }, 60000);
 }
 
-setupVite();
+setupVite().catch(err => {
+  console.error('Server startup failed:', err);
+  process.exit(1);
+});
