@@ -19,6 +19,7 @@ import {
   Loader2,
   MapPin,
   Navigation,
+  Package,
   WifiOff,
   X
 } from 'lucide-react';
@@ -34,6 +35,8 @@ interface ListingGpsLocation {
   source: 'profile' | 'browser';
 }
 
+type InventoryType = 'single' | 'stock';
+
 const countryCurrencyMap: Record<string, { code: string; locale: string; label: string }> = {
   cameroon: { code: 'XAF', locale: 'fr-CM', label: 'XAF / FCFA' },
   nigeria: { code: 'NGN', locale: 'en-NG', label: 'NGN' },
@@ -47,6 +50,23 @@ const countryCurrencyMap: Record<string, { code: string; locale: string; label: 
   south_africa: { code: 'ZAR', locale: 'en-ZA', label: 'ZAR' },
   united_states: { code: 'USD', locale: 'en-US', label: 'USD' }
 };
+
+const inventoryOptions: Array<{
+  value: InventoryType;
+  label: string;
+  helper: string;
+}> = [
+  {
+    value: 'single',
+    label: 'Single Product',
+    helper: 'Only one buyer can trade for this item. Once sold, it is closed.'
+  },
+  {
+    value: 'stock',
+    label: 'In Stock / Multiple Available',
+    helper: 'Multiple buyers may request this product while stock is available.'
+  }
+];
 
 const safeCoordinate = (value: any) => {
   const parsed = Number(value);
@@ -112,7 +132,8 @@ export default function CreateListing() {
     price: '',
     quantity: '',
     category: 'Animals',
-    location: ''
+    location: '',
+    inventoryType: 'single' as InventoryType
   });
 
   const [metadata, setMetadata] = useState<Record<string, string>>({});
@@ -350,6 +371,11 @@ export default function CreateListing() {
         quantity: formData.quantity.trim(),
         category: formData.category,
         metadata,
+        inventoryType: formData.inventoryType,
+        listingStatus: 'available',
+        activeTradeId: null,
+        soldAt: null,
+        reservedAt: null,
         location: formData.location.trim(),
         locationName: formData.location.trim(),
         latitude: listingLatitude,
@@ -543,6 +569,60 @@ export default function CreateListing() {
         <div className="space-y-4">
           <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
             <div className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+            Inventory Type
+          </label>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {inventoryOptions.map(option => {
+              const selected = formData.inventoryType === option.value;
+
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() =>
+                    setFormData(prev => ({
+                      ...prev,
+                      inventoryType: option.value
+                    }))
+                  }
+                  className={`flex min-h-32 flex-col items-start justify-between rounded-2xl border p-4 text-left transition-all ${
+                    selected
+                      ? 'border-amber-500 bg-amber-500/10 shadow-[0_0_24px_rgba(245,158,11,0.08)]'
+                      : 'border-white/5 bg-black/30 hover:border-white/15'
+                  }`}
+                >
+                  <div className="flex w-full items-start justify-between gap-3">
+                    <div className="rounded-xl bg-white/5 p-2">
+                      <Package className={`h-5 w-5 ${selected ? 'text-amber-400' : 'text-slate-500'}`} />
+                    </div>
+
+                    <span
+                      className={`h-4 w-4 rounded-full border ${
+                        selected
+                          ? 'border-amber-500 bg-amber-500'
+                          : 'border-white/20 bg-black'
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-white">
+                      {option.label}
+                    </p>
+                    <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                      {option.helper}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <label className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+            <div className="h-1.5 w-1.5 rounded-full bg-amber-500" />
             Title
           </label>
           <input
@@ -581,7 +661,11 @@ export default function CreateListing() {
               type="text"
               value={formData.quantity}
               onChange={e => setFormData({ ...formData, quantity: e.target.value })}
-              placeholder="e.g. 50 Bags, 20 Heads..."
+              placeholder={
+                formData.inventoryType === 'single'
+                  ? 'e.g. 1 unit'
+                  : 'e.g. 50 Bags, 20 Heads...'
+              }
               className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
             />
           </div>
