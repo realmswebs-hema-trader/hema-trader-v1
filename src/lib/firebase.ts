@@ -2,13 +2,21 @@ import {
   FirebaseError,
   getApp,
   getApps,
-  initializeApp
+  initializeApp,
+  type FirebaseApp
 } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  runTransaction,
+  serverTimestamp,
+  Timestamp,
+  writeBatch
+} from 'firebase/firestore';
+import { getFunctions } from 'firebase/functions';
 import { getStorage } from 'firebase/storage';
 
-const firebaseConfig = {
+const requiredEnv = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -17,11 +25,43 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+const missingEnvKeys = Object.entries(requiredEnv)
+  .filter(([, value]) => !value)
+  .map(([key]) => key);
+
+if (missingEnvKeys.length > 0) {
+  console.warn(
+    `Firebase configuration is missing: ${missingEnvKeys.join(', ')}. ` +
+      'Check your VITE_FIREBASE_* environment variables.'
+  );
+}
+
+const firebaseConfig = {
+  apiKey: requiredEnv.apiKey,
+  authDomain: requiredEnv.authDomain,
+  projectId: requiredEnv.projectId,
+  storageBucket: requiredEnv.storageBucket,
+  messagingSenderId: requiredEnv.messagingSenderId,
+  appId: requiredEnv.appId
+};
+
+const app: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 const db = getFirestore(app);
 const auth = getAuth(app);
 const storage = getStorage(app);
+const functions = getFunctions(app);
+
+export const COLLECTIONS = {
+  USERS: 'users',
+  LISTINGS: 'listings',
+  TRADES: 'trades',
+  DELIVERY_REQUESTS: 'deliveryRequests',
+  WALLETS: 'wallets',
+  WALLET_TRANSACTIONS: 'walletTransactions',
+  NOTIFICATIONS: 'notifications',
+  DRIVERS: 'drivers'
+} as const;
 
 export const OperationType = {
   READ: 'read',
@@ -53,10 +93,18 @@ export const handleFirestoreError = (
         return 'Please sign in before continuing.';
       case 'not-found':
         return 'The requested record could not be found.';
+      case 'already-exists':
+        return 'This record already exists.';
+      case 'failed-precondition':
+        return 'This action cannot be completed in the current state.';
+      case 'aborted':
+        return 'This record was updated by another request. Please try again.';
       case 'unavailable':
         return 'The database is temporarily unavailable. Please try again.';
       case 'resource-exhausted':
         return 'Too many requests. Please wait and try again.';
+      case 'deadline-exceeded':
+        return 'The request took too long. Please try again.';
       case 'cancelled':
         return 'The request was cancelled. Please try again.';
       default:
@@ -73,4 +121,14 @@ export const handleFirestoreError = (
   return 'Something went wrong. Please try again.';
 };
 
-export { app, db, auth, storage };
+export {
+  app,
+  auth,
+  db,
+  functions,
+  runTransaction,
+  serverTimestamp,
+  storage,
+  Timestamp,
+  writeBatch
+};
