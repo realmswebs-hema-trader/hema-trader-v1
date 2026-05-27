@@ -13,7 +13,8 @@ import {
   setDoc,
   deleteDoc,
   increment,
-  updateDoc
+  updateDoc,
+  runTransaction
 } from 'firebase/firestore';
 import {
   AlertCircle,
@@ -21,6 +22,7 @@ import {
   CreditCard,
   Eye,
   Loader2,
+  Lock,
   MapPin,
   MessageCircle,
   Navigation,
@@ -48,6 +50,9 @@ const UNVERIFIED_TRADER_WARNING =
 const UNVERIFIED_ACCOUNT_WARNING =
   'Your account is not verified yet. You can still use Hema Trader, but other users will see you as an unverified trader until you complete verification.';
 
+const SINGLE_PRODUCT_UNAVAILABLE_MESSAGE =
+  'This item is currently in a trade and is not available.';
+
 interface Listing {
   id: string;
   title: string;
@@ -67,6 +72,11 @@ interface Listing {
   sellerId?: string;
   status: string;
   quantity: string;
+  inventoryType?: 'single' | 'stock';
+  listingStatus?: 'available' | 'reserved' | 'in_trade' | 'sold' | 'cancelled';
+  activeTradeId?: string | null;
+  reservedAt?: any;
+  soldAt?: any;
   latitude?: number;
   longitude?: number;
   currentLocation?: {
@@ -149,6 +159,58 @@ const isListingOwnedBy = (
   listing: Pick<Listing, 'ownerId' | 'sellerId'>,
   userId?: string
 ) => Boolean(userId && [listing.ownerId, listing.sellerId].filter(Boolean).includes(userId));
+
+const getInventoryType = (listing: Listing) =>
+  listing.inventoryType || 'stock';
+
+const getListingStatus = (listing: Listing) => {
+  if (listing.listingStatus) return listing.listingStatus;
+  if (listing.status === 'sold') return 'sold';
+  if (listing.status === 'cancelled') return 'cancelled';
+  if (listing.status !== 'active') return 'sold';
+  return 'available';
+};
+
+const isSingleProductBlocked = (listing: Listing) => {
+  if (getInventoryType(listing) !== 'single') return false;
+
+  const listingStatus = getListingStatus(listing);
+
+  return (
+    listingStatus === 'reserved' ||
+    listingStatus === 'in_trade' ||
+    listingStatus === 'sold' ||
+    Boolean(listing.activeTradeId)
+  );
+};
+
+const listingAvailabilityLabel = (listing: Listing) => {
+  if (getInventoryType(listing) === 'stock') {
+    return listing.status === 'active' ? 'In Stock' : 'Unavailable';
+  }
+
+  const status = getListingStatus(listing);
+
+  if (status === 'sold') return 'Sold';
+  if (status === 'reserved' || status === 'in_trade') return 'Currently in trade';
+  if (status === 'cancelled') return 'Unavailable';
+
+  return listing.status === 'active' ? 'Available' : 'Unavailable';
+};
+
+const listingAvailabilityClass = (listing: Listing) => {
+  const status = getListingStatus(listing);
+
+  if (getInventoryType(listing) === 'single' && (status === 'reserved' || status === 'in_trade')) {
+    return 'border-amber-500/20 bg-amber-500/10 text-amber-400';
+  }
+
+  if (listing.status === 'active' && status === 'available') {
+    return 'border-green-500/20 bg-green-500/10 text-green-400';
+  }
+
+  return 'border-red-500/20 bg-red-500/10 text-red-400';
+};
 
 export default function ListingDetail() {
   const { id } = useParams();
@@ -302,6 +364,7 @@ export default function ListingDetail() {
               nearbySnap.docs
                 .filter(item => item.id !== id)
                 .map(item => ({ id: item.id, ...item.data() } as Listing))
+                .filter(item => !isSingleProductBlocked(item))
                 .slice(0, 4)
             );
           }
@@ -341,6 +404,20 @@ export default function ListingDetail() {
       return;
     }
 
+    if (listing.status !== 'active') {
+      alert('This listing is not available for a new trade.');
+      return;
+    }
+
+    if (isSingleProductBlocked(listing)) {
+      alert(
+        getListingStatus(listing) === 'sold'
+          ? 'This single product has already been sold.'
+          : SINGLE_PRODUCT_UNAVAILABLE_MESSAGE
+      );
+      return;
+    }
+
     const buyerVerificationStatus = profile.verificationStatus || 'unverified';
     const sellerVerificationStatus = seller?.verificationStatus || 'unverified';
     const warnings: string[] = [];
@@ -363,6 +440,7 @@ export default function ListingDetail() {
     try {
       const tradeRef = doc(collection(db, 'trades'));
       const participantIds = [user.uid, sellerId];
+      const inventoryType = getInventoryType(listing);
       const systemMessage =
         sellerVerificationStatus === 'verified'
           ? `Trade initiated for ${listing.title}. You can now discuss terms and delivery with the other party.`
@@ -385,6 +463,21 @@ export default function ListingDetail() {
         deliveryPickupLocation: toGeoPoint(listing),
         deliveryPickupAddress: displayListingLocation(listing),
         status: 'pending',
+        productPaymentStatus: 'unpaid',
+        deliveryPaymentStatus: 'unpaid',
+        deliveryFeeAgreed: false,
+        deliveryFeePaid: 0,
+        deliveryNegotiationStatus: null,
+        assignedDriverId: null,
+        deliveryRequestStatus: null,
+        deliveryStatus: null,
+        deliveryPaymentRequiredAt: null,
+        deliveryPaymentDeadlineAt: null,
+        autoCancelReason: null,
+        refundProcessed: false,
+        refundProcessedAt: null,
+        listingInventoryType: inventoryType,
+        listingStatusAtTradeStart: getListingStatus(listing),
         buyerVerificationStatus,
         sellerVerificationStatus,
         riskFlags: [
@@ -402,13 +495,62 @@ export default function ListingDetail() {
           category: listing.category,
           quantity: listing.quantity || '',
           image: listing.images?.[0] || '',
-          location: displayListingLocation(listing)
+          location: displayListingLocation(listing),
+          inventoryType
         },
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
 
-      await setDoc(tradeRef, tradeData);
+      await runTransaction(db, async transaction => {
+        const listingRef = doc(db, 'listings', listing.id);
+        const listingSnap = await transaction.get(listingRef);
+
+        if (!listingSnap.exists()) {
+          throw new Error('This listing no longer exists.');
+        }
+
+        const freshListing = {
+          id: listingSnap.id,
+          ...listingSnap.data()
+        } as Listing;
+
+        const freshInventoryType = getInventoryType(freshListing);
+        const freshListingStatus = getListingStatus(freshListing);
+
+        if (freshListing.status !== 'active') {
+          throw new Error('This listing is not available for a new trade.');
+        }
+
+        if (
+          freshInventoryType === 'single' &&
+          (
+            freshListingStatus !== 'available' ||
+            Boolean(freshListing.activeTradeId)
+          )
+        ) {
+          throw new Error(
+            freshListingStatus === 'sold'
+              ? 'This single product has already been sold.'
+              : SINGLE_PRODUCT_UNAVAILABLE_MESSAGE
+          );
+        }
+
+        transaction.set(tradeRef, {
+          ...tradeData,
+          listingInventoryType: freshInventoryType,
+          listingStatusAtTradeStart: freshListingStatus
+        });
+
+        if (freshInventoryType === 'single') {
+          transaction.update(listingRef, {
+            listingStatus: 'in_trade',
+            activeTradeId: tradeRef.id,
+            reservedAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
+        }
+      });
 
       const messageResults = await Promise.allSettled([
         addDoc(collection(db, 'messages'), {
@@ -448,10 +590,20 @@ export default function ListingDetail() {
         }
       });
 
+      setListing(prev =>
+        prev && inventoryType === 'single'
+          ? {
+              ...prev,
+              listingStatus: 'in_trade',
+              activeTradeId: tradeRef.id
+            }
+          : prev
+      );
+
       navigate(`/trade/${tradeRef.id}`);
     } catch (err: any) {
       console.error('Start Trade Error:', err);
-      alert(`Failed to initiate trade registry: ${err.message}`);
+      alert(err?.message || 'Failed to initiate trade registry.');
     } finally {
       setTrading(false);
     }
@@ -548,6 +700,22 @@ export default function ListingDetail() {
     Date.now() - getMillis(seller.lastActiveAt) < 1000 * 60 * 15;
   const sellerId = getListingSellerId(listing);
   const isOwnListing = isListingOwnedBy(listing, user?.uid);
+  const inventoryType = getInventoryType(listing);
+  const listingStatus = getListingStatus(listing);
+  const singleProductBlocked = isSingleProductBlocked(listing);
+  const tradeDisabled =
+    trading ||
+    isOwnListing ||
+    listing.status !== 'active' ||
+    singleProductBlocked;
+
+  const tradeButtonLabel = isOwnListing
+    ? 'Your Listing'
+    : listingStatus === 'sold'
+      ? 'Sold'
+      : singleProductBlocked
+        ? 'Currently in Trade'
+        : 'Buy / Open Trade';
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 pb-20">
@@ -585,14 +753,10 @@ export default function ListingDetail() {
             </div>
 
             <div
-              className={`absolute right-4 top-4 rounded-full border px-3 py-1.5 backdrop-blur-md ${
-                listing.status === 'active'
-                  ? 'border-green-500/20 bg-green-500/10 text-green-400'
-                  : 'border-red-500/20 bg-red-500/10 text-red-400'
-              }`}
+              className={`absolute right-4 top-4 rounded-full border px-3 py-1.5 backdrop-blur-md ${listingAvailabilityClass(listing)}`}
             >
               <p className="text-[8px] font-black uppercase tracking-widest">
-                {listing.status === 'active' ? 'Available' : 'Sold Out'}
+                {listingAvailabilityLabel(listing)}
               </p>
             </div>
           </div>
@@ -606,6 +770,18 @@ export default function ListingDetail() {
                 </span>
               </div>
             )}
+
+            <div className="mb-4 flex flex-wrap gap-2">
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                {inventoryType === 'single' ? 'Single Product' : 'In Stock'}
+              </span>
+
+              {singleProductBlocked && (
+                <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-amber-400">
+                  Trade Locked
+                </span>
+              )}
+            </div>
 
             <h1 className="font-serif text-3xl leading-tight tracking-tight text-white md:text-4xl">
               {listing.title}
@@ -626,32 +802,54 @@ export default function ListingDetail() {
                   Availability
                 </p>
                 <p className="mt-1 font-serif text-xl italic text-white">
-                  {listing.quantity}
+                  {inventoryType === 'single'
+                    ? listingAvailabilityLabel(listing)
+                    : listing.quantity}
                 </p>
               </div>
             </div>
 
+            {singleProductBlocked && listingStatus !== 'sold' && (
+              <div className="mt-5 flex items-center gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
+                <Lock className="h-5 w-5 shrink-0 text-amber-400" />
+                <p className="text-[10px] font-black uppercase leading-relaxed tracking-widest text-amber-300">
+                  {SINGLE_PRODUCT_UNAVAILABLE_MESSAGE}
+                </p>
+              </div>
+            )}
+
+            {listingStatus === 'sold' && (
+              <div className="mt-5 flex items-center gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-4">
+                <Lock className="h-5 w-5 shrink-0 text-red-400" />
+                <p className="text-[10px] font-black uppercase leading-relaxed tracking-widest text-red-300">
+                  This single product has been sold and is closed for new trades.
+                </p>
+              </div>
+            )}
+
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
               <button
                 onClick={startTrade}
-                disabled={trading || isOwnListing || listing.status !== 'active'}
+                disabled={tradeDisabled}
                 className="flex items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {trading ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
+                ) : singleProductBlocked ? (
+                  <Lock className="h-5 w-5" />
                 ) : (
                   <CreditCard className="h-5 w-5" />
                 )}
-                {isOwnListing ? 'Your Listing' : 'Buy / Open Trade'}
+                {tradeButtonLabel}
               </button>
 
               <button
                 onClick={startTrade}
-                disabled={trading || isOwnListing || listing.status !== 'active'}
+                disabled={tradeDisabled}
                 className="flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 py-4 text-[10px] font-black uppercase tracking-widest text-white transition hover:bg-white hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <MessageCircle className="h-5 w-5" />
-                Ask Seller
+                {singleProductBlocked ? 'Not Available' : 'Ask Seller'}
               </button>
             </div>
 
@@ -661,7 +859,7 @@ export default function ListingDetail() {
               </p>
             )}
 
-            {!isOwnListing && (
+            {!isOwnListing && !singleProductBlocked && (
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-green-500/20 bg-green-500/10 p-3">
                 <ShieldCheck className="h-4 w-4 text-green-400" />
                 <span className="text-[9px] font-black uppercase tracking-widest text-green-400">
