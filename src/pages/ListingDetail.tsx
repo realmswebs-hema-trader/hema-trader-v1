@@ -1,20 +1,20 @@
-import { useState, useEffect } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  doc,
-  getDoc,
   addDoc,
   collection,
-  serverTimestamp,
-  query,
-  where,
-  limit,
-  getDocs,
-  setDoc,
   deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
   increment,
+  limit,
+  query,
+  runTransaction,
+  serverTimestamp,
+  setDoc,
   updateDoc,
-  runTransaction
+  where
 } from 'firebase/firestore';
 import {
   AlertCircle,
@@ -35,9 +35,9 @@ import {
   UserPlus
 } from 'lucide-react';
 
-import { db } from '../lib/firebase';
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
+import { db } from '../lib/firebase';
 import {
   calculateDistance,
   formatDistance,
@@ -57,7 +57,7 @@ interface Listing {
   id: string;
   title: string;
   description: string;
-  price: number;
+  price: number | string;
   priceDisplay?: string;
   currency?: string;
   currencyCode?: string;
@@ -67,9 +67,12 @@ interface Listing {
   category: string;
   location: string;
   locationName?: string;
-  images: string[];
+  images?: string[];
+  imageUrls?: string[];
   ownerId: string;
   sellerId?: string;
+  userId?: string;
+  createdBy?: string;
   status: string;
   quantity: string;
   inventoryType?: 'single' | 'stock';
@@ -108,6 +111,9 @@ interface SellerProfile {
 
 const zeroDecimalCurrencies = new Set(['XAF', 'XOF', 'UGX', 'RWF']);
 
+const uniqueIds = (ids: Array<string | undefined | null>) =>
+  Array.from(new Set(ids.filter(Boolean) as string[]));
+
 const getMillis = (value: any) => {
   if (!value) return 0;
   if (typeof value.toMillis === 'function') return value.toMillis();
@@ -136,6 +142,18 @@ const formatMoney = (
   }
 };
 
+const getListingImages = (listing: Listing) => {
+  if (Array.isArray(listing.images) && listing.images.length > 0) {
+    return listing.images;
+  }
+
+  if (Array.isArray(listing.imageUrls) && listing.imageUrls.length > 0) {
+    return listing.imageUrls;
+  }
+
+  return [];
+};
+
 const formatListingPrice = (listing: Listing) => {
   if (listing.priceDisplay) return listing.priceDisplay;
 
@@ -152,16 +170,22 @@ const displaySellerName = (seller: SellerProfile | null) =>
 const displayListingLocation = (listing: Listing) =>
   listing.locationName || listing.location || 'Cameroon';
 
-const getListingSellerId = (listing: Pick<Listing, 'ownerId' | 'sellerId'>) =>
-  listing.sellerId || listing.ownerId;
+const getListingSellerId = (
+  listing: Pick<Listing, 'ownerId' | 'sellerId' | 'userId' | 'createdBy'>
+) => listing.sellerId || listing.ownerId || listing.userId || listing.createdBy || '';
 
 const isListingOwnedBy = (
-  listing: Pick<Listing, 'ownerId' | 'sellerId'>,
+  listing: Pick<Listing, 'ownerId' | 'sellerId' | 'userId' | 'createdBy'>,
   userId?: string
-) => Boolean(userId && [listing.ownerId, listing.sellerId].filter(Boolean).includes(userId));
+) =>
+  Boolean(
+    userId &&
+      [listing.ownerId, listing.sellerId, listing.userId, listing.createdBy]
+        .filter(Boolean)
+        .includes(userId)
+  );
 
-const getInventoryType = (listing: Listing) =>
-  listing.inventoryType || 'stock';
+const getInventoryType = (listing: Listing) => listing.inventoryType || 'stock';
 
 const getListingStatus = (listing: Listing) => {
   if (listing.listingStatus) return listing.listingStatus;
@@ -201,7 +225,10 @@ const listingAvailabilityLabel = (listing: Listing) => {
 const listingAvailabilityClass = (listing: Listing) => {
   const status = getListingStatus(listing);
 
-  if (getInventoryType(listing) === 'single' && (status === 'reserved' || status === 'in_trade')) {
+  if (
+    getInventoryType(listing) === 'single' &&
+    (status === 'reserved' || status === 'in_trade')
+  ) {
     return 'border-amber-500/20 bg-amber-500/10 text-amber-400';
   }
 
@@ -231,29 +258,47 @@ export default function ListingDetail() {
     if (!user || !listing) return;
 
     const checkFollow = async () => {
-      const sellerId = getListingSellerId(listing);
+      try {
+        const sellerId = getListingSellerId(listing);
 
-      if (sellerId === user.uid) {
+        if (!sellerId || sellerId === user.uid) {
+          setIsFollowing(false);
+          return;
+        }
+
+        const followId = `${user.uid}_${sellerId}`;
+        const followSnap = await getDoc(doc(db, 'follows', followId));
+
+        setIsFollowing(followSnap.exists());
+      } catch (err) {
+        console.warn('Could not check follow state:', err);
         setIsFollowing(false);
-        return;
       }
-
-      const followId = `${user.uid}_${sellerId}`;
-      const followRef = doc(db, 'follows', followId);
-      const followSnap = await getDoc(followRef);
-
-      setIsFollowing(followSnap.exists());
     };
 
     checkFollow();
   }, [user, listing]);
+
+  const updateUserCounterSafely = async (
+    userId: string,
+    field: 'followersCount' | 'followingCount',
+    amount: number
+  ) => {
+    try {
+      await updateDoc(doc(db, 'users', userId), {
+        [field]: increment(amount)
+      });
+    } catch (err) {
+      console.warn(`Could not update ${field}:`, err);
+    }
+  };
 
   const toggleFollow = async () => {
     if (!user || !listing || !seller) return;
 
     const sellerId = getListingSellerId(listing);
 
-    if (sellerId === user.uid) return;
+    if (!sellerId || sellerId === user.uid) return;
 
     setFollowingLoading(true);
 
@@ -264,14 +309,6 @@ export default function ListingDetail() {
       if (isFollowing) {
         await deleteDoc(followRef);
 
-        await updateDoc(doc(db, 'users', user.uid), {
-          followingCount: increment(-1)
-        });
-
-        await updateDoc(doc(db, 'users', sellerId), {
-          followersCount: increment(-1)
-        });
-
         setIsFollowing(false);
         setSeller(prev =>
           prev
@@ -281,19 +318,16 @@ export default function ListingDetail() {
               }
             : null
         );
+
+        void updateUserCounterSafely(user.uid, 'followingCount', -1);
+        void updateUserCounterSafely(sellerId, 'followersCount', -1);
       } else {
         await setDoc(followRef, {
           followerId: user.uid,
           followingId: sellerId,
+          participantIds: [user.uid, sellerId],
+          participants: [user.uid, sellerId],
           createdAt: serverTimestamp()
-        });
-
-        await updateDoc(doc(db, 'users', user.uid), {
-          followingCount: increment(1)
-        });
-
-        await updateDoc(doc(db, 'users', sellerId), {
-          followersCount: increment(1)
         });
 
         setIsFollowing(true);
@@ -306,15 +340,25 @@ export default function ListingDetail() {
             : null
         );
 
-        sendNotification(sellerId, {
+        void updateUserCounterSafely(user.uid, 'followingCount', 1);
+        void updateUserCounterSafely(sellerId, 'followersCount', 1);
+
+        void sendNotification(sellerId, {
           title: 'New Follower',
-          body: `${profile?.displayName || 'Someone'} started following you.`,
+          body: `${profile?.displayName || profile?.name || 'Someone'} started following you.`,
           type: 'system',
-          targetId: user.uid
+          targetId: user.uid,
+          targetType: 'user',
+          actionUrl: '/profile',
+          senderId: user.uid,
+          senderName: profile?.displayName || profile?.name || user.displayName || 'Marketplace User'
+        }).catch(err => {
+          console.warn('Follow notification failed:', err);
         });
       }
     } catch (err) {
       console.error('Follow error:', err);
+      alert('Could not update follow status. Please try again.');
     } finally {
       setFollowingLoading(false);
     }
@@ -330,46 +374,49 @@ export default function ListingDetail() {
         setLoading(true);
         setError(null);
 
-        const docRef = doc(db, 'listings', id);
-        const docSnap = await getDoc(docRef);
+        const docSnap = await getDoc(doc(db, 'listings', id));
 
         if (!isMounted) return;
 
-        if (docSnap.exists()) {
-          const listingData = {
-            id: docSnap.id,
-            ...docSnap.data()
-          } as Listing;
+        if (!docSnap.exists()) {
+          setError('We could not find this item in our marketplace.');
+          return;
+        }
 
-          setListing(listingData);
+        const listingData = {
+          id: docSnap.id,
+          ...docSnap.data()
+        } as Listing;
 
-          const sellerId = getListingSellerId(listingData);
+        setListing(listingData);
+
+        const sellerId = getListingSellerId(listingData);
+
+        if (sellerId) {
           const sellerSnap = await getDoc(doc(db, 'users', sellerId));
 
           if (isMounted && sellerSnap.exists()) {
             setSeller(sellerSnap.data() as SellerProfile);
           }
+        }
 
-          const qNearby = query(
-            collection(db, 'listings'),
-            where('category', '==', listingData.category),
-            where('status', '==', 'active'),
-            limit(5)
+        const nearbyQuery = query(
+          collection(db, 'listings'),
+          where('category', '==', listingData.category),
+          where('status', '==', 'active'),
+          limit(5)
+        );
+
+        const nearbySnap = await getDocs(nearbyQuery);
+
+        if (isMounted) {
+          setNearby(
+            nearbySnap.docs
+              .filter(item => item.id !== id)
+              .map(item => ({ id: item.id, ...item.data() } as Listing))
+              .filter(item => !isSingleProductBlocked(item))
+              .slice(0, 4)
           );
-
-          const nearbySnap = await getDocs(qNearby);
-
-          if (isMounted) {
-            setNearby(
-              nearbySnap.docs
-                .filter(item => item.id !== id)
-                .map(item => ({ id: item.id, ...item.data() } as Listing))
-                .filter(item => !isSingleProductBlocked(item))
-                .slice(0, 4)
-            );
-          }
-        } else {
-          setError('We could not find this item in our marketplace.');
         }
       } catch (err) {
         console.error('Fetch Listing Error:', err);
@@ -389,7 +436,7 @@ export default function ListingDetail() {
   }, [id]);
 
   const startTrade = async () => {
-    if (!listing) return;
+    if (!listing || trading) return;
 
     if (!user || !profile) {
       alert('Please sign in to start a trade.');
@@ -399,8 +446,15 @@ export default function ListingDetail() {
 
     const sellerId = getListingSellerId(listing);
 
+    if (!sellerId) {
+      alert('This listing is missing seller information.');
+      return;
+    }
+
     if (isListingOwnedBy(listing, user.uid)) {
-      alert('This is your own listing. Buyers can start trades with you, but you cannot trade with or message yourself.');
+      alert(
+        'This is your own listing. Buyers can start trades with you, but you cannot trade with or message yourself.'
+      );
       return;
     }
 
@@ -415,6 +469,13 @@ export default function ListingDetail() {
           ? 'This single product has already been sold.'
           : SINGLE_PRODUCT_UNAVAILABLE_MESSAGE
       );
+      return;
+    }
+
+    const listingAmount = Number(listing.price || 0);
+
+    if (!Number.isFinite(listingAmount) || listingAmount <= 0) {
+      alert('This listing does not have a valid price.');
       return;
     }
 
@@ -439,68 +500,15 @@ export default function ListingDetail() {
 
     try {
       const tradeRef = doc(collection(db, 'trades'));
-      const participantIds = [user.uid, sellerId];
-      const inventoryType = getInventoryType(listing);
+      const participantIds = uniqueIds([user.uid, sellerId]);
+      const sellerName = displaySellerName(seller);
+      const buyerName =
+        profile.displayName || profile.name || user.displayName || 'Marketplace Buyer';
+
       const systemMessage =
         sellerVerificationStatus === 'verified'
           ? `Trade initiated for ${listing.title}. You can now discuss terms and delivery with the other party.`
           : `Trade initiated for ${listing.title}. This seller is unverified, so keep communication in this chat and use escrow before exchanging goods or money.`;
-
-      const tradeData = {
-        tradeId: tradeRef.id,
-        listingId: listing.id,
-        listingTitle: listing.title,
-        userId: user.uid,
-        buyerId: user.uid,
-        sellerId,
-        participants: participantIds,
-        amount: listing.price,
-        priceDisplay: formatListingPrice(listing),
-        currency: listing.currencyCode || listing.currency || 'XAF',
-        currencyCode: listing.currencyCode || listing.currency || 'XAF',
-        currencyLocale: listing.currencyLocale || 'fr-CM',
-        currencyLabel: listing.currencyLabel || 'XAF / FCFA',
-        deliveryPickupLocation: toGeoPoint(listing),
-        deliveryPickupAddress: displayListingLocation(listing),
-        status: 'pending',
-        productPaymentStatus: 'unpaid',
-        deliveryPaymentStatus: 'unpaid',
-        deliveryFeeAgreed: false,
-        deliveryFeePaid: 0,
-        deliveryNegotiationStatus: null,
-        assignedDriverId: null,
-        deliveryRequestStatus: null,
-        deliveryStatus: null,
-        deliveryPaymentRequiredAt: null,
-        deliveryPaymentDeadlineAt: null,
-        autoCancelReason: null,
-        refundProcessed: false,
-        refundProcessedAt: null,
-        listingInventoryType: inventoryType,
-        listingStatusAtTradeStart: getListingStatus(listing),
-        buyerVerificationStatus,
-        sellerVerificationStatus,
-        riskFlags: [
-          ...(buyerVerificationStatus !== 'verified' ? ['buyer_unverified'] : []),
-          ...(sellerVerificationStatus !== 'verified' ? ['seller_unverified'] : [])
-        ],
-        riskAcknowledgement: {
-          buyerId: user.uid,
-          buyerVerificationStatus,
-          sellerVerificationStatus,
-          acknowledgedAt: serverTimestamp()
-        },
-        listingSnapshot: {
-          title: listing.title,
-          category: listing.category,
-          quantity: listing.quantity || '',
-          image: listing.images?.[0] || '',
-          location: displayListingLocation(listing),
-          inventoryType
-        },
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      };
 
       await runTransaction(db, async transaction => {
         const listingRef = doc(db, 'listings', listing.id);
@@ -515,8 +523,25 @@ export default function ListingDetail() {
           ...listingSnap.data()
         } as Listing;
 
+        const freshSellerId = getListingSellerId(freshListing);
+
+        if (!freshSellerId) {
+          throw new Error('This listing is missing seller information.');
+        }
+
+        if (isListingOwnedBy(freshListing, user.uid)) {
+          throw new Error('You cannot start a trade with your own listing.');
+        }
+
         const freshInventoryType = getInventoryType(freshListing);
         const freshListingStatus = getListingStatus(freshListing);
+        const freshAmount = Number(freshListing.price || 0);
+        const freshImages = getListingImages(freshListing);
+        const freshParticipantIds = uniqueIds([user.uid, freshSellerId]);
+
+        if (!Number.isFinite(freshAmount) || freshAmount <= 0) {
+          throw new Error('This listing does not have a valid price.');
+        }
 
         if (freshListing.status !== 'active') {
           throw new Error('This listing is not available for a new trade.');
@@ -524,10 +549,7 @@ export default function ListingDetail() {
 
         if (
           freshInventoryType === 'single' &&
-          (
-            freshListingStatus !== 'available' ||
-            Boolean(freshListing.activeTradeId)
-          )
+          (freshListingStatus !== 'available' || Boolean(freshListing.activeTradeId))
         ) {
           throw new Error(
             freshListingStatus === 'sold'
@@ -537,9 +559,76 @@ export default function ListingDetail() {
         }
 
         transaction.set(tradeRef, {
-          ...tradeData,
+          tradeId: tradeRef.id,
+          listingId: freshListing.id,
+          listingTitle: freshListing.title,
+          userId: user.uid,
+          buyerId: user.uid,
+          sellerId: freshSellerId,
+          participantIds: freshParticipantIds,
+          participants: freshParticipantIds,
+          memberIds: freshParticipantIds,
+          userIds: freshParticipantIds,
+          amount: freshAmount,
+          agreedAmount: null,
+          priceAgreementStatus: 'open',
+          priceDisplay: formatListingPrice(freshListing),
+          currency: freshListing.currencyCode || freshListing.currency || 'XAF',
+          currencyCode: freshListing.currencyCode || freshListing.currency || 'XAF',
+          currencyLocale: freshListing.currencyLocale || 'fr-CM',
+          currencyLabel: freshListing.currencyLabel || 'XAF / FCFA',
+          deliveryPickupLocation: toGeoPoint(freshListing),
+          deliveryPickupAddress: displayListingLocation(freshListing),
+          status: 'pending',
+          productPaymentStatus: 'unpaid',
+          paymentStatus: 'unpaid',
+          escrowStatus: 'unfunded',
+          platformFee: 0,
+          sellerPayout: 0,
+          deliveryPaymentStatus: 'unpaid',
+          deliveryFee: 0,
+          agreedDeliveryFee: 0,
+          deliveryFeeAgreed: false,
+          deliveryFeePaid: 0,
+          driverCommission: 0,
+          driverId: '',
+          assignedDriverId: '',
+          deliveryNegotiationStatus: null,
+          deliveryRequestId: null,
+          deliveryRequestStatus: null,
+          deliveryStatus: null,
+          deliveryPaymentRequiredAt: null,
+          deliveryPaymentDeadlineAt: null,
+          autoCancelReason: null,
+          refundProcessed: false,
+          refundProcessedAt: null,
           listingInventoryType: freshInventoryType,
-          listingStatusAtTradeStart: freshListingStatus
+          listingStatusAtTradeStart: freshListingStatus,
+          buyerVerificationStatus,
+          sellerVerificationStatus,
+          riskFlags: [
+            ...(buyerVerificationStatus !== 'verified' ? ['buyer_unverified'] : []),
+            ...(sellerVerificationStatus !== 'verified' ? ['seller_unverified'] : [])
+          ],
+          riskAcknowledgement: {
+            buyerId: user.uid,
+            buyerVerificationStatus,
+            sellerVerificationStatus,
+            acknowledgedAt: serverTimestamp()
+          },
+          listingSnapshot: {
+            title: freshListing.title,
+            category: freshListing.category,
+            quantity: freshListing.quantity || '',
+            image: freshImages[0] || '',
+            location: displayListingLocation(freshListing),
+            inventoryType: freshInventoryType
+          },
+          lastMessage: systemMessage,
+          lastMessageAt: serverTimestamp(),
+          lastMessageSenderId: 'system',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
         });
 
         if (freshInventoryType === 'single') {
@@ -552,36 +641,31 @@ export default function ListingDetail() {
         }
       });
 
+      const messageData = {
+        tradeId: tradeRef.id,
+        listingId: listing.id,
+        userId: 'system',
+        senderId: 'system',
+        senderName: 'Hema Trader',
+        senderPhotoURL: '',
+        recipientIds: participantIds,
+        participantIds,
+        participants: participantIds,
+        memberIds: participantIds,
+        userIds: participantIds,
+        buyerId: user.uid,
+        sellerId,
+        text: systemMessage,
+        type: 'system',
+        status: 'delivered',
+        readBy: [],
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
       const messageResults = await Promise.allSettled([
-        addDoc(collection(db, 'messages'), {
-          tradeId: tradeRef.id,
-          listingId: listing.id,
-          userId: 'system',
-          senderId: 'system',
-          senderName: 'Hema Trader',
-          senderPhotoURL: '',
-          recipientIds: participantIds,
-          participants: participantIds,
-          text: systemMessage,
-          type: 'system',
-          status: 'delivered',
-          readBy: [],
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        }),
-        addDoc(collection(db, 'trades', tradeRef.id, 'messages'), {
-          tradeId: tradeRef.id,
-          listingId: listing.id,
-          userId: 'system',
-          senderId: 'system',
-          senderName: 'Hema Trader',
-          type: 'system',
-          status: 'delivered',
-          text: systemMessage,
-          readBy: [],
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        })
+        addDoc(collection(db, 'messages'), messageData),
+        addDoc(collection(db, 'trades', tradeRef.id, 'messages'), messageData)
       ]);
 
       messageResults.forEach(result => {
@@ -590,8 +674,21 @@ export default function ListingDetail() {
         }
       });
 
+      void sendNotification(sellerId, {
+        title: 'New Trade Started',
+        body: `${buyerName} opened a trade for ${listing.title}.`,
+        type: 'trade_update',
+        targetId: tradeRef.id,
+        targetType: 'trade',
+        actionUrl: `/trade/${tradeRef.id}`,
+        senderId: user.uid,
+        senderName: buyerName
+      }).catch(err => {
+        console.warn('Trade notification failed:', err);
+      });
+
       setListing(prev =>
-        prev && inventoryType === 'single'
+        prev && getInventoryType(prev) === 'single'
           ? {
               ...prev,
               listingStatus: 'in_trade',
@@ -609,8 +706,13 @@ export default function ListingDetail() {
     }
   };
 
-  const handleBoostListing = async (tier: string, amount: number) => {
+  const handleBoostListing = async (tier: 'standard' | 'premium', amount: number) => {
     if (!user || !listing) return;
+
+    if (!isListingOwnedBy(listing, user.uid)) {
+      alert('Only the listing owner can boost this listing.');
+      return;
+    }
 
     const confirmBoost = window.confirm(
       `Confirm payment of ${formatMoney(amount, 'XAF', 'fr-CM')} for ${tier} boost? (Demo logic)`
@@ -625,7 +727,8 @@ export default function ListingDetail() {
       await updateDoc(doc(db, 'listings', listing.id), {
         isBoosted: true,
         boostTier: tier,
-        boostExpiresAt: expiresAt
+        boostExpiresAt: expiresAt,
+        updatedAt: serverTimestamp()
       });
 
       await addDoc(collection(db, 'boosts'), {
@@ -658,7 +761,7 @@ export default function ListingDetail() {
 
   if (loading) {
     return (
-      <div className="mx-auto max-w-6xl space-y-8 pb-20 animate-pulse">
+      <div className="mx-auto max-w-6xl animate-pulse space-y-8 pb-20">
         <div className="h-[460px] rounded-[2rem] bg-white/5" />
         <div className="h-32 rounded-[2rem] bg-white/5" />
       </div>
@@ -687,12 +790,11 @@ export default function ListingDetail() {
     );
   }
 
+  const listingImages = getListingImages(listing);
   const userPoint = toGeoPoint(profile);
   const listingPoint = toGeoPoint(listing);
   const distance =
-    userPoint && listingPoint
-      ? calculateDistance(userPoint, listingPoint)
-      : null;
+    userPoint && listingPoint ? calculateDistance(userPoint, listingPoint) : null;
 
   const listingPrice = formatListingPrice(listing);
   const sellerActive =
@@ -704,10 +806,7 @@ export default function ListingDetail() {
   const listingStatus = getListingStatus(listing);
   const singleProductBlocked = isSingleProductBlocked(listing);
   const tradeDisabled =
-    trading ||
-    isOwnListing ||
-    listing.status !== 'active' ||
-    singleProductBlocked;
+    trading || isOwnListing || listing.status !== 'active' || singleProductBlocked;
 
   const tradeButtonLabel = isOwnListing
     ? 'Your Listing'
@@ -723,9 +822,9 @@ export default function ListingDetail() {
         <div className="grid grid-cols-1 lg:grid-cols-[0.95fr_1.05fr]">
           <div className="relative min-h-[280px] border-b border-white/5 bg-slate-900 lg:border-b-0 lg:border-r">
             <div className="aspect-[4/3] h-full max-h-[520px] w-full">
-              {listing.images?.[0] ? (
+              {listingImages[0] ? (
                 <img
-                  src={listing.images[0]}
+                  src={listingImages[0]}
                   alt={listing.title}
                   className="h-full w-full object-cover grayscale-[0.15] transition-all duration-700 hover:grayscale-0"
                 />
@@ -1065,36 +1164,44 @@ export default function ListingDetail() {
           </div>
 
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-            {nearby.map(item => (
-              <Link key={item.id} to={`/listing/${item.id}`} className="group overflow-hidden rounded-2xl border border-white/5 bg-brand-card">
-                <div className="aspect-[4/3] bg-slate-900">
-                  {item.images?.[0] ? (
-                    <img
-                      src={item.images[0]}
-                      className="h-full w-full object-cover grayscale-[0.4] transition-all group-hover:scale-105 group-hover:grayscale-0"
-                      alt={item.title}
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-slate-800">
-                      <Package className="h-8 w-8" />
-                    </div>
-                  )}
-                </div>
+            {nearby.map(item => {
+              const itemImages = getListingImages(item);
 
-                <div className="space-y-2 p-4">
-                  <p className="truncate text-[9px] font-black uppercase tracking-widest text-amber-500">
-                    {formatListingPrice(item)}
-                  </p>
-                  <h4 className="line-clamp-2 font-serif text-sm text-white">
-                    {item.title}
-                  </h4>
-                  <div className="flex items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500">
-                    <Eye className="h-3 w-3" />
-                    Open listing
+              return (
+                <Link
+                  key={item.id}
+                  to={`/listing/${item.id}`}
+                  className="group overflow-hidden rounded-2xl border border-white/5 bg-brand-card"
+                >
+                  <div className="aspect-[4/3] bg-slate-900">
+                    {itemImages[0] ? (
+                      <img
+                        src={itemImages[0]}
+                        className="h-full w-full object-cover grayscale-[0.4] transition-all group-hover:scale-105 group-hover:grayscale-0"
+                        alt={item.title}
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-slate-800">
+                        <Package className="h-8 w-8" />
+                      </div>
+                    )}
                   </div>
-                </div>
-              </Link>
-            ))}
+
+                  <div className="space-y-2 p-4">
+                    <p className="truncate text-[9px] font-black uppercase tracking-widest text-amber-500">
+                      {formatListingPrice(item)}
+                    </p>
+                    <h4 className="line-clamp-2 font-serif text-sm text-white">
+                      {item.title}
+                    </h4>
+                    <div className="flex items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500">
+                      <Eye className="h-3 w-3" />
+                      Open listing
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
           </div>
         </section>
       )}
