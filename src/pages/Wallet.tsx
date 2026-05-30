@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
+  AlertCircle,
   ArrowDownToLine,
   ArrowUpRight,
   Banknote,
@@ -31,6 +33,9 @@ import {
   type WalletOverview
 } from '../services/walletService';
 
+const WALLET_LOAD_TIMEOUT_MS = 15000;
+const WALLET_REFRESH_INTERVAL_MS = 30000;
+
 const formatMoney = (amount = 0, currency = 'XAF') => {
   try {
     return new Intl.NumberFormat('fr-CM', {
@@ -46,19 +51,48 @@ const formatMoney = (amount = 0, currency = 'XAF') => {
 const getMillis = (value: any) => {
   if (!value) return 0;
   if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
   if (value.seconds) return value.seconds * 1000;
-  return 0;
+  if (value._seconds) return value._seconds * 1000;
+
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
 };
 
 const isValidPin = (pin: string) => /^\d{4}$|^\d{6}$/.test(pin);
 
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string
+): Promise<T> => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(message));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 export default function Wallet() {
   const { user, profile } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [overview, setOverview] = useState<WalletOverview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const [topupAmount, setTopupAmount] = useState('');
   const [topupPhone, setTopupPhone] = useState('');
@@ -70,6 +104,10 @@ export default function Wallet() {
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [withdrawPhone, setWithdrawPhone] = useState('');
   const [withdrawPin, setWithdrawPin] = useState('');
+
+  const isLoadingWalletRef = useRef(false);
+  const mountedRef = useRef(true);
+  const fundPanelRef = useRef<HTMLDivElement>(null);
 
   const wallet = overview?.wallet;
   const walletSecurity = overview?.walletSecurity;
@@ -83,30 +121,106 @@ export default function Wallet() {
 
   const needsPin = hasFundedWallet && !walletSecurity?.hasPin;
 
-  const loadWallet = async () => {
-    if (!user) return;
+  const loadWallet = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      if (!user) {
+        setOverview(null);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
 
-    setLoading(true);
+      if (isLoadingWalletRef.current) return;
 
-    try {
-      const data = await getWalletOverview(user);
-      setOverview(data);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Could not load wallet.');
-    } finally {
-      setLoading(false);
-    }
-  };
+      const silent = Boolean(options.silent);
+
+      isLoadingWalletRef.current = true;
+
+      if (silent) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+
+      setLoadError('');
+
+      try {
+        const data = await withTimeout(
+          getWalletOverview(user),
+          WALLET_LOAD_TIMEOUT_MS,
+          'Wallet is taking too long to load. Please check your connection and try again.'
+        );
+
+        if (!mountedRef.current) return;
+
+        setOverview(data);
+        setLoadError('');
+      } catch (err) {
+        console.error('Wallet load failed:', err);
+
+        if (!mountedRef.current) return;
+
+        const nextMessage =
+          err instanceof Error ? err.message : 'Could not load wallet. Please try again.';
+
+        setLoadError(nextMessage);
+
+        if (!overview) {
+          setMessage(nextMessage);
+        }
+      } finally {
+        isLoadingWalletRef.current = false;
+
+        if (mountedRef.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    [user, overview]
+  );
 
   useEffect(() => {
-    loadWallet();
+    mountedRef.current = true;
+
+    if (!user) {
+      setOverview(null);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    void loadWallet();
 
     const timer = window.setInterval(() => {
-      loadWallet();
-    }, 10000);
+      if (document.visibilityState === 'visible') {
+        void loadWallet({ silent: true });
+      }
+    }, WALLET_REFRESH_INTERVAL_MS);
 
-    return () => window.clearInterval(timer);
-  }, [user]);
+    return () => {
+      mountedRef.current = false;
+      window.clearInterval(timer);
+    };
+  }, [user, loadWallet]);
+
+  useEffect(() => {
+    if (searchParams.get('fund') !== '1') return;
+
+    setMessage('Funding panel is ready. Enter your amount and Mobile Money number below.');
+
+    window.setTimeout(() => {
+      fundPanelRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    }, 250);
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('fund');
+
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const chartData = useMemo(() => {
     const txs = [...(overview?.transactions || [])]
@@ -129,12 +243,24 @@ export default function Wallet() {
   const handleTopup = async () => {
     if (!user) return;
 
+    const amount = Number(topupAmount);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setMessage('Enter a valid top-up amount.');
+      return;
+    }
+
+    if (!topupPhone.trim()) {
+      setMessage('Enter your MTN or Orange Money number.');
+      return;
+    }
+
     setWorking(true);
     setMessage('');
 
     try {
       const result = await startWalletTopup(user, {
-        amount: Number(topupAmount),
+        amount,
         phoneNumber: topupPhone,
         currency
       });
@@ -170,7 +296,8 @@ export default function Wallet() {
         setMessage('Wallet funded successfully. Create your transaction PIN to secure transfers.');
         setPendingTopup(null);
         setTopupAmount('');
-        await loadWallet();
+        setTopupPhone('');
+        await loadWallet({ silent: true });
       }
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Verification failed.');
@@ -204,7 +331,7 @@ export default function Wallet() {
       setPin('');
       setConfirmPin('');
       setMessage('Transaction PIN created. Your Hema Wallet is now secured.');
-      await loadWallet();
+      await loadWallet({ silent: true });
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Could not create PIN.');
     } finally {
@@ -215,8 +342,20 @@ export default function Wallet() {
   const handleWithdraw = async () => {
     if (!user) return;
 
+    const amount = Number(withdrawAmount);
+
     if (!walletSecurity?.hasPin) {
       setMessage('Create your transaction PIN before withdrawing.');
+      return;
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setMessage('Enter a valid withdrawal amount.');
+      return;
+    }
+
+    if (!withdrawPhone.trim()) {
+      setMessage('Enter your MTN or Orange Money payout number.');
       return;
     }
 
@@ -230,7 +369,7 @@ export default function Wallet() {
 
     try {
       await withdrawFromWallet(user, {
-        amount: Number(withdrawAmount),
+        amount,
         phoneNumber: withdrawPhone,
         walletPin: withdrawPin,
         method: 'mobile_money',
@@ -241,7 +380,7 @@ export default function Wallet() {
       setWithdrawAmount('');
       setWithdrawPhone('');
       setWithdrawPin('');
-      await loadWallet();
+      await loadWallet({ silent: true });
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Withdrawal failed.');
     } finally {
@@ -266,6 +405,25 @@ export default function Wallet() {
     );
   }
 
+  if (loadError && !overview) {
+    return (
+      <div className="mx-auto max-w-xl rounded-[2rem] border border-red-500/20 bg-red-500/10 p-10 text-center">
+        <AlertCircle className="mx-auto mb-5 h-10 w-10 text-red-400" />
+        <h1 className="font-serif text-2xl text-white">Wallet could not load</h1>
+        <p className="mt-3 text-sm leading-relaxed text-red-100/80">
+          {loadError}
+        </p>
+        <button
+          onClick={() => loadWallet()}
+          className="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-4 text-[10px] font-black uppercase tracking-widest text-black"
+        >
+          <RefreshCw className="h-4 w-4" />
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <section className="overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card shadow-2xl">
@@ -284,10 +442,11 @@ export default function Wallet() {
             </div>
 
             <button
-              onClick={loadWallet}
-              className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-white hover:bg-white/10"
+              onClick={() => loadWallet({ silent: Boolean(overview) })}
+              disabled={refreshing}
+              className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-white hover:bg-white/10 disabled:opacity-50"
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
               Refresh
             </button>
           </div>
@@ -332,9 +491,9 @@ export default function Wallet() {
         </div>
       </section>
 
-      {message && (
+      {(message || (loadError && overview)) && (
         <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200">
-          {message}
+          {message || loadError}
         </div>
       )}
 
@@ -463,7 +622,10 @@ export default function Wallet() {
         </section>
 
         <aside className="space-y-6">
-          <div className="rounded-[2rem] border border-white/5 bg-brand-card p-6 shadow-2xl">
+          <div
+            ref={fundPanelRef}
+            className="rounded-[2rem] border border-white/5 bg-brand-card p-6 shadow-2xl"
+          >
             <div className="mb-5 flex items-center gap-3">
               <CreditCard className="h-5 w-5 text-green-400" />
               <h3 className="font-serif text-xl text-white">Fund Wallet</h3>
