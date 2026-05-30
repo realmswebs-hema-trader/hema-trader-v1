@@ -36,6 +36,28 @@ interface ListingGpsLocation {
 
 type InventoryType = 'single' | 'stock';
 
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const CLOUDINARY_UPLOAD_TIMEOUT_MS = 30000;
+
+const listingCategories = [
+  'Animals',
+  'Farming Products',
+  'Seeds',
+  'Equipment',
+  'Electronics',
+  'Clothing',
+  'Accessories'
+];
+
+const categoryMetadataFields: Record<string, string[]> = {
+  Animals: ['Breed', 'Age', 'Weight'],
+  Seeds: ['Variety', 'Germination %'],
+  Electronics: ['Year/Model', 'Condition'],
+  Equipment: ['Year/Model', 'Condition'],
+  Clothing: ['Size', 'Brand', 'Condition', 'Color', 'Material', 'Gender/Audience'],
+  Accessories: ['Type', 'Brand', 'Condition', 'Color', 'Material']
+};
+
 const countryCurrencyMap: Record<string, { code: string; locale: string; label: string }> = {
   cameroon: { code: 'XAF', locale: 'fr-CM', label: 'XAF / FCFA' },
   nigeria: { code: 'NGN', locale: 'en-NG', label: 'NGN' },
@@ -106,6 +128,38 @@ const formatMoney = (amount: number, currencyCode: string, locale: string) => {
   }
 };
 
+const cleanMetadata = (metadata: Record<string, string>) =>
+  Object.fromEntries(
+    Object.entries(metadata)
+      .map(([key, value]) => [key, value.trim()])
+      .filter(([, value]) => value)
+  );
+
+const getTitlePlaceholder = (category: string) => {
+  if (category === 'Clothing') return 'e.g. Ankara dress, denim jacket, sneakers...';
+  if (category === 'Accessories') return 'e.g. Leather handbag, watch, necklace...';
+  if (category === 'Seeds') return 'e.g. Hybrid maize seeds, tomato seeds...';
+  if (category === 'Electronics') return 'e.g. Solar lamp, irrigation controller...';
+  if (category === 'Equipment') return 'e.g. Water pump, tractor attachment...';
+
+  return 'e.g. Organic Hybrid Maize, Brahman Bull...';
+};
+
+const getQuantityPlaceholder = (category: string, inventoryType: InventoryType) => {
+  if (inventoryType === 'single') {
+    if (category === 'Clothing') return 'e.g. 1 dress, 1 pair';
+    if (category === 'Accessories') return 'e.g. 1 bag, 1 watch';
+    return 'e.g. 1 unit';
+  }
+
+  if (category === 'Clothing') return 'e.g. 20 pieces, 12 pairs';
+  if (category === 'Accessories') return 'e.g. 15 bags, 30 pieces';
+  if (category === 'Animals') return 'e.g. 20 Heads';
+  if (category === 'Seeds') return 'e.g. 50 packets, 30 bags';
+
+  return 'e.g. 50 Bags, 20 Units...';
+};
+
 export default function CreateListing() {
   const { user, profile } = useAuth();
   const { sendNotification } = useNotifications();
@@ -134,9 +188,11 @@ export default function CreateListing() {
   const [metadata, setMetadata] = useState<Record<string, string>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewUrlsRef = useRef<string[]>([]);
 
   const profileLatitude = safeCoordinate(profile?.latitude);
   const profileLongitude = safeCoordinate(profile?.longitude);
+  const metadataFields = categoryMetadataFields[formData.category] || [];
 
   const activeLocation =
     gpsLocation ||
@@ -149,10 +205,14 @@ export default function CreateListing() {
       : null);
 
   useEffect(() => {
-    return () => {
-      previewUrls.forEach(url => URL.revokeObjectURL(url));
-    };
+    previewUrlsRef.current = previewUrls;
   }, [previewUrls]);
+
+  useEffect(() => {
+    return () => {
+      previewUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, []);
 
   const requestListingLocation = async () => {
     if (!navigator.geolocation) {
@@ -222,8 +282,8 @@ export default function CreateListing() {
       file.type.startsWith('image/')
     );
 
-    const oversizedFiles = newFiles.filter(file => file.size > 5 * 1024 * 1024);
-    const acceptedFiles = newFiles.filter(file => file.size <= 5 * 1024 * 1024);
+    const oversizedFiles = newFiles.filter(file => file.size > MAX_IMAGE_BYTES);
+    const acceptedFiles = newFiles.filter(file => file.size <= MAX_IMAGE_BYTES);
 
     if (oversizedFiles.length > 0) {
       setUploadWarning('Some photos were skipped because they are larger than 5 MB.');
@@ -272,6 +332,11 @@ export default function CreateListing() {
     }
 
     for (const image of images) {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => {
+        controller.abort();
+      }, CLOUDINARY_UPLOAD_TIMEOUT_MS);
+
       try {
         const cloudinaryForm = new FormData();
         cloudinaryForm.append('file', image);
@@ -285,27 +350,26 @@ export default function CreateListing() {
           `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
           {
             method: 'POST',
-            body: cloudinaryForm
+            body: cloudinaryForm,
+            signal: controller.signal
           }
         );
 
-        if (!response.ok) {
-          const errorText = await response.text();
+        const result = await response.json().catch(() => ({}));
+
+        if (!response.ok || !result.secure_url) {
           throw new Error(
-            `Cloudinary upload failed with status ${response.status}: ${errorText}`
+            result?.error?.message ||
+              `Cloudinary upload failed with status ${response.status}`
           );
-        }
-
-        const result = await response.json();
-
-        if (!result.secure_url) {
-          throw new Error('Cloudinary upload response did not include secure_url.');
         }
 
         imageUrls.push(result.secure_url);
       } catch (uploadError) {
         console.error('Cloudinary image upload failed:', uploadError);
         failedImageNames.push(image.name);
+      } finally {
+        window.clearTimeout(timeoutId);
       }
     }
 
@@ -433,7 +497,7 @@ export default function CreateListing() {
 
         quantity: formData.quantity.trim(),
         category: formData.category,
-        metadata,
+        metadata: cleanMetadata(metadata),
         inventoryType: formData.inventoryType,
 
         listingStatus: 'available',
@@ -457,6 +521,7 @@ export default function CreateListing() {
         isGeoTagged: listingLatitude !== null && listingLongitude !== null,
 
         images: imageUrls,
+        imageUrls,
         imageUploadStatus,
         failedImageNames,
 
@@ -701,7 +766,7 @@ export default function CreateListing() {
             type="text"
             value={formData.title}
             onChange={e => setFormData({ ...formData, title: e.target.value })}
-            placeholder="e.g. Organic Hybrid Maize, Brahman Bull..."
+            placeholder={getTitlePlaceholder(formData.category)}
             className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
           />
         </div>
@@ -732,11 +797,7 @@ export default function CreateListing() {
               type="text"
               value={formData.quantity}
               onChange={e => setFormData({ ...formData, quantity: e.target.value })}
-              placeholder={
-                formData.inventoryType === 'single'
-                  ? 'e.g. 1 unit'
-                  : 'e.g. 50 Bags, 20 Heads...'
-              }
+              placeholder={getQuantityPlaceholder(formData.category, formData.inventoryType)}
               className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
             />
           </div>
@@ -754,7 +815,7 @@ export default function CreateListing() {
               }}
               className="w-full appearance-none rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white focus:border-amber-500/50 focus:outline-none"
             >
-              {['Animals', 'Farming Products', 'Electronics', 'Equipment', 'Seeds'].map(category => (
+              {listingCategories.map(category => (
                 <option key={category} value={category} className="bg-brand-card">
                   {category}
                 </option>
@@ -778,47 +839,15 @@ export default function CreateListing() {
           </div>
         </div>
 
-        {formData.category === 'Animals' && (
-          <div className="grid grid-cols-3 gap-4">
-            {['Breed', 'Age', 'Weight'].map(field => (
-              <div key={field} className="space-y-2">
-                <label className="text-[9px] font-bold uppercase tracking-widest text-slate-600">
-                  {field}
-                </label>
-                <input
-                  type="text"
-                  value={metadata[field] || ''}
-                  onChange={e => setMetadata({ ...metadata, [field]: e.target.value })}
-                  placeholder={field}
-                  className="w-full rounded-lg border border-white/5 bg-black/20 p-3 text-xs text-white focus:border-amber-500/30 focus:outline-none"
-                />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {formData.category === 'Seeds' && (
-          <div className="grid grid-cols-2 gap-4">
-            {['Variety', 'Germination %'].map(field => (
-              <div key={field} className="space-y-2">
-                <label className="text-[9px] font-bold uppercase tracking-widest text-slate-600">
-                  {field}
-                </label>
-                <input
-                  type="text"
-                  value={metadata[field] || ''}
-                  onChange={e => setMetadata({ ...metadata, [field]: e.target.value })}
-                  placeholder={field}
-                  className="w-full rounded-lg border border-white/5 bg-black/20 p-3 text-xs text-white focus:border-amber-500/30 focus:outline-none"
-                />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {['Electronics', 'Equipment'].includes(formData.category) && (
-          <div className="grid grid-cols-2 gap-4">
-            {['Year/Model', 'Condition'].map(field => (
+        {metadataFields.length > 0 && (
+          <div
+            className={
+              metadataFields.length > 4
+                ? 'grid grid-cols-2 gap-4 md:grid-cols-3'
+                : 'grid grid-cols-2 gap-4'
+            }
+          >
+            {metadataFields.map(field => (
               <div key={field} className="space-y-2">
                 <label className="text-[9px] font-bold uppercase tracking-widest text-slate-600">
                   {field}
