@@ -11,7 +11,6 @@ import {
   doc,
   setDoc
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   AlertCircle,
   CheckCircle2,
@@ -26,7 +25,7 @@ import {
 
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
-import { db, storage } from '../lib/firebase';
+import { db } from '../lib/firebase';
 
 interface ListingGpsLocation {
   latitude: number;
@@ -215,15 +214,32 @@ export default function CreateListing() {
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      setUploadWarning('');
+    if (!e.target.files) return;
 
-      const newFiles = Array.from(e.target.files);
-      setImages(prev => [...prev, ...newFiles]);
+    setUploadWarning('');
 
-      const newUrls = newFiles.map(file => URL.createObjectURL(file));
-      setPreviewUrls(prev => [...prev, ...newUrls]);
+    const newFiles = Array.from(e.target.files).filter(file =>
+      file.type.startsWith('image/')
+    );
+
+    const oversizedFiles = newFiles.filter(file => file.size > 5 * 1024 * 1024);
+    const acceptedFiles = newFiles.filter(file => file.size <= 5 * 1024 * 1024);
+
+    if (oversizedFiles.length > 0) {
+      setUploadWarning('Some photos were skipped because they are larger than 5 MB.');
     }
+
+    if (acceptedFiles.length === 0) {
+      e.target.value = '';
+      return;
+    }
+
+    setImages(prev => [...prev, ...acceptedFiles]);
+
+    const newUrls = acceptedFiles.map(file => URL.createObjectURL(file));
+    setPreviewUrls(prev => [...prev, ...newUrls]);
+
+    e.target.value = '';
   };
 
   const removeImage = (index: number) => {
@@ -234,24 +250,61 @@ export default function CreateListing() {
   };
 
   const uploadListingImagesSafely = async () => {
+    const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
+    const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET;
+
     const imageUrls: string[] = [];
     const failedImageNames: string[] = [];
-    const sellerId = user?.uid || 'unknown';
+
+    if (images.length === 0) {
+      return {
+        imageUrls,
+        failedImageNames
+      };
+    }
+
+    if (!cloudName || !uploadPreset) {
+      console.error('Cloudinary environment variables are missing.');
+      return {
+        imageUrls,
+        failedImageNames: images.map(image => image.name)
+      };
+    }
 
     for (const image of images) {
       try {
-        const safeName = image.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const imageRef = ref(
-          storage,
-          `listings/${sellerId}/${Date.now()}_${safeName}`
+        const cloudinaryForm = new FormData();
+        cloudinaryForm.append('file', image);
+        cloudinaryForm.append('upload_preset', uploadPreset);
+        cloudinaryForm.append(
+          'folder',
+          `hema-trader/listings/${user?.uid || 'unknown'}`
         );
 
-        const snapshot = await uploadBytes(imageRef, image);
-        const url = await getDownloadURL(snapshot.ref);
+        const response = await fetch(
+          `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+          {
+            method: 'POST',
+            body: cloudinaryForm
+          }
+        );
 
-        imageUrls.push(url);
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            `Cloudinary upload failed with status ${response.status}: ${errorText}`
+          );
+        }
+
+        const result = await response.json();
+
+        if (!result.secure_url) {
+          throw new Error('Cloudinary upload response did not include secure_url.');
+        }
+
+        imageUrls.push(result.secure_url);
       } catch (uploadError) {
-        console.error('Image upload failed:', uploadError);
+        console.error('Cloudinary image upload failed:', uploadError);
         failedImageNames.push(image.name);
       }
     }
@@ -332,6 +385,12 @@ export default function CreateListing() {
     try {
       const { imageUrls, failedImageNames } = await uploadListingImagesSafely();
 
+      if (images.length > 0 && failedImageNames.length === images.length) {
+        throw new Error(
+          'Photo upload failed. Please try again, or remove the photos and post the listing without images.'
+        );
+      }
+
       if (failedImageNames.length > 0) {
         setUploadWarning(
           `Listing will be posted, but ${failedImageNames.length} photo upload failed.`
@@ -358,23 +417,30 @@ export default function CreateListing() {
       const listingDoc = await addDoc(collection(db, 'listings'), {
         ownerId: sellerId,
         sellerId,
+        userId: sellerId,
+        createdBy: sellerId,
+
         title: formData.title.trim(),
         description: formData.description.trim(),
         price: priceValue,
         priceDisplay: formatMoney(priceValue, currencyInfo.code, currencyInfo.locale),
+
         currency: currencyInfo.code,
         currencyCode: currencyInfo.code,
         currencyLocale: currencyInfo.locale,
         currencyLabel: currencyInfo.label,
         country: profile?.country || 'Cameroon',
+
         quantity: formData.quantity.trim(),
         category: formData.category,
         metadata,
         inventoryType: formData.inventoryType,
+
         listingStatus: 'available',
         activeTradeId: null,
         soldAt: null,
         reservedAt: null,
+
         location: formData.location.trim(),
         locationName: formData.location.trim(),
         latitude: listingLatitude,
@@ -389,9 +455,11 @@ export default function CreateListing() {
         gpsAccuracy: gpsLocation?.accuracy || null,
         gpsSource: activeLocation?.source || 'missing',
         isGeoTagged: listingLatitude !== null && listingLongitude !== null,
+
         images: imageUrls,
         imageUploadStatus,
         failedImageNames,
+
         status: 'active',
         stockStatus: 'in_stock',
         createdAt: serverTimestamp(),
@@ -405,8 +473,8 @@ export default function CreateListing() {
       console.error('Submit error', error);
       alert(
         error instanceof Error
-          ? `Listing authorization failed: ${error.message}`
-          : 'Listing authorization failed.'
+          ? `Listing failed: ${error.message}`
+          : 'Listing failed. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -522,7 +590,7 @@ export default function CreateListing() {
               Photos
             </label>
             <span className="text-right text-[8px] font-bold uppercase tracking-widest text-slate-600">
-              Recommended for trust
+              Up to 5 MB each
             </span>
           </div>
 
@@ -554,7 +622,7 @@ export default function CreateListing() {
             >
               <ImagePlus className="mb-2 h-6 w-6 text-slate-700 group-hover:text-amber-500" />
               <span className="text-[9px] font-black uppercase tracking-tighter text-slate-600 group-hover:text-amber-500">
-                Append Image
+                Add Photo
               </span>
             </button>
           </div>
