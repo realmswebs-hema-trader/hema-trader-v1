@@ -206,7 +206,8 @@ interface Listing {
   title: string;
   quantity: string;
   category: string;
-  images: string[];
+  images?: string[];
+  imageUrls?: string[];
   ownerId?: string;
   sellerId?: string;
   userId?: string;
@@ -329,6 +330,18 @@ const offerStatusClass = (status: Offer['status']) => {
   return 'border-amber-500 bg-amber-500 text-black';
 };
 
+const getListingImages = (listing?: Listing | null) => {
+  if (Array.isArray(listing?.images) && listing.images.length > 0) {
+    return listing.images;
+  }
+
+  if (Array.isArray(listing?.imageUrls) && listing.imageUrls.length > 0) {
+    return listing.imageUrls;
+  }
+
+  return [];
+};
+
 export default function TradeDetail() {
   const { id } = useParams();
   const { user, profile } = useAuth();
@@ -391,6 +404,29 @@ export default function TradeDetail() {
   const tradeRecipientIds = trade
     ? [trade.buyerId, trade.sellerId, trade.driverId || ''].filter(Boolean)
     : [];
+
+  const notifySafely = async (
+    recipientId: string | undefined,
+    data: Parameters<typeof sendNotification>[1]
+  ) => {
+    if (!recipientId) return;
+
+    try {
+      await sendNotification(recipientId, data);
+    } catch (notificationError) {
+      console.warn('Notification failed:', notificationError);
+    }
+  };
+
+  const sendSystemTradeMessageSafely = async (
+    input: Parameters<typeof sendSystemTradeMessage>[0]
+  ) => {
+    try {
+      await sendSystemTradeMessage(input);
+    } catch (messageError) {
+      console.warn('Trade system message failed:', messageError);
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -464,7 +500,7 @@ export default function TradeDetail() {
       .then(result => {
         if (!result.cancelled) return;
 
-        return sendSystemTradeMessage({
+        return sendSystemTradeMessageSafely({
           tradeId: trade.id,
           listingId: trade.listingId,
           text: result.message || DELIVERY_AUTO_CANCEL_MESSAGE,
@@ -533,7 +569,7 @@ export default function TradeDetail() {
     try {
       await payTradeFromWallet(user, trade.id, walletPin);
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: trade.id,
         listingId: trade.listingId,
         text: `Buyer funded item escrow from Hema Wallet for ${listing?.title || 'this order'}. Seller can now prepare the item.`,
@@ -568,7 +604,7 @@ export default function TradeDetail() {
         await markDeliveryFundingRequired(trade.id);
         setDeliveryFundingError(validation.message || INSUFFICIENT_DELIVERY_FUNDS_MESSAGE);
 
-        await sendNotification(trade.buyerId, {
+        void notifySafely(trade.buyerId, {
           title: 'Fund Account Required',
           body: INSUFFICIENT_DELIVERY_FUNDS_MESSAGE,
           type: 'wallet',
@@ -587,7 +623,7 @@ export default function TradeDetail() {
         deliveryRequestId: trade.deliveryRequestId
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: trade.id,
         listingId: trade.listingId,
         text: `Delivery fee paid from Hema Wallet: ${formatMoney(agreedFee, getTradeCurrency(trade), getTradeLocale(trade))}. Driver can now start pickup.`,
@@ -806,7 +842,7 @@ export default function TradeDetail() {
   };
 
   const handleConfirmDelivery = async () => {
-    if (!trade || !user || !isBuyer || invalidTradeAccess) return;
+    if (!trade || !user || !isBuyer || invalidTradeAccess || trade.status !== 'shipped') return;
 
     const walletPin = requestWalletPin();
     if (!walletPin) return;
@@ -832,7 +868,7 @@ export default function TradeDetail() {
           updatedAt: serverTimestamp()
         });
 
-        await sendSystemTradeMessage({
+        await sendSystemTradeMessageSafely({
           tradeId: trade.id,
           listingId: trade.listingId,
           text: 'Buyer confirmed delivery. Escrow released to the seller and driver Hema Wallet balances.',
@@ -869,7 +905,7 @@ export default function TradeDetail() {
         updatedAt: serverTimestamp()
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: trade.id,
         listingId: trade.listingId,
         text: 'Seller marked this product as back in stock.',
@@ -886,7 +922,15 @@ export default function TradeDetail() {
   };
 
   const handleCancelTrade = async () => {
-    if (!trade || !user || invalidTradeAccess || (!isBuyer && !isSeller)) return;
+    if (
+      !trade ||
+      !user ||
+      invalidTradeAccess ||
+      trade.status !== 'pending' ||
+      (!isBuyer && !isSeller)
+    ) {
+      return;
+    }
 
     const confirmed = window.confirm(
       'Cancel this pending trade? No escrow payment has been made, and the product will stay available.'
@@ -913,7 +957,7 @@ export default function TradeDetail() {
         updatedAt: serverTimestamp()
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: trade.id,
         listingId: trade.listingId,
         text: 'This trade was cancelled during bargaining. No escrow payment was made.',
@@ -944,7 +988,7 @@ export default function TradeDetail() {
         sendNotification
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: trade.id,
         listingId: trade.listingId,
         text: 'A dispute has been opened. Our support team is joining the conversation to help.',
@@ -965,6 +1009,7 @@ export default function TradeDetail() {
     extras: Record<string, any> = {}
   ) => {
     if (!id || !trade || !user || invalidTradeAccess) return;
+    if (newStatus === 'shipped' && !isSeller) return;
 
     setUpdating(true);
 
@@ -994,7 +1039,7 @@ export default function TradeDetail() {
       }
 
       if (systemMessage) {
-        await sendSystemTradeMessage({
+        await sendSystemTradeMessageSafely({
           tradeId: id,
           listingId: trade.listingId,
           text: systemMessage,
@@ -1054,7 +1099,7 @@ export default function TradeDetail() {
         updatedAt: serverTimestamp()
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: id,
         listingId: trade.listingId,
         text: `New item price offer: ${formatTradeAmount(trade, amount)}. Awaiting response inside Hema Trader.`,
@@ -1063,7 +1108,7 @@ export default function TradeDetail() {
         title: 'New Price Offer'
       });
 
-      await sendNotification(recipientId, {
+      void notifySafely(recipientId, {
         title: 'New Price Offer',
         body: `${profileData?.displayName || profileData?.name || 'User'} proposed ${formatTradeAmount(trade, amount)}`,
         type: 'offer',
@@ -1128,7 +1173,7 @@ export default function TradeDetail() {
         updatedAt: serverTimestamp()
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: id,
         listingId: trade.listingId,
         text: `${isBuyer ? 'Buyer' : 'Driver'} proposed a delivery fee of ${formatMoney(amount, getTradeCurrency(trade), getTradeLocale(trade))}.`,
@@ -1137,7 +1182,7 @@ export default function TradeDetail() {
         title: isBuyer ? 'Buyer Countered Delivery Fee' : 'Driver Countered Delivery Fee'
       });
 
-      await sendNotification(recipientId, {
+      void notifySafely(recipientId, {
         title: 'Delivery Fee Counter Offer',
         body: `${profileData?.displayName || profileData?.name || 'User'} proposed ${formatMoney(amount, getTradeCurrency(trade), getTradeLocale(trade))} for delivery.`,
         type: 'delivery',
@@ -1206,7 +1251,7 @@ export default function TradeDetail() {
       }
 
       if (offerSenderId && offerSenderId !== user.uid) {
-        await sendNotification(offerSenderId, {
+        void notifySafely(offerSenderId, {
           title: `${offerType === 'delivery' ? 'Delivery' : 'Price'} Offer ${
             status === 'accepted' ? 'Accepted' : 'Declined'
           }`,
@@ -1221,7 +1266,7 @@ export default function TradeDetail() {
         });
       }
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: id,
         listingId: trade.listingId,
         text:
@@ -1289,7 +1334,7 @@ export default function TradeDetail() {
         sendNotification
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: id,
         listingId: trade.listingId,
         text: `Delivery request sent to ${result.driverCount} online available driver${result.driverCount === 1 ? '' : 's'}. Proposed fee: ${formatMoney(proposedFee, getTradeCurrency(trade), getTradeLocale(trade))}.`,
@@ -1306,7 +1351,7 @@ export default function TradeDetail() {
   };
 
   const assignDriver = async (driverId: string) => {
-    if (!id || !trade || invalidTradeAccess) return;
+    if (!id || !trade || invalidTradeAccess || !isBuyer) return;
 
     setUpdating(true);
 
@@ -1326,7 +1371,7 @@ export default function TradeDetail() {
         updatedAt: serverTimestamp()
       });
 
-      await sendSystemTradeMessage({
+      await sendSystemTradeMessageSafely({
         tradeId: id,
         listingId: trade.listingId,
         text: 'Driver selected. Driver must accept the request before buyer and driver negotiate delivery fee.',
@@ -1335,7 +1380,7 @@ export default function TradeDetail() {
         title: 'Driver Selected'
       });
 
-      await sendNotification(driverId, {
+      void notifySafely(driverId, {
         title: 'Delivery Request',
         body: `Buyer selected you for ${listing?.title || 'an order'}. Accept the request to begin delivery fee bargaining.`,
         type: 'delivery',
@@ -1408,7 +1453,7 @@ export default function TradeDetail() {
       };
 
       if (messages[newStatus]) {
-        await sendSystemTradeMessage({
+        await sendSystemTradeMessageSafely({
           tradeId,
           listingId: trade.listingId,
           text: messages[newStatus],
@@ -1490,6 +1535,7 @@ export default function TradeDetail() {
     );
   }
 
+  const listingImages = getListingImages(listing);
   const itemOffers = offers.filter(offer => (offer.type || 'item') === 'item');
   const deliveryOffers = offers.filter(offer => offer.type === 'delivery');
   const pendingItemOffer = itemOffers.find(offer => offer.status === 'pending');
@@ -1662,15 +1708,15 @@ export default function TradeDetail() {
   );
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-6rem)] max-w-6xl flex-col gap-6 md:h-[calc(100vh-8rem)]">
+    <div className="mx-auto flex min-h-[calc(100vh-6rem)] max-w-6xl flex-col gap-6 md:min-h-[calc(100vh-8rem)] lg:h-[calc(100vh-8rem)]">
       <div className="flex shrink-0 flex-col gap-6 md:flex-row">
         <div className="flex flex-1 items-center gap-6 rounded-[2rem] border border-white/5 bg-brand-card p-6 shadow-2xl">
           <div className="h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-slate-900">
-            {listing?.images?.[0] && (
+            {listingImages[0] && (
               <img
-                src={listing.images[0]}
+                src={listingImages[0]}
                 className="h-full w-full object-cover grayscale-[0.3]"
-                alt={listing.title}
+                alt={listing?.title || 'Listing'}
               />
             )}
           </div>
@@ -1859,7 +1905,7 @@ export default function TradeDetail() {
         </div>
       </div>
 
-      <div className="flex flex-1 gap-6 overflow-hidden">
+      <div className="flex flex-1 flex-col gap-6 overflow-y-auto lg:flex-row lg:overflow-hidden">
         <div className="flex flex-1 flex-col overflow-hidden rounded-[2.5rem] border border-white/5 bg-brand-card shadow-2xl">
           <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.01] p-6">
             <div className="flex items-center gap-3">
@@ -2014,7 +2060,7 @@ export default function TradeDetail() {
           </form>
         </div>
 
-        <div className="hidden w-80 shrink-0 flex-col gap-6 overflow-y-auto lg:flex">
+        <div className="flex w-full shrink-0 flex-col gap-6 lg:w-80 lg:overflow-y-auto">
           <div className="space-y-8 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
             <div className="space-y-6">
               <div className="flex flex-col items-center space-y-2 border-b border-white/5 pb-6 text-center">
