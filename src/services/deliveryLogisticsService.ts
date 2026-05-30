@@ -14,6 +14,7 @@ import {
 import { db } from '../lib/firebase';
 
 export const DELIVERY_PAYMENT_TIMEOUT_MS = 30 * 60 * 1000;
+const DELIVERY_API_TIMEOUT_MS = 25000;
 
 export const DELIVERY_PAYMENT_REQUIRED_MESSAGE =
   'Your Hema Trader balance is not enough to hire this driver. Please fund your account to continue delivery.';
@@ -110,7 +111,9 @@ export interface DeliveryOfferInput {
   deliveryRequestId?: string;
   senderId: string;
   buyerId: string;
+  sellerId?: string;
   driverId: string;
+  listingId?: string;
   amount: number;
 }
 
@@ -120,9 +123,36 @@ const toDateMillis = (value: any) => {
   if (typeof value.toDate === 'function') return value.toDate().getTime();
   if (value instanceof Date) return value.getTime();
   if (typeof value.seconds === 'number') return value.seconds * 1000;
+  if (typeof value._seconds === 'number') return value._seconds * 1000;
 
   const parsed = new Date(value).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const uniqueIds = (ids: string[] = []) =>
+  Array.from(new Set(ids.filter(Boolean)));
+
+const getAuthHeaders = async (user: User) => ({
+  Authorization: `Bearer ${await user.getIdToken()}`,
+  'Content-Type': 'application/json'
+});
+
+const fetchWithTimeout = async (
+  url: string,
+  options: RequestInit,
+  timeoutMs = DELIVERY_API_TIMEOUT_MS
+) => {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 };
 
 export const getDeliveryDeadlineMillis = (trade: any) =>
@@ -194,12 +224,13 @@ export const requestDeliveryFromAvailableDrivers = async (input: DeliveryRequest
 
   const batch = writeBatch(db);
   const tradeRef = doc(db, 'trades', input.tradeId);
-  const requestRefs = availableDrivers.map(driver =>
+  const requestRefs = availableDrivers.map(() =>
     doc(collection(db, 'deliveryRequests'))
   );
 
   requestRefs.forEach((requestRef, index) => {
     const driver = availableDrivers[index];
+    const participantIds = uniqueIds([input.buyerId, input.sellerId, driver.id]);
 
     batch.set(requestRef, {
       tradeId: input.tradeId,
@@ -217,6 +248,8 @@ export const requestDeliveryFromAvailableDrivers = async (input: DeliveryRequest
       distanceKm: input.distanceKm || null,
       buyerInfo: input.buyerInfo || {},
       sellerInfo: input.sellerInfo || {},
+      participantIds,
+      participants: participantIds,
       status: 'delivery_requested',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -248,7 +281,7 @@ export const requestDeliveryFromAvailableDrivers = async (input: DeliveryRequest
   await batch.commit();
 
   if (input.sendNotification) {
-    await Promise.all(
+    const results = await Promise.allSettled(
       availableDrivers.map(driver =>
         input.sendNotification!(driver.id, {
           title: 'New Delivery Request',
@@ -260,6 +293,12 @@ export const requestDeliveryFromAvailableDrivers = async (input: DeliveryRequest
         })
       )
     );
+
+    const failedCount = results.filter(result => result.status === 'rejected').length;
+
+    if (failedCount > 0) {
+      console.warn(`Delivery request notifications failed for ${failedCount} driver(s).`);
+    }
   }
 
   return {
@@ -348,6 +387,7 @@ export const sendDeliveryCounterOffer = async (input: DeliveryOfferInput) => {
   const recipientId = input.senderId === input.buyerId ? input.driverId : input.buyerId;
   const negotiationStatus: DeliveryNegotiationStatus =
     input.senderId === input.buyerId ? 'buyer_countered' : 'driver_countered';
+  const participantIds = uniqueIds([input.buyerId, input.sellerId || '', input.driverId]);
 
   await runTransaction(db, async transaction => {
     const tradeRef = doc(db, 'trades', input.tradeId);
@@ -356,10 +396,20 @@ export const sendDeliveryCounterOffer = async (input: DeliveryOfferInput) => {
     const tradeSnap = await transaction.get(tradeRef);
     if (!tradeSnap.exists()) throw new Error('Trade not found.');
 
+    const trade = tradeSnap.data();
+
     transaction.set(offerRef, {
       type: 'delivery',
+      tradeId: input.tradeId,
+      deliveryRequestId: input.deliveryRequestId || '',
+      listingId: input.listingId || trade.listingId || '',
+      buyerId: input.buyerId,
+      sellerId: input.sellerId || trade.sellerId || '',
+      driverId: input.driverId,
       senderId: input.senderId,
       recipientId,
+      participantIds,
+      participants: participantIds,
       amount: input.amount,
       status: 'pending',
       createdAt: serverTimestamp(),
@@ -371,6 +421,8 @@ export const sendDeliveryCounterOffer = async (input: DeliveryOfferInput) => {
       deliveryFeeAgreed: false,
       deliveryNegotiationStatus: negotiationStatus,
       deliveryBargainStatus: negotiationStatus,
+      lastDeliveryOfferAmount: input.amount,
+      lastDeliveryOfferBy: input.senderId,
       updatedAt: serverTimestamp()
     });
 
@@ -519,14 +571,21 @@ export const requestServerAutoCancelUnfundedDelivery = async (
   user: User,
   tradeId: string
 ) => {
-  const response = await fetch('/api/trades/auto-cancel-unfunded-delivery', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${await user.getIdToken()}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ tradeId })
-  });
+  let response: Response;
+
+  try {
+    response = await fetchWithTimeout('/api/trades/auto-cancel-unfunded-delivery', {
+      method: 'POST',
+      headers: await getAuthHeaders(user),
+      body: JSON.stringify({ tradeId })
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Auto-cancel request timed out. Please try again.');
+    }
+
+    throw error;
+  }
 
   const data = await response.json().catch(() => ({}));
 
