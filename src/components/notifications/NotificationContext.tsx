@@ -15,6 +15,7 @@ import {
   query,
   serverTimestamp,
   updateDoc,
+  where,
   writeBatch
 } from 'firebase/firestore';
 
@@ -30,15 +31,27 @@ export type NotificationType =
   | 'payment'
   | 'escrow'
   | 'delivery'
-  | 'dispute';
+  | 'dispute'
+  | 'wallet'
+  | 'new_listing';
 
 export interface Notification {
   id: string;
+  userId?: string;
+  recipientId?: string;
   title: string;
   body: string;
   type: NotificationType;
   targetId?: string;
-  targetType?: 'trade' | 'listing' | 'driver' | 'delivery' | 'profile' | 'message';
+  targetType?:
+    | 'trade'
+    | 'listing'
+    | 'driver'
+    | 'delivery'
+    | 'profile'
+    | 'message'
+    | 'wallet'
+    | 'user';
   actionUrl?: string;
   senderId?: string;
   senderName?: string;
@@ -80,6 +93,21 @@ interface NotificationContextType {
 const NotificationContext =
   createContext<NotificationContextType | undefined>(undefined);
 
+const getMillis = (value: any) => {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  if (value.seconds) return value.seconds * 1000;
+  if (value._seconds) return value._seconds * 1000;
+
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const uniqueIds = (ids: string[] = []) =>
+  Array.from(new Set(ids.filter(Boolean)));
+
 const normalizeNotification = (id: string, data: any): Notification => {
   const isRead =
     typeof data.isRead === 'boolean'
@@ -90,6 +118,8 @@ const normalizeNotification = (id: string, data: any): Notification => {
 
   return {
     id,
+    userId: data.userId,
+    recipientId: data.recipientId,
     title: data.title || 'Notification',
     body: data.body || '',
     type: data.type || 'system',
@@ -105,6 +135,49 @@ const normalizeNotification = (id: string, data: any): Notification => {
     metadata: data.metadata || {}
   };
 };
+
+const sortNotifications = (items: Notification[]) =>
+  [...items]
+    .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt))
+    .slice(0, 75);
+
+const buildActionUrl = (data: SendNotificationInput) => {
+  if (data.actionUrl) return data.actionUrl;
+  if (!data.targetId) return '';
+
+  if (data.targetType === 'listing') return `/listing/${data.targetId}`;
+  if (data.targetType === 'delivery') return `/delivery/${data.targetId}`;
+  if (data.targetType === 'wallet') return '/wallet';
+  if (data.targetType === 'user' || data.targetType === 'profile') return '/profile';
+
+  return `/trade/${data.targetId}`;
+};
+
+const buildNotificationPayload = (
+  recipientId: string,
+  data: SendNotificationInput,
+  sender: {
+    id?: string;
+    name?: string;
+  }
+) => ({
+  userId: recipientId,
+  recipientId,
+  recipientIds: [recipientId],
+  title: data.title || 'Notification',
+  body: data.body || '',
+  type: data.type || 'system',
+  targetId: data.targetId || '',
+  targetType: data.targetType || 'trade',
+  actionUrl: buildActionUrl(data),
+  senderId: data.senderId || sender.id || '',
+  senderName: data.senderName || sender.name || 'Hema Trader',
+  metadata: data.metadata || {},
+  isRead: false,
+  read: false,
+  createdAt: serverTimestamp(),
+  updatedAt: serverTimestamp()
+});
 
 export const NotificationProvider: React.FC<{
   children: React.ReactNode;
@@ -126,41 +199,79 @@ export const NotificationProvider: React.FC<{
       return;
     }
 
+    let isMounted = true;
+    let fallbackUnsubscribe: (() => void) | null = null;
+
     setLoading(true);
 
-    const notificationQuery = query(
-      collection(db, 'users', user.uid, 'notifications'),
+    const notificationsRef = collection(db, 'notifications');
+
+    const orderedQuery = query(
+      notificationsRef,
+      where('recipientId', '==', user.uid),
       orderBy('createdAt', 'desc'),
       limit(75)
     );
 
-    const unsubscribe = onSnapshot(
-      notificationQuery,
-      snapshot => {
-        const nextNotifications = snapshot.docs.map(docSnap =>
-          normalizeNotification(docSnap.id, docSnap.data())
-        );
+    const fallbackQuery = query(
+      notificationsRef,
+      where('recipientId', '==', user.uid),
+      limit(150)
+    );
 
-        setNotifications(nextNotifications);
-        setLoading(false);
-      },
+    const handleSnapshot = (snapshot: any) => {
+      if (!isMounted) return;
+
+      const nextNotifications = snapshot.docs.map((docSnap: any) =>
+        normalizeNotification(docSnap.id, docSnap.data())
+      );
+
+      setNotifications(sortNotifications(nextNotifications));
+      setLoading(false);
+    };
+
+    const subscribeFallback = () => {
+      if (fallbackUnsubscribe) return;
+
+      fallbackUnsubscribe = onSnapshot(
+        fallbackQuery,
+        handleSnapshot,
+        error => {
+          console.error('Fallback notification listener failed:', error);
+
+          if (isMounted) {
+            setNotifications([]);
+            setLoading(false);
+          }
+        }
+      );
+    };
+
+    const unsubscribe = onSnapshot(
+      orderedQuery,
+      handleSnapshot,
       error => {
-        console.error('Error fetching notifications:', error);
-        setLoading(false);
+        console.error('Notification listener failed. Retrying without ordering:', error);
+        subscribeFallback();
       }
     );
 
-    return () => unsubscribe();
-  }, [user]);
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      fallbackUnsubscribe?.();
+    };
+  }, [user?.uid]);
 
   const markAsRead = async (id: string) => {
     if (!user || !id) return;
 
     try {
-      await updateDoc(doc(db, 'users', user.uid, 'notifications', id), {
+      await updateDoc(doc(db, 'notifications', id), {
         isRead: true,
         read: true,
-        readAt: serverTimestamp()
+        readAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
       });
     } catch (error) {
       console.error('Failed to mark notification as read:', error);
@@ -176,14 +287,12 @@ export const NotificationProvider: React.FC<{
       notifications
         .filter(notification => !notification.isRead)
         .forEach(notification => {
-          batch.update(
-            doc(db, 'users', user.uid, 'notifications', notification.id),
-            {
-              isRead: true,
-              read: true,
-              readAt: serverTimestamp()
-            }
-          );
+          batch.update(doc(db, 'notifications', notification.id), {
+            isRead: true,
+            read: true,
+            readAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          });
         });
 
       await batch.commit();
@@ -199,27 +308,17 @@ export const NotificationProvider: React.FC<{
     if (!recipientId) return;
 
     try {
-      await addDoc(collection(db, 'users', recipientId, 'notifications'), {
-        title: data.title,
-        body: data.body,
-        type: data.type,
-        targetId: data.targetId || '',
-        targetType: data.targetType || 'trade',
-        actionUrl:
-          data.actionUrl ||
-          (data.targetId ? `/trade/${data.targetId}` : ''),
-        senderId: data.senderId || user?.uid || '',
-        senderName:
-          data.senderName ||
-          profile?.displayName ||
-          profile?.name ||
-          user?.displayName ||
-          'Hema Trader',
-        metadata: data.metadata || {},
-        isRead: false,
-        read: false,
-        createdAt: serverTimestamp()
-      });
+      await addDoc(
+        collection(db, 'notifications'),
+        buildNotificationPayload(recipientId, data, {
+          id: user?.uid,
+          name:
+            profile?.displayName ||
+            profile?.name ||
+            user?.displayName ||
+            'Hema Trader'
+        })
+      );
     } catch (error) {
       console.error('Failed to send notification:', error);
     }
@@ -229,44 +328,35 @@ export const NotificationProvider: React.FC<{
     recipientIds: string[],
     data: SendNotificationInput
   ) => {
-    const uniqueRecipientIds = Array.from(
-      new Set(recipientIds.filter(Boolean))
-    );
+    const uniqueRecipientIds = uniqueIds(recipientIds);
 
     if (uniqueRecipientIds.length === 0) return;
 
     try {
-      const batch = writeBatch(db);
+      const sender = {
+        id: user?.uid,
+        name:
+          profile?.displayName ||
+          profile?.name ||
+          user?.displayName ||
+          'Hema Trader'
+      };
 
-      uniqueRecipientIds.forEach(recipientId => {
-        const notificationRef = doc(
-          collection(db, 'users', recipientId, 'notifications')
-        );
+      for (let index = 0; index < uniqueRecipientIds.length; index += 450) {
+        const batch = writeBatch(db);
+        const chunk = uniqueRecipientIds.slice(index, index + 450);
 
-        batch.set(notificationRef, {
-          title: data.title,
-          body: data.body,
-          type: data.type,
-          targetId: data.targetId || '',
-          targetType: data.targetType || 'trade',
-          actionUrl:
-            data.actionUrl ||
-            (data.targetId ? `/trade/${data.targetId}` : ''),
-          senderId: data.senderId || user?.uid || '',
-          senderName:
-            data.senderName ||
-            profile?.displayName ||
-            profile?.name ||
-            user?.displayName ||
-            'Hema Trader',
-          metadata: data.metadata || {},
-          isRead: false,
-          read: false,
-          createdAt: serverTimestamp()
+        chunk.forEach(recipientId => {
+          const notificationRef = doc(collection(db, 'notifications'));
+
+          batch.set(
+            notificationRef,
+            buildNotificationPayload(recipientId, data, sender)
+          );
         });
-      });
 
-      await batch.commit();
+        await batch.commit();
+      }
     } catch (error) {
       console.error('Failed to send notifications:', error);
     }
