@@ -62,6 +62,23 @@ const getMillis = (value: any) => {
 
 const isValidPin = (pin: string) => /^\d{4}$|^\d{6}$/.test(pin);
 
+const creditTransactionTypes = new Set([
+  'wallet_funding',
+  'wallet_topup',
+  'product_refund',
+  'driver_payout',
+  'escrow_release',
+  'refund'
+]);
+
+const getTransactionDirection = (tx: any): 'credit' | 'debit' => {
+  if (tx?.direction === 'credit' || tx?.direction === 'debit') {
+    return tx.direction;
+  }
+
+  return creditTransactionTypes.has(tx?.type) ? 'credit' : 'debit';
+};
+
 const withTimeout = async <T,>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -106,6 +123,7 @@ export default function Wallet() {
   const [withdrawPin, setWithdrawPin] = useState('');
 
   const isLoadingWalletRef = useRef(false);
+  const overviewRef = useRef<WalletOverview | null>(null);
   const mountedRef = useRef(true);
   const fundPanelRef = useRef<HTMLDivElement>(null);
 
@@ -124,6 +142,7 @@ export default function Wallet() {
   const loadWallet = useCallback(
     async (options: { silent?: boolean } = {}) => {
       if (!user) {
+        overviewRef.current = null;
         setOverview(null);
         setLoading(false);
         setRefreshing(false);
@@ -153,6 +172,7 @@ export default function Wallet() {
 
         if (!mountedRef.current) return;
 
+        overviewRef.current = data;
         setOverview(data);
         setLoadError('');
       } catch (err) {
@@ -165,7 +185,7 @@ export default function Wallet() {
 
         setLoadError(nextMessage);
 
-        if (!overview) {
+        if (!overviewRef.current) {
           setMessage(nextMessage);
         }
       } finally {
@@ -177,13 +197,14 @@ export default function Wallet() {
         }
       }
     },
-    [user, overview]
+    [user]
   );
 
   useEffect(() => {
     mountedRef.current = true;
 
     if (!user) {
+      overviewRef.current = null;
       setOverview(null);
       setLoading(false);
       setRefreshing(false);
@@ -231,7 +252,7 @@ export default function Wallet() {
 
     return txs.map(tx => {
       const amount = Number(tx.amount || 0);
-      balance += tx.direction === 'credit' ? amount : -amount;
+      balance += getTransactionDirection(tx) === 'credit' ? amount : -amount;
 
       return {
         name: tx.type?.replaceAll('_', ' ') || 'tx',
@@ -290,7 +311,9 @@ export default function Wallet() {
         providerReference: pendingTopup.providerReference
       });
 
-      if (result.status === 'PENDING') {
+      const paymentStatus = String(result.status || '').toUpperCase();
+
+      if (paymentStatus === 'PENDING' || paymentStatus === 'PROCESSING') {
         setMessage('Payment is still pending. Confirm on your phone, then try again.');
       } else {
         setMessage('Wallet funded successfully. Create your transaction PIN to secure transfers.');
@@ -579,39 +602,43 @@ export default function Wallet() {
           </div>
 
           <div className="mt-6 space-y-3">
-            {(overview?.transactions || []).slice(0, 8).map(tx => (
-              <div
-                key={tx.id}
-                className="flex items-center justify-between rounded-2xl border border-white/5 bg-black/30 p-4"
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`rounded-xl p-2 ${
-                    tx.direction === 'credit'
-                      ? 'bg-green-500/10 text-green-400'
-                      : 'bg-amber-500/10 text-amber-500'
-                  }`}>
-                    {tx.direction === 'credit' ? (
-                      <ArrowDownToLine className="h-4 w-4" />
-                    ) : (
-                      <ArrowUpRight className="h-4 w-4" />
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold uppercase tracking-wider text-white">
-                      {tx.type?.replaceAll('_', ' ') || 'Transaction'}
-                    </p>
-                    <p className="text-[10px] uppercase tracking-widest text-slate-600">
-                      {tx.status || 'completed'}
-                    </p>
-                  </div>
-                </div>
+            {(overview?.transactions || []).slice(0, 8).map(tx => {
+              const direction = getTransactionDirection(tx);
 
-                <p className="text-sm font-black text-white">
-                  {tx.direction === 'credit' ? '+' : '-'}
-                  {formatMoney(Number(tx.amount || 0), tx.currency || currency)}
-                </p>
-              </div>
-            ))}
+              return (
+                <div
+                  key={tx.id}
+                  className="flex items-center justify-between rounded-2xl border border-white/5 bg-black/30 p-4"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`rounded-xl p-2 ${
+                      direction === 'credit'
+                        ? 'bg-green-500/10 text-green-400'
+                        : 'bg-amber-500/10 text-amber-500'
+                    }`}>
+                      {direction === 'credit' ? (
+                        <ArrowDownToLine className="h-4 w-4" />
+                      ) : (
+                        <ArrowUpRight className="h-4 w-4" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold uppercase tracking-wider text-white">
+                        {tx.type?.replaceAll('_', ' ') || 'Transaction'}
+                      </p>
+                      <p className="text-[10px] uppercase tracking-widest text-slate-600">
+                        {tx.status || 'completed'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-sm font-black text-white">
+                    {direction === 'credit' ? '+' : '-'}
+                    {formatMoney(Number(tx.amount || 0), tx.currency || currency)}
+                  </p>
+                </div>
+              );
+            })}
 
             {(overview?.transactions || []).length === 0 && (
               <div className="rounded-2xl border border-white/5 bg-black/30 p-6 text-center text-sm text-slate-500">
