@@ -44,7 +44,6 @@ import { useNotifications } from '../components/notifications/NotificationContex
 import DeliveryRequestPanel from '../components/delivery/DeliveryRequestPanel';
 import RatingModal from '../components/trade/RatingModal';
 import DriverRatingModal from '../components/trade/DriverRatingModal';
-import { findOptimalDrivers } from '../services/matchingService';
 import {
   CONTACT_BLOCK_ERROR,
   sanitizeContactText,
@@ -70,7 +69,6 @@ import {
   markDeliveryFundingRequired,
   requestDeliveryFromAvailableDrivers,
   requestServerAutoCancelUnfundedDelivery,
-  sendDeliveryCounterOffer,
   updateDriverTripStatus
 } from '../services/deliveryLogisticsService';
 
@@ -209,6 +207,10 @@ interface Listing {
   quantity: string;
   category: string;
   images: string[];
+  ownerId?: string;
+  sellerId?: string;
+  userId?: string;
+  createdBy?: string;
   location?: string;
   locationName?: string;
   latitude?: number;
@@ -366,6 +368,26 @@ export default function TradeDetail() {
   const isSeller = Boolean(user?.uid && trade?.sellerId && user.uid === trade.sellerId);
   const isDriver = Boolean(user?.uid && trade?.driverId && user.uid === trade.driverId);
 
+  const isSelfTrade = Boolean(
+    trade?.buyerId &&
+      trade?.sellerId &&
+      trade.buyerId === trade.sellerId
+  );
+
+  const userOwnsListing = Boolean(
+    user?.uid &&
+      listing &&
+      (
+        listing.ownerId === user.uid ||
+        listing.sellerId === user.uid ||
+        listing.userId === user.uid ||
+        listing.createdBy === user.uid
+      )
+  );
+
+  const ownerActingAsBuyer = Boolean(isBuyer && userOwnsListing);
+  const invalidTradeAccess = isSelfTrade || ownerActingAsBuyer;
+
   const tradeRecipientIds = trade
     ? [trade.buyerId, trade.sellerId, trade.driverId || ''].filter(Boolean)
     : [];
@@ -422,7 +444,15 @@ export default function TradeDetail() {
   ]);
 
   useEffect(() => {
-    if (!trade || !user || !isBuyer || !isDeliveryPaymentPendingFunding(trade)) return;
+    if (
+      !trade ||
+      !user ||
+      !isBuyer ||
+      invalidTradeAccess ||
+      !isDeliveryPaymentPendingFunding(trade)
+    ) {
+      return;
+    }
 
     const countdown = getDeliveryCountdown(trade);
 
@@ -452,7 +482,8 @@ export default function TradeDetail() {
     trade?.deliveryPaymentDeadlineAt,
     deliveryCountdownTick,
     user?.uid,
-    isBuyer
+    isBuyer,
+    invalidTradeAccess
   ]);
 
   const setTypingStatus = async (isTyping: boolean) => {
@@ -492,7 +523,7 @@ export default function TradeDetail() {
   };
 
   const handlePayment = async () => {
-    if (!trade || !user || !isBuyer) return;
+    if (!trade || !user || !isBuyer || invalidTradeAccess) return;
 
     const walletPin = requestWalletPin();
     if (!walletPin) return;
@@ -518,7 +549,7 @@ export default function TradeDetail() {
   };
 
   const handleDeliveryPayment = async () => {
-    if (!trade || !user || !isBuyer) return;
+    if (!trade || !user || !isBuyer || invalidTradeAccess) return;
 
     const agreedFee = Number(trade.agreedDeliveryFee || trade.deliveryFee || 0);
 
@@ -713,6 +744,7 @@ export default function TradeDetail() {
   const canBuyerViewDriverContact =
     Boolean(trade?.driverId) &&
     isBuyer &&
+    !invalidTradeAccess &&
     trade?.deliveryPaymentStatus === 'paid';
 
   const canRevealContactMessage = (message: Message) =>
@@ -730,7 +762,7 @@ export default function TradeDetail() {
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!id || !newMessage.trim() || !user || !trade) return;
+    if (!id || !newMessage.trim() || !user || !trade || invalidTradeAccess) return;
 
     const text = newMessage.trim();
     const senderName =
@@ -774,7 +806,7 @@ export default function TradeDetail() {
   };
 
   const handleConfirmDelivery = async () => {
-    if (!trade || !user || !isBuyer) return;
+    if (!trade || !user || !isBuyer || invalidTradeAccess) return;
 
     const walletPin = requestWalletPin();
     if (!walletPin) return;
@@ -854,7 +886,7 @@ export default function TradeDetail() {
   };
 
   const handleCancelTrade = async () => {
-    if (!trade || !user || (!isBuyer && !isSeller)) return;
+    if (!trade || !user || invalidTradeAccess || (!isBuyer && !isSeller)) return;
 
     const confirmed = window.confirm(
       'Cancel this pending trade? No escrow payment has been made, and the product will stay available.'
@@ -898,7 +930,7 @@ export default function TradeDetail() {
   };
 
   const handleOpenDispute = async () => {
-    if (!trade || !user) return;
+    if (!trade || !user || invalidTradeAccess) return;
 
     setUpdating(true);
 
@@ -932,7 +964,7 @@ export default function TradeDetail() {
     newStatus: Trade['status'],
     extras: Record<string, any> = {}
   ) => {
-    if (!id || !trade || !user) return;
+    if (!id || !trade || !user || invalidTradeAccess) return;
 
     setUpdating(true);
 
@@ -981,23 +1013,44 @@ export default function TradeDetail() {
   const submitOffer = async () => {
     if (!id || !user || !newOfferAmount || !trade) return;
 
+    if (invalidTradeAccess) {
+      alert('You cannot bargain with your own listing.');
+      return;
+    }
+
     if (!isBuyer && !isSeller) return;
 
     const amount = Number(newOfferAmount);
     if (!Number.isFinite(amount) || amount <= 0) return;
 
+    const recipientId = user.uid === trade.buyerId ? trade.sellerId : trade.buyerId;
+    const participantIds = Array.from(
+      new Set([trade.buyerId, trade.sellerId].filter(Boolean))
+    );
+
     setUpdating(true);
 
     try {
-      const recipientId = user.uid === trade.buyerId ? trade.sellerId : trade.buyerId;
-
       await addDoc(collection(db, 'trades', id, 'offers'), {
         type: 'item',
+        tradeId: id,
+        listingId: trade.listingId,
+        buyerId: trade.buyerId,
+        sellerId: trade.sellerId,
         senderId: user.uid,
         recipientId,
+        participantIds,
+        participants: participantIds,
         amount,
         status: 'pending',
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await updateDoc(doc(db, 'trades', id), {
+        priceAgreementStatus: 'negotiating',
+        lastOfferAmount: amount,
+        lastOfferBy: user.uid,
         updatedAt: serverTimestamp()
       });
 
@@ -1005,7 +1058,7 @@ export default function TradeDetail() {
         tradeId: id,
         listingId: trade.listingId,
         text: `New item price offer: ${formatTradeAmount(trade, amount)}. Awaiting response inside Hema Trader.`,
-        recipientIds: [trade.buyerId, trade.sellerId],
+        recipientIds: participantIds,
         sendNotification,
         title: 'New Price Offer'
       });
@@ -1031,30 +1084,55 @@ export default function TradeDetail() {
   const submitDeliveryOffer = async () => {
     if (!id || !user || !newDeliveryOfferAmount || !trade?.driverId) return;
 
+    if (invalidTradeAccess) {
+      alert('Invalid trade. Delivery bargain is not available.');
+      return;
+    }
+
     if (!isBuyer && !isDriver) return;
 
     const amount = Number(newDeliveryOfferAmount);
     if (!Number.isFinite(amount) || amount <= 0) return;
 
     const recipientId = isBuyer ? trade.driverId : trade.buyerId;
+    const participantIds = Array.from(
+      new Set([trade.buyerId, trade.sellerId, trade.driverId].filter(Boolean))
+    );
 
     setUpdating(true);
 
     try {
-      await sendDeliveryCounterOffer({
+      await addDoc(collection(db, 'trades', id, 'offers'), {
+        type: 'delivery',
         tradeId: id,
-        deliveryRequestId: trade.deliveryRequestId,
-        senderId: user.uid,
+        deliveryRequestId: trade.deliveryRequestId || '',
+        listingId: trade.listingId,
         buyerId: trade.buyerId,
+        sellerId: trade.sellerId,
         driverId: trade.driverId,
-        amount
+        senderId: user.uid,
+        recipientId,
+        participantIds,
+        participants: participantIds,
+        amount,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await updateDoc(doc(db, 'trades', id), {
+        deliveryNegotiationStatus: isBuyer ? 'buyer_countered' : 'driver_countered',
+        deliveryBargainStatus: 'negotiating_delivery_fee',
+        lastDeliveryOfferAmount: amount,
+        lastDeliveryOfferBy: user.uid,
+        updatedAt: serverTimestamp()
       });
 
       await sendSystemTradeMessage({
         tradeId: id,
         listingId: trade.listingId,
         text: `${isBuyer ? 'Buyer' : 'Driver'} proposed a delivery fee of ${formatMoney(amount, getTradeCurrency(trade), getTradeLocale(trade))}.`,
-        recipientIds: [trade.buyerId, trade.sellerId, trade.driverId],
+        recipientIds: participantIds,
         sendNotification,
         title: isBuyer ? 'Buyer Countered Delivery Fee' : 'Driver Countered Delivery Fee'
       });
@@ -1071,7 +1149,7 @@ export default function TradeDetail() {
       setNewDeliveryOfferAmount('');
       setShowDeliveryNegotiation(false);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `trades/${id}/delivery-offers`);
+      handleFirestoreError(err, OperationType.WRITE, `trades/${id}/offers/delivery`);
     } finally {
       setUpdating(false);
     }
@@ -1082,7 +1160,7 @@ export default function TradeDetail() {
     status: 'accepted' | 'declined',
     amount: number
   ) => {
-    if (!id || !trade || !user) return;
+    if (!id || !trade || !user || invalidTradeAccess) return;
 
     setUpdating(true);
 
@@ -1169,7 +1247,7 @@ export default function TradeDetail() {
   };
 
   const broadcastRequest = async () => {
-    if (!id || !trade || !listing || !isBuyer) return;
+    if (!id || !trade || !listing || !isBuyer || invalidTradeAccess) return;
 
     if (trade.status !== 'funded') {
       alert('You can request delivery after product payment is completed.');
@@ -1228,7 +1306,7 @@ export default function TradeDetail() {
   };
 
   const assignDriver = async (driverId: string) => {
-    if (!id || !trade) return;
+    if (!id || !trade || invalidTradeAccess) return;
 
     setUpdating(true);
 
@@ -1275,7 +1353,7 @@ export default function TradeDetail() {
   };
 
   const updateDeliveryStatus = async (tradeId: string, newStatus: string) => {
-    if (!trade || !user || !isDriver) return;
+    if (!trade || !user || !isDriver || invalidTradeAccess) return;
 
     setUpdating(true);
 
@@ -1350,12 +1428,14 @@ export default function TradeDetail() {
   const canSelectDriver =
     Boolean(trade && user) &&
     isBuyer &&
+    !invalidTradeAccess &&
     trade?.status === 'funded' &&
     !trade?.driverId;
 
   const canRequestAdvancedDelivery =
     Boolean(trade && user) &&
     isBuyer &&
+    !invalidTradeAccess &&
     trade?.status === 'funded' &&
     !trade?.deliveryRequestId;
 
@@ -1390,6 +1470,26 @@ export default function TradeDetail() {
     );
   }
 
+  if (invalidTradeAccess) {
+    return (
+      <div className="mx-auto mt-20 max-w-xl rounded-[3rem] border border-red-500/20 bg-red-500/10 p-6 py-24 text-center shadow-2xl">
+        <AlertCircle className="mx-auto mb-8 h-16 w-16 text-red-500" />
+        <h2 className="mb-4 font-serif text-3xl text-white">
+          Invalid Trade
+        </h2>
+        <p className="mb-10 font-serif italic leading-relaxed text-slate-400">
+          You cannot bargain, buy, or trade with your own listing. Open this product from a different buyer account.
+        </p>
+        <Link
+          to="/"
+          className="rounded-full border border-white/10 px-10 py-5 text-[10px] font-bold uppercase tracking-wider text-white transition-all hover:bg-white/5"
+        >
+          Back to Marketplace
+        </Link>
+      </div>
+    );
+  }
+
   const itemOffers = offers.filter(offer => (offer.type || 'item') === 'item');
   const deliveryOffers = offers.filter(offer => offer.type === 'delivery');
   const pendingItemOffer = itemOffers.find(offer => offer.status === 'pending');
@@ -1397,10 +1497,12 @@ export default function TradeDetail() {
 
   const canBuyerPayItem =
     isBuyer &&
+    !invalidTradeAccess &&
     trade.status === 'pending' &&
     !pendingItemOffer;
 
   const canCancelPendingTrade =
+    !invalidTradeAccess &&
     trade.status === 'pending' &&
     (isBuyer || isSeller);
 
@@ -1411,13 +1513,15 @@ export default function TradeDetail() {
       trade.deliveryNegotiationStatus === 'driver_countered' ||
       trade.deliveryNegotiationStatus === 'buyer_countered') &&
     trade.deliveryPaymentStatus !== 'paid' &&
-    (isBuyer || isDriver);
+    (isBuyer || isDriver) &&
+    !invalidTradeAccess;
 
   const deliveryCountdown = getDeliveryCountdown(trade);
   const agreedDeliveryFee = Number(trade.agreedDeliveryFee || trade.deliveryFee || 0);
 
   const canPayDelivery =
     isBuyer &&
+    !invalidTradeAccess &&
     agreedDeliveryFee > 0 &&
     Boolean(
       trade.deliveryFeeAgreed ||
