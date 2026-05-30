@@ -14,7 +14,6 @@ import {
   updateDoc,
   where
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
   Activity,
   AlertCircle,
@@ -54,7 +53,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react';
 
 import { useAuth } from '../components/auth/AuthContext';
-import { db, storage } from '../lib/firebase';
+import { db } from '../lib/firebase';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import ProfileReviewsTab from '../components/reviews/ProfileReviewsTab';
 import TrustCenterPanel from '../components/trust/TrustCenterPanel';
@@ -74,7 +73,12 @@ interface ListingItem {
   id: string;
   title?: string;
   price?: number;
+  priceDisplay?: string;
+  currency?: string;
+  currencyCode?: string;
+  currencyLocale?: string;
   images?: string[];
+  imageUrls?: string[];
   status?: string;
   category?: string;
   deliveryAvailable?: boolean;
@@ -90,6 +94,10 @@ interface ActivityItem {
   body?: string;
   createdAt?: any;
 }
+
+const PROFILE_MEDIA_MAX_BYTES = 5 * 1024 * 1024;
+const CLOUDINARY_UPLOAD_TIMEOUT_MS = 30000;
+const zeroDecimalCurrencies = new Set(['XAF', 'XOF', 'UGX', 'RWF']);
 
 const getMillis = (value: any) => {
   if (!value) return 0;
@@ -137,6 +145,99 @@ const formatLastActive = (profile: any) => {
 
 const normalizeRoles = (roles: unknown) =>
   Array.isArray(roles) ? roles.filter(role => typeof role === 'string') : [];
+
+const isFirebaseStorageUrl = (value?: string) =>
+  Boolean(value && value.includes('firebasestorage.googleapis.com'));
+
+const getSafeRemoteImageUrl = (value?: string) =>
+  value && !isFirebaseStorageUrl(value) ? value : '';
+
+const getListingImages = (item: ListingItem) => {
+  const images =
+    Array.isArray(item.images) && item.images.length > 0
+      ? item.images
+      : Array.isArray(item.imageUrls) && item.imageUrls.length > 0
+        ? item.imageUrls
+        : [];
+
+  return images.filter(imageUrl => !isFirebaseStorageUrl(imageUrl));
+};
+
+const formatListingPrice = (item: ListingItem) => {
+  if (item.priceDisplay) return item.priceDisplay;
+
+  const currency = item.currencyCode || item.currency || 'XAF';
+
+  try {
+    return new Intl.NumberFormat(item.currencyLocale || 'fr-CM', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: zeroDecimalCurrencies.has(currency) ? 0 : 2
+    }).format(Number(item.price || 0));
+  } catch {
+    return `${currency} ${Number(item.price || 0).toLocaleString()}`;
+  }
+};
+
+const getCloudinaryConfig = () => {
+  const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME as string | undefined;
+  const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET as string | undefined;
+
+  if (!cloudName || !uploadPreset) {
+    throw new Error(
+      'Cloudinary is not configured. Add VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET, then redeploy.'
+    );
+  }
+
+  return { cloudName, uploadPreset };
+};
+
+const uploadProfileMediaToCloudinary = async (
+  file: File,
+  userId: string,
+  folder: 'avatars' | 'banners'
+) => {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Please choose an image file.');
+  }
+
+  if (file.size > PROFILE_MEDIA_MAX_BYTES) {
+    throw new Error('Image must be 5MB or smaller.');
+  }
+
+  const { cloudName, uploadPreset } = getCloudinaryConfig();
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), CLOUDINARY_UPLOAD_TIMEOUT_MS);
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', uploadPreset);
+  formData.append('folder', `hema-trader/profile-${folder}/${userId}`);
+
+  try {
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.secure_url) {
+      throw new Error(data?.error?.message || 'Image upload failed. Please try again.');
+    }
+
+    return data.secure_url as string;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Image upload timed out. Please try again.');
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
 
 export default function Profile() {
   const { userId: urlUserId } = useParams();
@@ -217,9 +318,14 @@ export default function Profile() {
     if (!authUser || !targetUserId || isOwnProfile) return;
 
     const checkFollow = async () => {
-      const followId = `${authUser.uid}_${targetUserId}`;
-      const followSnap = await getDoc(doc(db, 'followers', followId));
-      setIsFollowing(followSnap.exists());
+      try {
+        const followId = `${authUser.uid}_${targetUserId}`;
+        const followSnap = await getDoc(doc(db, 'followers', followId));
+        setIsFollowing(followSnap.exists());
+      } catch (error) {
+        console.warn('Follow check failed:', error);
+        setIsFollowing(false);
+      }
     };
 
     checkFollow();
@@ -376,6 +482,9 @@ export default function Profile() {
     ? 100
     : Math.round((rating / 5) * 100);
 
+  const safeBannerURL = getSafeRemoteImageUrl(profile.bannerURL);
+  const safeAvatarURL = getSafeRemoteImageUrl(profile.photoURL);
+
   const toggleFollow = async () => {
     if (!authUser || !targetUserId || isOwnProfile) return;
 
@@ -408,6 +517,8 @@ export default function Profile() {
         await setDoc(doc(db, 'followers', followId), {
           followerId: authUser.uid,
           followingId: targetUserId,
+          participantIds: [authUser.uid, targetUserId],
+          participants: [authUser.uid, targetUserId],
           autoFollowedFounder: founderAccount,
           createdAt: serverTimestamp()
         });
@@ -437,7 +548,7 @@ export default function Profile() {
           createdAt: serverTimestamp()
         });
 
-        sendNotification(targetUserId, {
+        void sendNotification(targetUserId, {
           title: 'New Follower',
           body: `${myProfile?.displayName || 'Someone'} started following you.`,
           type: 'system',
@@ -507,9 +618,17 @@ export default function Profile() {
       setSettingsMessage('Profile photo updated successfully.');
     } catch (error) {
       console.error('Profile photo update failed:', error);
-      setSettingsMessage('Could not update profile photo. Please try again.');
+      setSettingsMessage(
+        error instanceof Error
+          ? error.message
+          : 'Could not update profile photo. Please try again.'
+      );
     } finally {
       setSettingsLoading(false);
+
+      if (avatarInputRef.current) {
+        avatarInputRef.current.value = '';
+      }
     }
   };
 
@@ -520,10 +639,11 @@ export default function Profile() {
     setSettingsMessage('');
 
     try {
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const bannerRef = ref(storage, `profileBanners/${profile.userId}/${Date.now()}_${safeName}`);
-      const uploadResult = await uploadBytes(bannerRef, file);
-      const bannerURL = await getDownloadURL(uploadResult.ref);
+      const bannerURL = await uploadProfileMediaToCloudinary(
+        file,
+        profile.userId,
+        'banners'
+      );
 
       await updateDoc(doc(db, 'users', profile.userId), {
         bannerURL,
@@ -534,9 +654,15 @@ export default function Profile() {
       setSettingsMessage('Profile banner updated successfully.');
     } catch (error) {
       console.error('Banner upload failed:', error);
-      setSettingsMessage('Could not update banner. Please try again.');
+      setSettingsMessage(
+        error instanceof Error ? error.message : 'Could not update banner. Please try again.'
+      );
     } finally {
       setSettingsLoading(false);
+
+      if (bannerInputRef.current) {
+        bannerInputRef.current.value = '';
+      }
     }
   };
 
@@ -670,9 +796,9 @@ export default function Profile() {
         <div
           className="relative h-48 bg-gradient-to-br from-zinc-950 via-zinc-900 to-amber-950/40 sm:h-64"
           style={
-            profile.bannerURL
+            safeBannerURL
               ? {
-                  backgroundImage: `linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0.15)), url(${profile.bannerURL})`,
+                  backgroundImage: `linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0.15)), url(${safeBannerURL})`,
                   backgroundSize: 'cover',
                   backgroundPosition: 'center'
                 }
@@ -709,7 +835,7 @@ export default function Profile() {
                 <div className="h-32 w-32 overflow-hidden rounded-full border-4 border-brand-card bg-slate-900 shadow-2xl sm:h-40 sm:w-40">
                   <img
                     src={
-                      profile.photoURL ||
+                      safeAvatarURL ||
                       `https://api.dicebear.com/7.x/avataaars/svg?seed=${profile.userId || 'Hema'}`
                     }
                     alt={displayName}
@@ -1006,48 +1132,52 @@ export default function Profile() {
           {activeTab === 'listings' && (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {listings.length > 0 ? (
-                listings.map(item => (
-                  <Link
-                    key={item.id}
-                    to={`/listing/${item.id}`}
-                    className="group overflow-hidden rounded-2xl border border-white/5 bg-black/30"
-                  >
-                    <div className="aspect-[4/3] bg-slate-900">
-                      {item.images?.[0] ? (
-                        <img
-                          src={item.images[0]}
-                          alt={item.title || 'Listing'}
-                          className="h-full w-full object-cover transition group-hover:scale-105"
-                        />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-slate-700">
-                          <Package className="h-10 w-10" />
+                listings.map(item => {
+                  const itemImages = getListingImages(item);
+
+                  return (
+                    <Link
+                      key={item.id}
+                      to={`/listing/${item.id}`}
+                      className="group overflow-hidden rounded-2xl border border-white/5 bg-black/30"
+                    >
+                      <div className="aspect-[4/3] bg-slate-900">
+                        {itemImages[0] ? (
+                          <img
+                            src={itemImages[0]}
+                            alt={item.title || 'Listing'}
+                            className="h-full w-full object-cover transition group-hover:scale-105"
+                          />
+                        ) : (
+                          <div className="flex h-full items-center justify-center text-slate-700">
+                            <Package className="h-10 w-10" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-3 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <h3 className="truncate font-serif text-lg text-white">
+                            {item.title || 'Untitled listing'}
+                          </h3>
+                          <span className="text-[10px] font-black text-amber-500">
+                            {formatListingPrice(item)}
+                          </span>
                         </div>
-                      )}
-                    </div>
-                    <div className="space-y-3 p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h3 className="truncate font-serif text-lg text-white">
-                          {item.title || 'Untitled listing'}
-                        </h3>
-                        <span className="text-[10px] font-black text-amber-500">
-                          ${(item.price || 0).toLocaleString()}
-                        </span>
+                        <div className="flex flex-wrap gap-2">
+                          <span className="rounded-full bg-green-500/10 px-2 py-1 text-[8px] font-black uppercase text-green-500">
+                            Escrow protected
+                          </span>
+                          <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[8px] font-black uppercase text-amber-500">
+                            Local trader
+                          </span>
+                          <span className="rounded-full bg-white/5 px-2 py-1 text-[8px] font-black uppercase text-slate-400">
+                            Delivery available
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        <span className="rounded-full bg-green-500/10 px-2 py-1 text-[8px] font-black uppercase text-green-500">
-                          Escrow protected
-                        </span>
-                        <span className="rounded-full bg-amber-500/10 px-2 py-1 text-[8px] font-black uppercase text-amber-500">
-                          Local trader
-                        </span>
-                        <span className="rounded-full bg-white/5 px-2 py-1 text-[8px] font-black uppercase text-slate-400">
-                          Delivery available
-                        </span>
-                      </div>
-                    </div>
-                  </Link>
-                ))
+                    </Link>
+                  );
+                })
               ) : (
                 <div className="col-span-full rounded-2xl border border-white/5 bg-black/30 p-10 text-center text-slate-500">
                   No listings published yet.
