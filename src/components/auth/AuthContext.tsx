@@ -15,13 +15,8 @@ import {
   setDoc,
   updateDoc
 } from 'firebase/firestore';
-import {
-  ref,
-  uploadBytes,
-  getDownloadURL
-} from 'firebase/storage';
 
-import { auth, db, storage } from '../../lib/firebase';
+import { auth, db } from '../../lib/firebase';
 import {
   FOUNDER_NAME,
   getFounderUserFields,
@@ -79,6 +74,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const FOUNDER_ROLES = ['buyer', 'seller', 'driver', 'admin'];
 const FIRESTORE_TIMEOUT_MS = 8000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+const PROFILE_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const CLOUDINARY_UPLOAD_TIMEOUT_MS = 30000;
 
 const withTimeout = async <T,>(
   promise: Promise<T>,
@@ -194,6 +191,69 @@ const buildProfile = (firebaseUser: User, data: any = {}): AuthProfile => {
   };
 };
 
+const getCloudinaryConfig = () => {
+  const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME as string | undefined;
+  const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET as string | undefined;
+
+  if (!cloudName || !uploadPreset) {
+    throw new Error(
+      'Cloudinary is not configured. Add VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET, then redeploy.'
+    );
+  }
+
+  return { cloudName, uploadPreset };
+};
+
+const uploadProfilePhotoToCloudinary = async (file: File, userId: string) => {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Please choose an image file.');
+  }
+
+  if (file.size > PROFILE_PHOTO_MAX_BYTES) {
+    throw new Error('Profile photo must be 5MB or smaller.');
+  }
+
+  const { cloudName, uploadPreset } = getCloudinaryConfig();
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, CLOUDINARY_UPLOAD_TIMEOUT_MS);
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', uploadPreset);
+  formData.append('folder', `hema-trader/profile-photos/${userId}`);
+
+  try {
+    const response = await fetch(
+      `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+      {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal
+      }
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.secure_url) {
+      throw new Error(
+        data?.error?.message || 'Profile photo upload failed. Please try again.'
+      );
+    }
+
+    return data.secure_url as string;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Profile photo upload timed out. Please try again.');
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<AuthProfile | null>(null);
@@ -294,12 +354,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const signInWithGoogle = async () => {
     const provider = new GoogleAuthProvider();
-    const result = await signInWithPopup(auth, provider);
-    const nextProfile = await saveUserProfile(result.user);
-
-    setUser(result.user);
-    setProfile(nextProfile);
-    setActiveRole(nextProfile.activeRole || nextProfile.roles[0] || '');
+    await signInWithPopup(auth, provider);
   };
 
   const markUserOffline = async (currentUser: User | null) => {
@@ -341,7 +396,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         'Mark offline'
       );
     } catch (error) {
-      console.error('Failed to mark user offline:', error);
+      console.warn('Failed to mark user offline:', error);
     }
   };
 
@@ -494,14 +549,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       throw new Error('You must be signed in to update your profile photo.');
     }
 
-    const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const fileRef = ref(
-      storage,
-      `profilePhotos/${user.uid}/${Date.now()}_${safeFileName}`
-    );
-
-    const uploadResult = await uploadBytes(fileRef, file);
-    const photoURL = await getDownloadURL(uploadResult.ref);
+    const photoURL = await uploadProfilePhotoToCloudinary(file, user.uid);
 
     await updateProfile(user, {
       photoURL
@@ -512,7 +560,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       updatedAt: serverTimestamp()
     });
 
-    setProfile(prev => (prev ? { ...prev, photoURL } : prev));
+    setProfile(prev => {
+      const nextProfile = prev ? { ...prev, photoURL } : prev;
+
+      if (nextProfile) {
+        cacheProfile(user.uid, nextProfile);
+      }
+
+      return nextProfile;
+    });
 
     return photoURL;
   };
@@ -546,8 +602,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       { merge: true }
     );
 
-    setProfile(prev =>
-      prev
+    setProfile(prev => {
+      const nextProfile = prev
         ? {
             ...prev,
             ...(isFounderEmail(user.email) ? getFounderUserFields(prev) : {}),
@@ -555,8 +611,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             name: cleanDisplayName,
             displayNameKey: normalizeNameKey(cleanDisplayName)
           }
-        : prev
-    );
+        : prev;
+
+      if (nextProfile) {
+        cacheProfile(user.uid, nextProfile);
+      }
+
+      return nextProfile;
+    });
   };
 
   const updateAccountPassword = async (password: string) => {
@@ -617,6 +679,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const userRef = doc(db, 'users', user.uid);
 
     const sendHeartbeat = async () => {
+      if (document.visibilityState !== 'visible') return;
+
       try {
         await withTimeout(
           setDoc(
@@ -644,20 +708,28 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             : prev
         );
       } catch (error) {
-        console.error('Online heartbeat failed:', error);
+        console.warn('Online heartbeat failed:', error);
       }
     };
 
     const heartbeatId = window.setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 
-    const handleBeforeUnload = () => {
-      markUserOffline(user);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void sendHeartbeat();
+      }
     };
 
+    const handleBeforeUnload = () => {
+      void markUserOffline(user);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
       window.clearInterval(heartbeatId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [user?.uid, user?.email]);
