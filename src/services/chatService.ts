@@ -3,8 +3,7 @@ import {
   collection,
   doc,
   serverTimestamp,
-  updateDoc,
-  writeBatch
+  updateDoc
 } from 'firebase/firestore';
 
 import { db } from '../lib/firebase';
@@ -17,6 +16,10 @@ const urlPattern = /(https?:\/\/|www\.|\.com\b|\.net\b|\.org\b|\.io\b)/i;
 const phoneLikePattern = /(?:\+?\d[\s().-]*){7,}/;
 const contactIntentPattern =
   /\b(phone|number|whatsapp|telegram|call me|text me|sms|contact me|mobile|momo number|orange money number|mtn number)\b/i;
+
+const emailReplacePattern = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+const urlReplacePattern = /(https?:\/\/\S+|www\.\S+|\S+\.com\b|\S+\.net\b|\S+\.org\b|\S+\.io\b)/gi;
+const phoneLikeReplacePattern = /(?:\+?\d[\s().-]*){7,}/g;
 
 type SendNotificationFn = (
   recipientId: string,
@@ -54,6 +57,7 @@ export class ContactInfoBlockedError extends Error {
       'For safety, do not share phone numbers, WhatsApp, email, links, or outside contact details. Please keep the trade inside Hema Trader.'
     );
     this.name = CONTACT_BLOCK_ERROR;
+    Object.setPrototypeOf(this, ContactInfoBlockedError.prototype);
   }
 }
 
@@ -71,9 +75,9 @@ export const containsContactInfo = (value: string) => {
 
 export const sanitizeContactText = (value: string) =>
   value
-    .replace(emailPattern, '[contact hidden]')
-    .replace(urlPattern, '[link hidden]')
-    .replace(phoneLikePattern, '[number hidden]');
+    .replace(emailReplacePattern, '[contact hidden]')
+    .replace(urlReplacePattern, '[link hidden]')
+    .replace(phoneLikeReplacePattern, '[number hidden]');
 
 const assertNoContactInfo = (value: string) => {
   if (containsContactInfo(value)) {
@@ -108,23 +112,30 @@ const createMessageDocument = ({
   type: 'user' | 'system';
   status?: 'sent' | 'delivered' | 'read';
   contactVisibleAfterPayment?: boolean;
-}) => ({
-  tradeId,
-  listingId,
-  userId: senderId,
-  senderId,
-  senderName,
-  senderPhotoURL,
-  recipientIds: uniqueIds(recipientIds),
-  participants: uniqueIds([senderId, ...recipientIds]),
-  text,
-  type,
-  status,
-  contactVisibleAfterPayment,
-  readBy: senderId === 'system' ? [] : [senderId],
-  createdAt: serverTimestamp(),
-  updatedAt: serverTimestamp()
-});
+}) => {
+  const cleanRecipientIds = uniqueIds(recipientIds);
+  const participantIds = uniqueIds([senderId, ...cleanRecipientIds]);
+
+  return {
+    tradeId,
+    listingId,
+    userId: senderId,
+    senderId,
+    senderName,
+    senderPhotoURL,
+    recipientIds: cleanRecipientIds,
+    participantIds,
+    participants: participantIds,
+    userIds: participantIds,
+    text,
+    type,
+    status,
+    contactVisibleAfterPayment,
+    readBy: senderId === 'system' ? [] : [senderId],
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+};
 
 const updateTradeLastMessage = async ({
   tradeId,
@@ -146,6 +157,43 @@ const updateTradeLastMessage = async ({
     [`typing.${senderId}`]: false,
     updatedAt: serverTimestamp()
   });
+};
+
+const safelyUpdateTradeLastMessage = async (input: {
+  tradeId: string;
+  text: string;
+  senderId: string;
+  allowContactInfo?: boolean;
+}) => {
+  try {
+    await updateTradeLastMessage(input);
+  } catch (error) {
+    console.warn('Trade last message update failed:', error);
+  }
+};
+
+const safelyMirrorToLegacyThread = async (
+  tradeId: string,
+  messageData: Record<string, unknown>
+) => {
+  try {
+    await addDoc(collection(db, 'trades', tradeId, 'messages'), messageData);
+  } catch (error) {
+    console.warn('Legacy trade message mirror failed:', error);
+  }
+};
+
+const safelySendNotifications = async (
+  jobs: Array<() => Promise<void>>,
+  context: string
+) => {
+  const results = await Promise.allSettled(jobs.map(job => job()));
+
+  const failedCount = results.filter(result => result.status === 'rejected').length;
+
+  if (failedCount > 0) {
+    console.warn(`${context}: ${failedCount} notification(s) failed.`);
+  }
 };
 
 export const sendTradeMessage = async ({
@@ -182,23 +230,13 @@ export const sendTradeMessage = async ({
     contactVisibleAfterPayment: allowContactInfo
   });
 
-  const shouldMirrorToLegacyThread = mirrorToLegacyThread && !allowContactInfo;
+  await addDoc(collection(db, 'messages'), messageData);
 
-  if (shouldMirrorToLegacyThread) {
-    const batch = writeBatch(db);
-
-    const flatMessageRef = doc(collection(db, 'messages'));
-    const legacyMessageRef = doc(collection(db, 'trades', tradeId, 'messages'));
-
-    batch.set(flatMessageRef, messageData);
-    batch.set(legacyMessageRef, messageData);
-
-    await batch.commit();
-  } else {
-    await addDoc(collection(db, 'messages'), messageData);
+  if (mirrorToLegacyThread && !allowContactInfo) {
+    await safelyMirrorToLegacyThread(tradeId, messageData);
   }
 
-  await updateTradeLastMessage({
+  await safelyUpdateTradeLastMessage({
     tradeId,
     text: cleanText,
     senderId,
@@ -209,8 +247,8 @@ export const sendTradeMessage = async ({
     recipientIds.filter(id => id !== senderId)
   );
 
-  await Promise.all(
-    uniqueRecipients.map(recipientId =>
+  await safelySendNotifications(
+    uniqueRecipients.map(recipientId => () =>
       sendNotification(recipientId, {
         title: `Message from ${senderName}`,
         body: allowContactInfo
@@ -218,12 +256,13 @@ export const sendTradeMessage = async ({
           : sanitizeContactText(cleanText),
         type: 'message',
         targetId: tradeId,
-        targetType: 'message',
-        actionUrl: `/messages/${tradeId}`,
+        targetType: 'trade',
+        actionUrl: `/trade/${tradeId}`,
         senderId,
         senderName
       })
-    )
+    ),
+    'Trade message notifications'
   );
 };
 
@@ -253,21 +292,13 @@ export const sendSystemTradeMessage = async ({
     status
   });
 
+  await addDoc(collection(db, 'messages'), messageData);
+
   if (mirrorToLegacyThread) {
-    const batch = writeBatch(db);
-
-    const flatMessageRef = doc(collection(db, 'messages'));
-    const legacyMessageRef = doc(collection(db, 'trades', tradeId, 'messages'));
-
-    batch.set(flatMessageRef, messageData);
-    batch.set(legacyMessageRef, messageData);
-
-    await batch.commit();
-  } else {
-    await addDoc(collection(db, 'messages'), messageData);
+    await safelyMirrorToLegacyThread(tradeId, messageData);
   }
 
-  await updateTradeLastMessage({
+  await safelyUpdateTradeLastMessage({
     tradeId,
     text: cleanText,
     senderId: 'system'
@@ -277,8 +308,8 @@ export const sendSystemTradeMessage = async ({
 
   const uniqueRecipients = uniqueIds(recipientIds);
 
-  await Promise.all(
-    uniqueRecipients.map(recipientId =>
+  await safelySendNotifications(
+    uniqueRecipients.map(recipientId => () =>
       sendNotification(recipientId, {
         title,
         body: sanitizeContactText(cleanText),
@@ -287,7 +318,8 @@ export const sendSystemTradeMessage = async ({
         targetType: 'trade',
         actionUrl: `/trade/${tradeId}`
       })
-    )
+    ),
+    'System trade notifications'
   );
 };
 
@@ -296,8 +328,12 @@ export const setTradeTyping = async (
   userId: string,
   isTyping: boolean
 ) => {
-  await updateDoc(doc(db, 'trades', tradeId), {
-    [`typing.${userId}`]: isTyping,
-    updatedAt: serverTimestamp()
-  });
+  try {
+    await updateDoc(doc(db, 'trades', tradeId), {
+      [`typing.${userId}`]: isTyping,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.warn('Typing status update failed:', error);
+  }
 };
