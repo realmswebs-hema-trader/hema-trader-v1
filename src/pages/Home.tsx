@@ -983,227 +983,6 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="space-y-5">
-        <SectionHeader
-          icon={<MapPin className="h-5 w-5" />}
-          title="Marketplace Map"
-          subtitle="Discover nearby sellers, buyers, drivers, crops, livestock, and delivery zones"
-          action="Live Nearby"
-          tone="amber"
-        />
-
-        <div className="flex flex-wrap gap-2 px-2">
-          {[
-            { id: 'all', label: 'All' },
-            { id: '5', label: 'Within 5km' },
-            { id: '10', label: 'Within 10km' },
-            { id: '50', label: 'Within 50km' },
-            { id: 'city', label: 'Same City' }
-          ].map(item => (
-            <button
-              key={item.id}
-              onClick={() => {
-                setDistanceFilter(item.id as 'all' | '5' | '10' | '50' | 'city');
-                setNearbyOnly(item.id !== 'all');
-              }}
-              className={`rounded-full border px-4 py-2 text-[9px] font-black uppercase tracking-widest transition ${
-                distanceFilter === item.id
-                  ? 'border-amber-500 bg-amber-500 text-black'
-                  : 'border-white/10 bg-white/5 text-slate-500 hover:border-amber-500/30 hover:text-white'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        {locationError && (
-          <div className="mx-2 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-300">
-            {locationError}
-          </div>
-        )}
-
-        <MarketplaceMap
-          listings={mapListings}
-          users={mapUsers}
-          currentLocation={userLocation}
-          radiusKm={activeRadiusKm}
-          className="h-[520px]"
-          onRequestLocation={handleRequestLocation}
-        />
-      </section>
-
-      {loading ? (
-        <div className="flex justify-center py-20">
-          <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
-        </div>
-      ) : error ? (
-        <div className="rounded-3xl border border-red-500/20 bg-red-500/5 p-8 text-center text-red-400">
-          {error}
-        </div>
-      ) : (
-        <>
-          <section className="space-y-6">
-            <SectionHeader
-              icon={<ShieldCheck className="h-5 w-5" />}
-              title="Verified Merchants"
-              subtitle="Verified users appear first for safer trading"
-              action="View All Verified"
-              tone="green"
-            />
-
-            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-              {verifiedMerchants.length > 0 ? (
-                verifiedMerchants.map(merchant => (
-                  <MerchantCard key={merchant.id} merchant={merchant} verified />
-                ))
-              ) : (
-                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
-                  No verified users yet.
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="space-y-6 border-t border-white/5 pt-8">
-            <SectionHeader
-              icon={<ShieldAlert className="h-5 w-5" />}
-              title="Unverified Merchants"
-              subtitle="All other registered users building their reputation"
-              action="View All Unverified"
-            />
-
-            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-              {unverifiedMerchants.length > 0 ? (
-                unverifiedMerchants.map(merchant => (
-                  <MerchantCard key={merchant.id} merchant={merchant} verified={false} />
-                ))
-              ) : (
-                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
-                  No unverified users found.
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="space-y-6 border-t border-white/5 pt-8">
-            <SectionHeader
-              icon={<Truck className="h-5 w-5" />}
-              title="Available Drivers"
-              subtitle="Drivers online or marked available for delivery"
-              action="View All Drivers"
-              tone="green"
-            />
-
-            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-              {availableDrivers.length > 0 ? (
-                availableDrivers.map(driver => (
-                  <DriverCard key={driver.id} driver={driver} />
-                ))
-              ) : (
-                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
-                  No available drivers right now.
-                </div>
-              )}
-            </div>
-          </section>
-        </>
-      )}
-
-      {user && followedListings.length > 0 && (
-        <section className="space-y-6">
-          <SectionHeader
-            icon={<Star className="h-5 w-5" />}
-            title="Following"
-            subtitle="Recent arrivals from sellers you follow"
-            action="Refresh Feed"
-          />
-
-          <div className="flex gap-5 overflow-x-auto px-2 pb-6 scrollbar-hide">
-            {followedListings.map(listing => (
-              <Link
-                key={listing.id}
-                to={`/listing/${listing.id}`}
-                className="group w-52 shrink-0 space-y-3"
-              >
-                <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-white/5 bg-brand-card">
-                  {listing.images?.[0] ? (
-                    <img
-                      src={listing.images[0]}
-                      alt={listing.title}
-                      className="h-full w-full object-cover grayscale-[0.2] transition group-hover:scale-105 group-hover:grayscale-0"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-[10px] font-black uppercase tracking-widest text-slate-800">
-                      No Visual
-                    </div>
-                  )}
-
-                  <div className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/60 px-2.5 py-1.5 backdrop-blur-md">
-                    <p className="max-w-28 truncate text-[8px] font-black uppercase tracking-widest text-amber-500">
-                      {formatListingPrice(listing)}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="px-1">
-                  <h4 className="truncate font-serif text-base leading-tight text-white group-hover:text-amber-500">
-                    {listing.title}
-                  </h4>
-                  <div className="mt-1 flex items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500">
-                    <MapPin className="h-3 w-3 text-amber-500/50" />
-                    <span className="truncate">{listing.locationName || listing.location}</span>
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section className="grid grid-cols-1 gap-3 border-t border-white/5 pt-8 sm:grid-cols-2 lg:grid-cols-5">
-        {[
-          {
-            icon: ShieldCheck,
-            title: 'Verified & Trusted',
-            text: 'Verified users appear first'
-          },
-          {
-            icon: Radio,
-            title: 'Live Status',
-            text: 'See who is online in real time'
-          },
-          {
-            icon: Lock,
-            title: 'Safe Transactions',
-            text: 'Escrow protects every trade'
-          },
-          {
-            icon: Star,
-            title: 'Rate & Review',
-            text: 'Rate your experience and build trust'
-          },
-          {
-            icon: Flag,
-            title: 'Report Misconduct',
-            text: 'Help keep the community safe'
-          }
-        ].map(item => (
-          <div
-            key={item.title}
-            className="flex items-center gap-4 rounded-xl border border-white/5 bg-brand-card p-4"
-          >
-            <div className="rounded-full bg-white/5 p-3 text-amber-500">
-              <item.icon className="h-5 w-5" />
-            </div>
-            <div>
-              <h4 className="text-sm font-bold text-white">{item.title}</h4>
-              <p className="mt-1 text-xs text-slate-500">{item.text}</p>
-            </div>
-          </div>
-        ))}
-      </section>
-
       <section className="space-y-6">
         <div className="flex items-center gap-4 px-2">
           <h2 className="font-serif text-3xl text-white">Marketplace</h2>
@@ -1219,7 +998,15 @@ export default function Home() {
           </span>
         </div>
 
-        {filteredListings.length === 0 ? (
+        {loading ? (
+          <div className="flex justify-center rounded-[3rem] border border-white/5 bg-brand-card py-24">
+            <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
+          </div>
+        ) : error ? (
+          <div className="rounded-3xl border border-red-500/20 bg-red-500/5 p-8 text-center text-red-400">
+            {error}
+          </div>
+        ) : filteredListings.length === 0 ? (
           <div className="rounded-[3rem] border border-white/5 bg-brand-card py-24 text-center">
             <Search className="mx-auto h-10 w-10 text-slate-700" />
             <h3 className="mt-4 font-serif text-2xl text-white">
@@ -1345,6 +1132,219 @@ export default function Home() {
             })}
           </div>
         )}
+      </section>
+
+      {user && followedListings.length > 0 && (
+        <section className="space-y-6">
+          <SectionHeader
+            icon={<Star className="h-5 w-5" />}
+            title="Following"
+            subtitle="Recent arrivals from sellers you follow"
+            action="Refresh Feed"
+          />
+
+          <div className="flex gap-5 overflow-x-auto px-2 pb-6 scrollbar-hide">
+            {followedListings.map(listing => (
+              <Link
+                key={listing.id}
+                to={`/listing/${listing.id}`}
+                className="group w-52 shrink-0 space-y-3"
+              >
+                <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-white/5 bg-brand-card">
+                  {listing.images?.[0] ? (
+                    <img
+                      src={listing.images[0]}
+                      alt={listing.title}
+                      className="h-full w-full object-cover grayscale-[0.2] transition group-hover:scale-105 group-hover:grayscale-0"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-[10px] font-black uppercase tracking-widest text-slate-800">
+                      No Visual
+                    </div>
+                  )}
+
+                  <div className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/60 px-2.5 py-1.5 backdrop-blur-md">
+                    <p className="max-w-28 truncate text-[8px] font-black uppercase tracking-widest text-amber-500">
+                      {formatListingPrice(listing)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="px-1">
+                  <h4 className="truncate font-serif text-base leading-tight text-white group-hover:text-amber-500">
+                    {listing.title}
+                  </h4>
+                  <div className="mt-1 flex items-center gap-2 text-[8px] font-black uppercase tracking-widest text-slate-500">
+                    <MapPin className="h-3 w-3 text-amber-500/50" />
+                    <span className="truncate">{listing.locationName || listing.location}</span>
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {!loading && !error && (
+        <>
+          <section className="space-y-6">
+            <SectionHeader
+              icon={<ShieldCheck className="h-5 w-5" />}
+              title="Verified Merchants"
+              subtitle="Verified users appear first for safer trading"
+              action="View All Verified"
+              tone="green"
+            />
+
+            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+              {verifiedMerchants.length > 0 ? (
+                verifiedMerchants.map(merchant => (
+                  <MerchantCard key={merchant.id} merchant={merchant} verified />
+                ))
+              ) : (
+                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
+                  No verified users yet.
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="space-y-6 border-t border-white/5 pt-8">
+            <SectionHeader
+              icon={<ShieldAlert className="h-5 w-5" />}
+              title="Unverified Merchants"
+              subtitle="All other registered users building their reputation"
+              action="View All Unverified"
+            />
+
+            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+              {unverifiedMerchants.length > 0 ? (
+                unverifiedMerchants.map(merchant => (
+                  <MerchantCard key={merchant.id} merchant={merchant} verified={false} />
+                ))
+              ) : (
+                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
+                  No unverified users found.
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="space-y-6 border-t border-white/5 pt-8">
+            <SectionHeader
+              icon={<Truck className="h-5 w-5" />}
+              title="Available Drivers"
+              subtitle="Drivers online or marked available for delivery"
+              action="View All Drivers"
+              tone="green"
+            />
+
+            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+              {availableDrivers.length > 0 ? (
+                availableDrivers.map(driver => (
+                  <DriverCard key={driver.id} driver={driver} />
+                ))
+              ) : (
+                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
+                  No available drivers right now.
+                </div>
+              )}
+            </div>
+          </section>
+        </>
+      )}
+
+      <section className="grid grid-cols-1 gap-3 border-t border-white/5 pt-8 sm:grid-cols-2 lg:grid-cols-5">
+        {[
+          {
+            icon: ShieldCheck,
+            title: 'Verified & Trusted',
+            text: 'Verified users appear first'
+          },
+          {
+            icon: Radio,
+            title: 'Live Status',
+            text: 'See who is online in real time'
+          },
+          {
+            icon: Lock,
+            title: 'Safe Transactions',
+            text: 'Escrow protects every trade'
+          },
+          {
+            icon: Star,
+            title: 'Rate & Review',
+            text: 'Rate your experience and build trust'
+          },
+          {
+            icon: Flag,
+            title: 'Report Misconduct',
+            text: 'Help keep the community safe'
+          }
+        ].map(item => (
+          <div
+            key={item.title}
+            className="flex items-center gap-4 rounded-xl border border-white/5 bg-brand-card p-4"
+          >
+            <div className="rounded-full bg-white/5 p-3 text-amber-500">
+              <item.icon className="h-5 w-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-white">{item.title}</h4>
+              <p className="mt-1 text-xs text-slate-500">{item.text}</p>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="space-y-5">
+        <SectionHeader
+          icon={<MapPin className="h-5 w-5" />}
+          title="Marketplace Map"
+          subtitle="Discover nearby sellers, buyers, drivers, crops, livestock, and delivery zones"
+          action="Live Nearby"
+          tone="amber"
+        />
+
+        <div className="flex flex-wrap gap-2 px-2">
+          {[
+            { id: 'all', label: 'All' },
+            { id: '5', label: 'Within 5km' },
+            { id: '10', label: 'Within 10km' },
+            { id: '50', label: 'Within 50km' },
+            { id: 'city', label: 'Same City' }
+          ].map(item => (
+            <button
+              key={item.id}
+              onClick={() => {
+                setDistanceFilter(item.id as 'all' | '5' | '10' | '50' | 'city');
+                setNearbyOnly(item.id !== 'all');
+              }}
+              className={`rounded-full border px-4 py-2 text-[9px] font-black uppercase tracking-widest transition ${
+                distanceFilter === item.id
+                  ? 'border-amber-500 bg-amber-500 text-black'
+                  : 'border-white/10 bg-white/5 text-slate-500 hover:border-amber-500/30 hover:text-white'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {locationError && (
+          <div className="mx-2 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-300">
+            {locationError}
+          </div>
+        )}
+
+        <MarketplaceMap
+          listings={mapListings}
+          users={mapUsers}
+          currentLocation={userLocation}
+          radiusKm={activeRadiusKm}
+          className="h-[520px]"
+          onRequestLocation={handleRequestLocation}
+        />
       </section>
 
       <AnimatePresence>
