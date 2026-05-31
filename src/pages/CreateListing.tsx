@@ -35,9 +35,17 @@ interface ListingGpsLocation {
 }
 
 type InventoryType = 'single' | 'stock';
+type SellerSubscriptionPlan = 'free' | 'starter' | 'pro' | 'business';
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const CLOUDINARY_UPLOAD_TIMEOUT_MS = 30000;
+
+const sellerListingLimits: Record<SellerSubscriptionPlan, number> = {
+  free: 5,
+  starter: 25,
+  pro: 100,
+  business: Infinity
+};
 
 const listingCategories = [
   'Animals',
@@ -135,6 +143,32 @@ const cleanMetadata = (metadata: Record<string, string>) =>
       .filter(([, value]) => value)
   );
 
+const getSellerPlan = (profile: any): SellerSubscriptionPlan => {
+  const plan = profile?.subscription?.plan;
+
+  if (plan === 'starter' || plan === 'pro' || plan === 'business') {
+    return plan;
+  }
+
+  return 'free';
+};
+
+const getListingLimitMessage = (plan: SellerSubscriptionPlan) => {
+  if (plan === 'free') {
+    return 'You have reached your free listing limit. Upgrade to Starter to add more products.';
+  }
+
+  if (plan === 'starter') {
+    return 'You have reached your Starter listing limit. Upgrade to Pro to add more products.';
+  }
+
+  if (plan === 'pro') {
+    return 'You have reached your Pro listing limit. Upgrade to Business to add more products.';
+  }
+
+  return 'Your current plan does not allow more listings.';
+};
+
 const getTitlePlaceholder = (category: string) => {
   if (category === 'Clothing') return 'e.g. Ankara dress, denim jacket, sneakers...';
   if (category === 'Accessories') return 'e.g. Leather handbag, watch, necklace...';
@@ -166,6 +200,8 @@ export default function CreateListing() {
   const navigate = useNavigate();
 
   const currencyInfo = getCurrencyInfo(profile);
+  const sellerPlan = getSellerPlan(profile);
+  const sellerLimit = sellerListingLimits[sellerPlan];
 
   const [loading, setLoading] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
@@ -213,6 +249,27 @@ export default function CreateListing() {
       previewUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
     };
   }, []);
+
+  const validateSellerListingLimit = async () => {
+    if (!user) return;
+
+    const limitForPlan = sellerListingLimits[getSellerPlan(profile)];
+
+    if (limitForPlan === Infinity) return;
+
+    const activeListingsQuery = query(
+      collection(db, 'listings'),
+      where('sellerId', '==', user.uid),
+      where('status', '==', 'active'),
+      limit(limitForPlan + 1)
+    );
+
+    const activeListingsSnap = await getDocs(activeListingsQuery);
+
+    if (activeListingsSnap.size >= limitForPlan) {
+      throw new Error(getListingLimitMessage(getSellerPlan(profile)));
+    }
+  };
 
   const requestListingLocation = async () => {
     if (!navigator.geolocation) {
@@ -447,6 +504,8 @@ export default function CreateListing() {
     setUploadWarning('');
 
     try {
+      await validateSellerListingLimit();
+
       const { imageUrls, failedImageNames } = await uploadListingImagesSafely();
 
       if (images.length > 0 && failedImageNames.length === images.length) {
@@ -499,6 +558,9 @@ export default function CreateListing() {
         category: formData.category,
         metadata: cleanMetadata(metadata),
         inventoryType: formData.inventoryType,
+
+        sellerSubscriptionPlan: sellerPlan,
+        listingLimitAtCreation: sellerLimit === Infinity ? null : sellerLimit,
 
         listingStatus: 'available',
         activeTradeId: null,
