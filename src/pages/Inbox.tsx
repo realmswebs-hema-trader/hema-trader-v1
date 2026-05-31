@@ -6,7 +6,8 @@ import {
   limit,
   onSnapshot,
   query,
-  where
+  where,
+  type Query
 } from 'firebase/firestore';
 import {
   AlertCircle,
@@ -25,13 +26,24 @@ interface TradeInboxItem {
   sellerId?: string;
   driverId?: string;
   participants?: string[];
+  participantIds?: string[];
   status?: string;
   lastMessage?: string;
   lastMessageAt?: any;
   lastMessageSenderId?: string;
+  unreadBy?: string[];
+  readBy?: string[];
   updatedAt?: any;
   createdAt?: any;
 }
+
+interface InboxQueryDefinition {
+  key: string;
+  value: Query;
+  required?: boolean;
+}
+
+const REQUIRED_QUERY_KEYS = ['buyer', 'seller', 'driver'];
 
 const getMillis = (value: any) => {
   if (!value) return 0;
@@ -39,10 +51,16 @@ const getMillis = (value: any) => {
   if (typeof value.toDate === 'function') return value.toDate().getTime();
   if (value instanceof Date) return value.getTime();
   if (value.seconds) return value.seconds * 1000;
+  if (value._seconds) return value._seconds * 1000;
 
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
 };
+
+const getInboxTime = (item: TradeInboxItem) =>
+  getMillis(item.lastMessageAt) ||
+  getMillis(item.updatedAt) ||
+  getMillis(item.createdAt);
 
 const formatTime = (value: any) => {
   const millis = getMillis(value);
@@ -74,62 +92,82 @@ const handleFirestoreError = (error: unknown) => {
   return 'Could not load inbox.';
 };
 
+const buildInboxQueries = (userId: string): InboxQueryDefinition[] => [
+  {
+    key: 'buyer',
+    required: true,
+    value: query(
+      collection(db, 'trades'),
+      where('buyerId', '==', userId),
+      limit(50)
+    )
+  },
+  {
+    key: 'seller',
+    required: true,
+    value: query(
+      collection(db, 'trades'),
+      where('sellerId', '==', userId),
+      limit(50)
+    )
+  },
+  {
+    key: 'driver',
+    required: true,
+    value: query(
+      collection(db, 'trades'),
+      where('driverId', '==', userId),
+      limit(50)
+    )
+  },
+  {
+    key: 'participants',
+    value: query(
+      collection(db, 'trades'),
+      where('participants', 'array-contains', userId),
+      limit(50)
+    )
+  },
+  {
+    key: 'participantIds',
+    value: query(
+      collection(db, 'trades'),
+      where('participantIds', 'array-contains', userId),
+      limit(50)
+    )
+  }
+];
+
 export default function Inbox() {
   const { user } = useAuth();
 
   const [buckets, setBuckets] = useState<Record<string, TradeInboxItem[]>>({});
+  const [queryErrors, setQueryErrors] = useState<Record<string, string>>({});
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.uid) {
+      setBuckets({});
+      setQueryErrors({});
       setLoading(false);
       return;
     }
 
+    let active = true;
+
+    setBuckets({});
+    setQueryErrors({});
     setLoading(true);
-    setError(null);
 
-    const tradeQueries = [
-      {
-        key: 'buyer',
-        value: query(
-          collection(db, 'trades'),
-          where('buyerId', '==', user.uid),
-          limit(50)
-        )
-      },
-      {
-        key: 'seller',
-        value: query(
-          collection(db, 'trades'),
-          where('sellerId', '==', user.uid),
-          limit(50)
-        )
-      },
-      {
-        key: 'driver',
-        value: query(
-          collection(db, 'trades'),
-          where('driverId', '==', user.uid),
-          limit(50)
-        )
-      },
-      {
-        key: 'participants',
-        value: query(
-          collection(db, 'trades'),
-          where('participants', 'array-contains', user.uid),
-          limit(50)
-        )
-      }
-    ];
+    const tradeQueries = buildInboxQueries(user.uid);
 
-    const unsubscribes = tradeQueries.map(({ key, value }) =>
+    const unsubscribes = tradeQueries.map(({ key, value, required }) =>
       onSnapshot(
         value,
         snapshot => {
+          if (!active) return;
+
           setBuckets(current => ({
             ...current,
             [key]: snapshot.docs.map(docSnap => ({
@@ -138,17 +176,36 @@ export default function Inbox() {
             })) as TradeInboxItem[]
           }));
 
+          setQueryErrors(current => {
+            const next = { ...current };
+            delete next[key];
+            return next;
+          });
+
           setLoading(false);
         },
         err => {
-          console.error('Inbox query failed:', err);
-          setError(handleFirestoreError(err));
+          if (!active) return;
+
+          const message = handleFirestoreError(err);
+
+          console.warn(
+            `Inbox ${key} query failed${required ? '' : ' (optional)'}:`,
+            err
+          );
+
+          setQueryErrors(current => ({
+            ...current,
+            [key]: message
+          }));
+
           setLoading(false);
         }
       )
     );
 
     return () => {
+      active = false;
       unsubscribes.forEach(unsubscribe => unsubscribe());
     };
   }, [user?.uid]);
@@ -157,27 +214,37 @@ export default function Inbox() {
     const byId = new Map<string, TradeInboxItem>();
 
     Object.values(buckets).forEach(items => {
-      items.forEach(item => byId.set(item.id, item));
+      items.forEach(item => {
+        const existing = byId.get(item.id);
+
+        if (!existing || getInboxTime(item) >= getInboxTime(existing)) {
+          byId.set(item.id, item);
+        }
+      });
     });
 
-    return Array.from(byId.values()).sort((a, b) => {
-      const aTime =
-        getMillis(a.lastMessageAt) ||
-        getMillis(a.updatedAt) ||
-        getMillis(a.createdAt);
-
-      const bTime =
-        getMillis(b.lastMessageAt) ||
-        getMillis(b.updatedAt) ||
-        getMillis(b.createdAt);
-
-      return bTime - aTime;
-    });
+    return Array.from(byId.values()).sort(
+      (a, b) => getInboxTime(b) - getInboxTime(a)
+    );
   }, [buckets]);
 
+  const requiredQueriesFailed = REQUIRED_QUERY_KEYS.every(
+    key => Boolean(queryErrors[key]) && !(key in buckets)
+  );
+
+  const fatalError = requiredQueriesFailed
+    ? queryErrors.buyer ||
+      queryErrors.seller ||
+      queryErrors.driver ||
+      'Could not load inbox.'
+    : null;
+
   const filteredConversations = conversations.filter(item => {
-    const text = `${item.id} ${item.listingId || ''} ${item.lastMessage || ''} ${item.status || ''}`.toLowerCase();
-    return text.includes(search.toLowerCase());
+    const text = `${item.id} ${item.listingId || ''} ${item.lastMessage || ''} ${
+      item.status || ''
+    }`.toLowerCase();
+
+    return text.includes(search.trim().toLowerCase());
   });
 
   if (!user) {
@@ -217,11 +284,11 @@ export default function Inbox() {
         <div className="flex items-center justify-center rounded-[2rem] border border-white/5 bg-brand-card py-24">
           <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
         </div>
-      ) : error ? (
+      ) : fatalError ? (
         <div className="rounded-[2rem] border border-red-500/20 bg-red-500/5 p-10 text-center">
           <AlertCircle className="mx-auto mb-4 h-10 w-10 text-red-500" />
           <p className="font-serif text-xl text-white">Inbox unavailable</p>
-          <p className="mt-2 text-sm text-slate-500">{error}</p>
+          <p className="mt-2 text-sm text-slate-500">{fatalError}</p>
         </div>
       ) : filteredConversations.length === 0 ? (
         <div className="rounded-[2rem] border border-white/5 bg-brand-card p-12 text-center">
@@ -234,9 +301,13 @@ export default function Inbox() {
       ) : (
         <div className="overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card shadow-2xl">
           {filteredConversations.map(item => {
-            const isUnread =
-              item.lastMessageSenderId &&
-              item.lastMessageSenderId !== user.uid;
+            const isUnread = Array.isArray(item.unreadBy)
+              ? item.unreadBy.includes(user.uid)
+              : Boolean(
+                  item.lastMessageSenderId &&
+                    item.lastMessageSenderId !== user.uid &&
+                    !item.readBy?.includes(user.uid)
+                );
 
             return (
               <Link
