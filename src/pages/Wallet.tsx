@@ -26,6 +26,7 @@ import {
 import { useAuth } from '../components/auth/AuthContext';
 import {
   getWalletOverview,
+  getWithdrawalFeePreview,
   setWalletPin,
   startWalletTopup,
   verifyWalletTopup,
@@ -130,6 +131,20 @@ export default function Wallet() {
   const wallet = overview?.wallet;
   const walletSecurity = overview?.walletSecurity;
   const currency = wallet?.currency || 'XAF';
+  const availableBalance = Number(wallet?.availableBalance || 0);
+
+  const withdrawalPreview = useMemo(
+    () => getWithdrawalFeePreview(Number(withdrawAmount || 0), currency),
+    [withdrawAmount, currency]
+  );
+
+  const withdrawalAmountTooHigh =
+    withdrawalPreview.amount > 0 &&
+    withdrawalPreview.amount > availableBalance;
+
+  const withdrawalBlocked =
+    withdrawalPreview.amount > 0 &&
+    (!withdrawalPreview.canWithdraw || withdrawalAmountTooHigh);
 
   const hasFundedWallet =
     Number(wallet?.availableBalance || 0) > 0 ||
@@ -377,6 +392,16 @@ export default function Wallet() {
       return;
     }
 
+    if (!withdrawalPreview.canWithdraw) {
+      setMessage('Withdrawal amount is too low after fees.');
+      return;
+    }
+
+    if (withdrawalAmountTooHigh) {
+      setMessage('Your available wallet balance is not enough for this withdrawal.');
+      return;
+    }
+
     if (!withdrawPhone.trim()) {
       setMessage('Enter your MTN or Orange Money payout number.');
       return;
@@ -399,7 +424,12 @@ export default function Wallet() {
         currency
       });
 
-      setMessage('Withdrawal submitted.');
+      setMessage(
+        `Withdrawal submitted. You will receive ${formatMoney(
+          withdrawalPreview.netAmount,
+          currency
+        )} after fees.`
+      );
       setWithdrawAmount('');
       setWithdrawPhone('');
       setWithdrawPin('');
@@ -724,9 +754,64 @@ export default function Wallet() {
                 className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
               />
 
+              {withdrawalPreview.amount > 0 && (
+                <div
+                  className={`space-y-2 rounded-xl border p-4 ${
+                    withdrawalBlocked
+                      ? 'border-red-500/20 bg-red-500/10'
+                      : 'border-white/5 bg-black/30'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                      Withdrawal
+                    </span>
+                    <span className="text-sm font-bold text-white">
+                      {formatMoney(withdrawalPreview.amount, currency)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                      Fee
+                    </span>
+                    <span className="text-sm font-bold text-amber-400">
+                      {formatMoney(withdrawalPreview.fee, currency)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 border-t border-white/5 pt-2">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                      You Receive
+                    </span>
+                    <span className="text-base font-black text-green-400">
+                      {formatMoney(withdrawalPreview.netAmount, currency)}
+                    </span>
+                  </div>
+
+                  {withdrawalAmountTooHigh && (
+                    <p className="text-[9px] font-black uppercase leading-relaxed tracking-widest text-red-300">
+                      Available balance is only {formatMoney(availableBalance, currency)}.
+                    </p>
+                  )}
+
+                  {!withdrawalPreview.canWithdraw && (
+                    <p className="text-[9px] font-black uppercase leading-relaxed tracking-widest text-red-300">
+                      Amount is too low after withdrawal fees.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <button
                 onClick={handleWithdraw}
-                disabled={working || !withdrawAmount || !withdrawPhone || !withdrawPin}
+                disabled={
+                  working ||
+                  !withdrawAmount ||
+                  !withdrawPhone ||
+                  !withdrawPin ||
+                  withdrawalBlocked
+                }
                 className="w-full rounded-xl bg-white py-4 text-[10px] font-black uppercase tracking-widest text-black disabled:opacity-50"
               >
                 Withdraw To Mobile Money
