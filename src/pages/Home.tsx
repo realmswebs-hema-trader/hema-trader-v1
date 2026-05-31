@@ -46,6 +46,12 @@ import {
   toGeoPoint,
   type GeoPoint
 } from '../utils/geoUtils';
+import {
+  getListingBoostLabel,
+  getListingBoostPriority,
+  isListingBoostActive,
+  type ListingBoost
+} from '../utils/boostUtils';
 
 interface Listing {
   id: string;
@@ -65,7 +71,11 @@ interface Listing {
   latitude?: number;
   longitude?: number;
   status: string;
+  listingStatus?: string;
   isBoosted?: boolean;
+  boost?: ListingBoost | null;
+  hasTradeHistory?: boolean;
+  activeTradeId?: string | null;
   createdAt?: any;
 }
 
@@ -145,7 +155,11 @@ const getMillis = (value: any) => {
   if (typeof value.toMillis === 'function') return value.toMillis();
   if (typeof value.toDate === 'function') return value.toDate().getTime();
   if (value instanceof Date) return value.getTime();
-  return 0;
+  if (value.seconds) return value.seconds * 1000;
+  if (value._seconds) return value._seconds * 1000;
+
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
 };
 
 const normalizeRoles = (roles: unknown): string[] => {
@@ -190,6 +204,14 @@ const sortProfiles = (a: UserProfile, b: UserProfile) => {
 
   return getMillis(b.lastActiveAt) - getMillis(a.lastActiveAt);
 };
+
+const sortListingsForMarketplace = <T extends Listing>(items: T[]) =>
+  [...items].sort((a, b) => {
+    const boostDelta = getListingBoostPriority(b) - getListingBoostPriority(a);
+    if (boostDelta !== 0) return boostDelta;
+
+    return getMillis(b.createdAt) - getMillis(a.createdAt);
+  });
 
 const profileMatchesSearch = (profile: UserProfile, searchTerm: string) => {
   if (!searchTerm) return true;
@@ -584,10 +606,9 @@ export default function Home() {
           ...docSnap.data()
         })) as Listing[];
 
-        const activeListings = allListings
-          .filter(listing => listing.status === 'active')
-          .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt))
-          .slice(0, 20);
+        const activeListings = sortListingsForMarketplace(
+          allListings.filter(listing => listing.status === 'active')
+        ).slice(0, 20);
 
         setListings(activeListings);
 
@@ -604,14 +625,13 @@ export default function Home() {
 
           if (followingIds.length > 0) {
             setFollowedListings(
-              allListings
-                .filter(
+              sortListingsForMarketplace(
+                allListings.filter(
                   listing =>
                     listing.status === 'active' &&
                     followingIds.includes(listing.ownerId)
                 )
-                .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt))
-                .slice(0, 10)
+              ).slice(0, 10)
             );
           } else {
             setFollowedListings([]);
@@ -742,6 +762,15 @@ export default function Home() {
           location: listing.locationName || listing.location || ''
         },
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await updateDoc(doc(db, 'listings', listing.id), {
+        hasTradeHistory: true,
+        activeTradeId: tradeRef.id,
+        status: 'in_trade',
+        listingStatus: 'in_trade',
+        reservedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
 
@@ -879,8 +908,8 @@ export default function Home() {
       return listing.distance <= activeRadiusKm;
     })
     .sort((a, b) => {
-      if (a.isBoosted && !b.isBoosted) return -1;
-      if (!a.isBoosted && b.isBoosted) return 1;
+      const boostDelta = getListingBoostPriority(b) - getListingBoostPriority(a);
+      if (boostDelta !== 0) return boostDelta;
 
       if ((nearbyOnly || distanceFilter !== 'all') && a.distance !== null && b.distance !== null) {
         return a.distance - b.distance;
@@ -1203,12 +1232,18 @@ export default function Home() {
               const isOwnListing = listing.ownerId === user?.uid;
               const seller = getCachedSeller(listing.ownerId);
               const sellerVerified = seller?.verificationStatus === 'verified';
+              const listingBoosted = isListingBoostActive(listing);
+              const boostLabel = getListingBoostLabel(listing);
 
               return (
                 <motion.article
                   key={listing.id}
                   whileHover={{ y: -3 }}
-                  className="group overflow-hidden rounded-2xl border border-white/5 bg-brand-card shadow-xl"
+                  className={`group overflow-hidden rounded-2xl border bg-brand-card shadow-xl ${
+                    listingBoosted
+                      ? 'border-amber-500/40 shadow-amber-500/10'
+                      : 'border-white/5'
+                  }`}
                 >
                   <div className="relative aspect-[4/3] overflow-hidden bg-slate-900">
                     <Link to={`/listing/${listing.id}`} className="block h-full w-full">
@@ -1217,7 +1252,7 @@ export default function Home() {
                           src={listing.images[0]}
                           alt={listing.title}
                           className={`h-full w-full object-cover transition duration-500 group-hover:scale-105 group-hover:grayscale-0 ${
-                            listing.isBoosted ? 'grayscale-0' : 'grayscale-[0.15]'
+                            listingBoosted ? 'grayscale-0' : 'grayscale-[0.15]'
                           }`}
                         />
                       ) : (
@@ -1227,13 +1262,19 @@ export default function Home() {
                       )}
                     </Link>
 
-                    {!listing.isBoosted && listing.distance !== null && (
+                    {listingBoosted ? (
+                      <div className="absolute left-3 top-3 rounded-full border border-amber-500/40 bg-amber-500 px-3 py-1.5 shadow-xl">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-black">
+                          {boostLabel}
+                        </p>
+                      </div>
+                    ) : listing.distance !== null ? (
                       <div className="absolute left-3 top-3 rounded-full border border-white/10 bg-black/65 px-3 py-1.5 backdrop-blur-md">
                         <p className="text-[8px] font-black uppercase tracking-widest text-amber-500">
                           {formatDistance(listing.distance)}
                         </p>
                       </div>
-                    )}
+                    ) : null}
 
                     <div className="absolute right-3 top-3 max-w-[70%] rounded-lg bg-amber-500 px-2.5 py-1.5 shadow-xl">
                       <p className="truncate text-[8px] font-black uppercase tracking-widest text-black">
