@@ -10,9 +10,15 @@ import {
 } from 'firebase/firestore';
 
 import { db } from '../lib/firebase';
+import {
+  REVENUE_CONFIG,
+  calculateWithdrawalFee
+} from '../config/revenueConfig';
 
 export const INSUFFICIENT_DELIVERY_FUNDS_MESSAGE =
   'Your Hema Trader balance is not enough to hire this driver. Please fund your account to continue delivery.';
+
+const DEFAULT_CURRENCY = REVENUE_CONFIG.currency;
 
 export type WalletTransactionType =
   | 'product_payment'
@@ -65,6 +71,8 @@ export interface WalletTransaction {
 export interface WalletWithdrawal {
   id?: string;
   amount: number;
+  fee?: number;
+  netAmount?: number;
   currency: string;
   status: WalletTransactionStatus;
   phoneNumber?: string;
@@ -156,6 +164,14 @@ export interface ProductRefundResponse {
   message?: string;
 }
 
+export interface WithdrawalFeePreview {
+  amount: number;
+  fee: number;
+  netAmount: number;
+  currency: string;
+  canWithdraw: boolean;
+}
+
 interface ApiErrorPayload {
   error?: string;
   message?: string;
@@ -174,7 +190,12 @@ export class WalletApiError extends Error {
   code?: string;
   payload?: ApiErrorPayload;
 
-  constructor(message: string, status: number, code?: string, payload?: ApiErrorPayload) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    payload?: ApiErrorPayload
+  ) {
     super(message);
     this.name = 'WalletApiError';
     this.status = status;
@@ -261,6 +282,26 @@ const getTransactionDirection = (data: any): 'credit' | 'debit' => {
   return 'debit';
 };
 
+export const getWithdrawalFeePreview = (
+  amount: number,
+  currency = DEFAULT_CURRENCY
+): WithdrawalFeePreview => {
+  const normalizedAmount = Math.max(Number(amount) || 0, 0);
+  const fee =
+    normalizedAmount > 0
+      ? Math.min(calculateWithdrawalFee(normalizedAmount), normalizedAmount)
+      : 0;
+  const netAmount = Math.max(normalizedAmount - fee, 0);
+
+  return {
+    amount: normalizedAmount,
+    fee,
+    netAmount,
+    currency,
+    canWithdraw: normalizedAmount > 0 && netAmount > 0
+  };
+};
+
 const normalizeWallet = (data: any = {}) => ({
   availableBalance: firstNumber(
     data.availableBalance,
@@ -280,7 +321,7 @@ const normalizeWallet = (data: any = {}) => ({
   ),
   totalEarned: firstNumber(data.totalEarned, data.earned),
   totalWithdrawn: firstNumber(data.totalWithdrawn, data.withdrawn),
-  currency: data.currency || 'XAF',
+  currency: data.currency || DEFAULT_CURRENCY,
   frozen: Boolean(data.frozen)
 });
 
@@ -297,7 +338,7 @@ const normalizeTransaction = (id: string, data: any): WalletTransaction => ({
   deliveryRequestId: data.deliveryRequestId || '',
   type: data.type || 'wallet_transaction',
   amount: Number(data.amount || 0),
-  currency: data.currency || 'XAF',
+  currency: data.currency || DEFAULT_CURRENCY,
   direction: getTransactionDirection(data),
   status: data.status || 'completed',
   description: data.description || '',
@@ -305,19 +346,29 @@ const normalizeTransaction = (id: string, data: any): WalletTransaction => ({
   processedAt: data.processedAt
 });
 
-const normalizeWithdrawal = (id: string, data: any): WalletWithdrawal => ({
-  id,
-  amount: Number(data.amount || 0),
-  currency: data.currency || 'XAF',
-  status: data.status || 'pending',
-  phoneNumber: data.phoneNumber || data.payoutPhone || '',
-  method: data.method || 'mobile_money',
-  accountName: data.accountName || '',
-  createdAt: data.createdAt,
-  processedAt: data.processedAt
-});
+const normalizeWithdrawal = (id: string, data: any): WalletWithdrawal => {
+  const amount = Number(data.amount || 0);
+  const fee = firstNumber(data.fee, data.withdrawalFee, data.platformFee);
+  const netAmount = firstNumber(data.netAmount, data.payoutAmount, amount - fee);
 
-const getWalletOverviewFromFirestore = async (user: User): Promise<WalletOverview> => {
+  return {
+    id,
+    amount,
+    fee,
+    netAmount,
+    currency: data.currency || DEFAULT_CURRENCY,
+    status: data.status || 'pending',
+    phoneNumber: data.phoneNumber || data.payoutPhone || '',
+    method: data.method || 'mobile_money',
+    accountName: data.accountName || '',
+    createdAt: data.createdAt,
+    processedAt: data.processedAt
+  };
+};
+
+const getWalletOverviewFromFirestore = async (
+  user: User
+): Promise<WalletOverview> => {
   const [walletSnap, securitySnap, transactionsSnap, withdrawalsSnap] =
     await Promise.all([
       getDoc(doc(db, 'wallets', user.uid)),
@@ -534,7 +585,10 @@ export const startWalletTopup = (
     '/api/wallet/topup/start',
     {
       method: 'POST',
-      body: JSON.stringify(input)
+      body: JSON.stringify({
+        ...input,
+        currency: input.currency || DEFAULT_CURRENCY
+      })
     },
     45000
   );
@@ -644,13 +698,36 @@ export const withdrawFromWallet = (
     accountName?: string;
     currency?: string;
   }
-) =>
-  apiRequestRequired<any>(
+) => {
+  const currency = input.currency || DEFAULT_CURRENCY;
+  const feePreview = getWithdrawalFeePreview(input.amount, currency);
+
+  if (!feePreview.canWithdraw) {
+    throw new WalletApiError(
+      `Withdrawal amount must be higher than the ${currency} ${feePreview.fee.toLocaleString()} withdrawal fee.`,
+      400,
+      'WITHDRAWAL_AMOUNT_TOO_LOW',
+      {
+        amount: feePreview.amount,
+        withdrawalFee: feePreview.fee,
+        netAmount: feePreview.netAmount,
+        currency
+      }
+    );
+  }
+
+  return apiRequestRequired<any>(
     user,
     '/api/wallet/withdraw',
     {
       method: 'POST',
-      body: JSON.stringify(input)
+      body: JSON.stringify({
+        ...input,
+        currency,
+        withdrawalFee: feePreview.fee,
+        netAmount: feePreview.netAmount
+      })
     },
     45000
   );
+};
