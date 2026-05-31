@@ -349,6 +349,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const phoneConfirmationRef = useRef<ConfirmationResult | null>(null);
 
   const runFounderSyncInBackground = (firebaseUser: User) => {
+    if (!isFounderEmail(firebaseUser.email)) return;
+
     const sessionKey = `hema_founder_sync_${firebaseUser.uid}`;
 
     if (window.sessionStorage.getItem(sessionKey)) return;
