@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 
 import { db } from '../lib/firebase';
+import { FIRESTORE_COLLECTIONS } from '../config/firestoreCollections';
 import {
   REVENUE_CONFIG,
   calculateWithdrawalFee
@@ -19,6 +20,9 @@ export const INSUFFICIENT_DELIVERY_FUNDS_MESSAGE =
   'Your Hema Trader balance is not enough to hire this driver. Please fund your account to continue delivery.';
 
 const DEFAULT_CURRENCY = REVENUE_CONFIG.currency;
+const LEGACY_TRANSACTION_COLLECTION = 'walletTransactions';
+const LEGACY_WITHDRAWAL_COLLECTION = 'withdrawalRequests';
+const WALLET_SECURITY_COLLECTION = 'walletSecurity';
 
 export type WalletTransactionType =
   | 'product_payment'
@@ -282,6 +286,16 @@ const getTransactionDirection = (data: any): 'credit' | 'debit' => {
   return 'debit';
 };
 
+const dedupeById = <T extends { id?: string }>(items: T[]) => {
+  const map = new Map<string, T>();
+
+  items.forEach((item, index) => {
+    map.set(item.id || `missing-id-${index}`, item);
+  });
+
+  return Array.from(map.values());
+};
+
 export const getWithdrawalFeePreview = (
   amount: number,
   currency = DEFAULT_CURRENCY
@@ -369,37 +383,63 @@ const normalizeWithdrawal = (id: string, data: any): WalletWithdrawal => {
 const getWalletOverviewFromFirestore = async (
   user: User
 ): Promise<WalletOverview> => {
-  const [walletSnap, securitySnap, transactionsSnap, withdrawalsSnap] =
-    await Promise.all([
-      getDoc(doc(db, 'wallets', user.uid)),
-      getDoc(doc(db, 'walletSecurity', user.uid)),
-      getDocs(
-        query(
-          collection(db, 'walletTransactions'),
-          where('userId', '==', user.uid),
-          limit(50)
-        )
-      ),
-      getDocs(
-        query(
-          collection(db, 'withdrawalRequests'),
-          where('userId', '==', user.uid),
-          limit(25)
-        )
+  const [
+    walletSnap,
+    securitySnap,
+    transactionsSnap,
+    legacyTransactionsSnap,
+    payoutsSnap,
+    legacyWithdrawalsSnap
+  ] = await Promise.all([
+    getDoc(doc(db, FIRESTORE_COLLECTIONS.wallets, user.uid)),
+    getDoc(doc(db, WALLET_SECURITY_COLLECTION, user.uid)),
+    getDocs(
+      query(
+        collection(db, FIRESTORE_COLLECTIONS.transactions),
+        where('userId', '==', user.uid),
+        limit(50)
       )
-    ]);
+    ),
+    getDocs(
+      query(
+        collection(db, LEGACY_TRANSACTION_COLLECTION),
+        where('userId', '==', user.uid),
+        limit(50)
+      )
+    ),
+    getDocs(
+      query(
+        collection(db, FIRESTORE_COLLECTIONS.payouts),
+        where('userId', '==', user.uid),
+        limit(25)
+      )
+    ),
+    getDocs(
+      query(
+        collection(db, LEGACY_WITHDRAWAL_COLLECTION),
+        where('userId', '==', user.uid),
+        limit(25)
+      )
+    )
+  ]);
 
-  const transactions = transactionsSnap.docs
-    .map(transactionDoc =>
+  const transactions = dedupeById([
+    ...transactionsSnap.docs.map(transactionDoc =>
+      normalizeTransaction(transactionDoc.id, transactionDoc.data())
+    ),
+    ...legacyTransactionsSnap.docs.map(transactionDoc =>
       normalizeTransaction(transactionDoc.id, transactionDoc.data())
     )
-    .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
+  ]).sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
 
-  const withdrawals = withdrawalsSnap.docs
-    .map(withdrawalDoc =>
+  const withdrawals = dedupeById([
+    ...payoutsSnap.docs.map(payoutDoc =>
+      normalizeWithdrawal(payoutDoc.id, payoutDoc.data())
+    ),
+    ...legacyWithdrawalsSnap.docs.map(withdrawalDoc =>
       normalizeWithdrawal(withdrawalDoc.id, withdrawalDoc.data())
     )
-    .sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
+  ]).sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt));
 
   return {
     wallet: normalizeWallet(walletSnap.exists() ? walletSnap.data() : {}),
@@ -544,7 +584,7 @@ export const getWalletSecurity = async (user: User) => {
       throw error;
     }
 
-    const securitySnap = await getDoc(doc(db, 'walletSecurity', user.uid));
+    const securitySnap = await getDoc(doc(db, WALLET_SECURITY_COLLECTION, user.uid));
     return normalizeWalletSecurity(securitySnap.exists() ? securitySnap.data() : {});
   }
 };
