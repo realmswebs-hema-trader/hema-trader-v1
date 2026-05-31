@@ -37,7 +37,9 @@ import {
 
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
+import { REVENUE_CONFIG } from '../config/revenueConfig';
 import { db } from '../lib/firebase';
+import { payListingBoostFromWallet } from '../services/walletService';
 import {
   calculateDistance,
   formatDistance,
@@ -52,6 +54,16 @@ const UNVERIFIED_ACCOUNT_WARNING =
 
 const SINGLE_PRODUCT_UNAVAILABLE_MESSAGE =
   'This item is currently in a trade and is not available.';
+
+type ListingBoostType = 'oneDay' | 'threeDays' | 'sevenDays' | 'homepage';
+
+interface ListingBoost {
+  isBoosted?: boolean;
+  boostType?: ListingBoostType | null;
+  startedAt?: any;
+  expiresAt?: any;
+  amountPaid?: number;
+}
 
 interface Listing {
   id: string;
@@ -91,7 +103,9 @@ interface Listing {
   metadata?: Record<string, string>;
   isBoosted?: boolean;
   boostTier?: string;
+  boostType?: ListingBoostType;
   boostExpiresAt?: any;
+  boost?: ListingBoost | null;
 }
 
 interface SellerProfile {
@@ -239,6 +253,83 @@ const listingAvailabilityClass = (listing: Listing) => {
   return 'border-red-500/20 bg-red-500/10 text-red-400';
 };
 
+const boostPlans: Record<
+  ListingBoostType,
+  {
+    label: string;
+    helper: string;
+    amount: number;
+  }
+> = {
+  oneDay: {
+    label: '1-Day Boost',
+    helper: '24 hours priority placement',
+    amount: REVENUE_CONFIG.boosts.oneDay
+  },
+  threeDays: {
+    label: '3-Day Boost',
+    helper: '3 days priority placement',
+    amount: REVENUE_CONFIG.boosts.threeDays
+  },
+  sevenDays: {
+    label: '7-Day Boost',
+    helper: '7 days priority placement',
+    amount: REVENUE_CONFIG.boosts.sevenDays
+  },
+  homepage: {
+    label: 'Homepage Feature',
+    helper: 'Featured homepage placement',
+    amount: REVENUE_CONFIG.boosts.homepage
+  }
+};
+
+const getActiveListingBoost = (listing: Listing): ListingBoost | null => {
+  const boost = listing.boost;
+
+  if (boost?.isBoosted) {
+    const expiresAt = getMillis(boost.expiresAt);
+
+    if (!expiresAt || expiresAt > Date.now()) {
+      return boost;
+    }
+  }
+
+  if (listing.isBoosted) {
+    const expiresAt = getMillis(listing.boostExpiresAt);
+
+    if (!expiresAt || expiresAt > Date.now()) {
+      const legacyBoostType: ListingBoostType =
+        listing.boostType ||
+        (listing.boostTier === 'premium' ? 'homepage' : 'sevenDays');
+
+      return {
+        isBoosted: true,
+        boostType: legacyBoostType,
+        expiresAt: listing.boostExpiresAt,
+        amountPaid: boostPlans[legacyBoostType]?.amount || 0
+      };
+    }
+  }
+
+  return null;
+};
+
+const getBoostLabel = (boostType?: ListingBoostType | null) =>
+  boostType ? boostPlans[boostType]?.label || 'Boosted' : 'Boosted';
+
+const requestWalletPin = () => {
+  const pin = window.prompt('Enter your Hema Wallet PIN to pay for this boost.');
+
+  if (!pin) return null;
+
+  if (!/^\d{4}$|^\d{6}$/.test(pin)) {
+    alert('Wallet PIN must be 4 or 6 digits.');
+    return null;
+  }
+
+  return pin;
+};
+
 export default function ListingDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -253,6 +344,7 @@ export default function ListingDetail() {
   const [trading, setTrading] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [followingLoading, setFollowingLoading] = useState(false);
+  const [boosting, setBoosting] = useState<ListingBoostType | null>(null);
 
   useEffect(() => {
     if (!user || !listing) return;
@@ -706,56 +798,53 @@ export default function ListingDetail() {
     }
   };
 
-  const handleBoostListing = async (tier: 'standard' | 'premium', amount: number) => {
-    if (!user || !listing) return;
+  const handleBoostListing = async (boostType: ListingBoostType) => {
+    if (!user || !listing || boosting) return;
 
     if (!isListingOwnedBy(listing, user.uid)) {
       alert('Only the listing owner can boost this listing.');
       return;
     }
 
+    const plan = boostPlans[boostType];
+    const activeBoost = getActiveListingBoost(listing);
     const confirmBoost = window.confirm(
-      `Confirm payment of ${formatMoney(amount, 'XAF', 'fr-CM')} for ${tier} boost? (Demo logic)`
+      `${activeBoost ? 'Replace or extend your current boost with' : 'Pay'} ${formatMoney(
+        plan.amount,
+        REVENUE_CONFIG.currency,
+        'fr-CM'
+      )} from Hema Wallet for ${plan.label}?`
     );
 
     if (!confirmBoost) return;
 
+    const walletPin = requestWalletPin();
+    if (!walletPin) return;
+
+    setBoosting(boostType);
+
     try {
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + (tier === 'premium' ? 30 : 7));
+      await payListingBoostFromWallet(user, listing.id, boostType, walletPin);
 
-      await updateDoc(doc(db, 'listings', listing.id), {
-        isBoosted: true,
-        boostTier: tier,
-        boostExpiresAt: expiresAt,
-        updatedAt: serverTimestamp()
-      });
+      const freshListingSnap = await getDoc(doc(db, 'listings', listing.id));
 
-      await addDoc(collection(db, 'boosts'), {
-        listingId: listing.id,
-        userId: user.uid,
-        amount,
-        currency: 'XAF',
-        tier,
-        createdAt: serverTimestamp(),
-        expiresAt
-      });
+      if (freshListingSnap.exists()) {
+        setListing({
+          id: freshListingSnap.id,
+          ...freshListingSnap.data()
+        } as Listing);
+      }
 
-      setListing(prev =>
-        prev
-          ? {
-              ...prev,
-              isBoosted: true,
-              boostTier: tier,
-              boostExpiresAt: expiresAt
-            }
-          : null
-      );
-
-      alert('Listing boosted successfully! It will now appear with priority in search results.');
+      alert('Listing boost paid successfully. Your listing will now receive priority placement.');
     } catch (err) {
-      console.error('Boost error:', err);
-      alert('Failed to process boost registry.');
+      console.error('Boost payment failed:', err);
+      alert(
+        err instanceof Error
+          ? err.message
+          : 'Boost payment failed. No boost was activated and no listing priority was changed.'
+      );
+    } finally {
+      setBoosting(null);
     }
   };
 
@@ -805,6 +894,7 @@ export default function ListingDetail() {
   const inventoryType = getInventoryType(listing);
   const listingStatus = getListingStatus(listing);
   const singleProductBlocked = isSingleProductBlocked(listing);
+  const activeBoost = getActiveListingBoost(listing);
   const tradeDisabled =
     trading || isOwnListing || listing.status !== 'active' || singleProductBlocked;
 
@@ -861,11 +951,11 @@ export default function ListingDetail() {
           </div>
 
           <div className="flex flex-col p-6 md:p-8">
-            {listing.isBoosted && (
+            {activeBoost && (
               <div className="mb-4 flex w-max items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
                 <Star className="h-4 w-4 fill-amber-500 text-amber-500" />
                 <span className="text-[9px] font-black uppercase tracking-widest text-amber-500">
-                  {listing.boostTier} Priority Listing
+                  {getBoostLabel(activeBoost.boostType)} Active
                 </span>
               </div>
             )}
@@ -1115,33 +1205,59 @@ export default function ListingDetail() {
           <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-6">
             <h3 className="font-serif text-xl text-white">Boost Visibility</h3>
             <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
-              Reach more traders in your region
+              Boost your listing to reach more buyers
             </p>
+
+            {activeBoost && (
+              <div className="mt-4 rounded-2xl border border-green-500/20 bg-green-500/10 p-4">
+                <p className="text-[9px] font-black uppercase leading-relaxed tracking-widest text-green-400">
+                  {getBoostLabel(activeBoost.boostType)} is active.
+                </p>
+              </div>
+            )}
 
             <div className="mt-5 grid gap-3">
               <button
-                onClick={() => handleBoostListing('standard', 2000)}
-                className="rounded-2xl border border-white/5 bg-black/40 p-4 text-left transition hover:border-amber-500/50"
+                onClick={() => handleBoostListing('sevenDays')}
+                disabled={Boolean(boosting)}
+                className="rounded-2xl border border-white/5 bg-black/40 p-4 text-left transition hover:border-amber-500/50 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <h4 className="font-serif text-base text-white">Standard Boost</h4>
+                <h4 className="font-serif text-base text-white">
+                  {boostPlans.sevenDays.label}
+                </h4>
                 <p className="mt-1 text-[8px] uppercase tracking-widest text-slate-500">
-                  7 Days Priority
+                  {boostPlans.sevenDays.helper}
                 </p>
                 <p className="mt-3 text-lg font-bold text-white">
-                  {formatMoney(2000, 'XAF', 'fr-CM')}
+                  {boosting === 'sevenDays'
+                    ? 'Processing...'
+                    : formatMoney(
+                        boostPlans.sevenDays.amount,
+                        REVENUE_CONFIG.currency,
+                        'fr-CM'
+                      )}
                 </p>
               </button>
 
               <button
-                onClick={() => handleBoostListing('premium', 5000)}
-                className="rounded-2xl border border-l-4 border-white/5 border-l-amber-500 bg-black/40 p-4 text-left transition hover:border-amber-500/50"
+                onClick={() => handleBoostListing('homepage')}
+                disabled={Boolean(boosting)}
+                className="rounded-2xl border border-l-4 border-white/5 border-l-amber-500 bg-black/40 p-4 text-left transition hover:border-amber-500/50 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <h4 className="font-serif text-base text-white">Premium Boost</h4>
+                <h4 className="font-serif text-base text-white">
+                  {boostPlans.homepage.label}
+                </h4>
                 <p className="mt-1 text-[8px] uppercase tracking-widest text-slate-500">
-                  30 Days Top Placement
+                  {boostPlans.homepage.helper}
                 </p>
                 <p className="mt-3 text-lg font-bold text-white">
-                  {formatMoney(5000, 'XAF', 'fr-CM')}
+                  {boosting === 'homepage'
+                    ? 'Processing...'
+                    : formatMoney(
+                        boostPlans.homepage.amount,
+                        REVENUE_CONFIG.currency,
+                        'fr-CM'
+                      )}
                 </p>
               </button>
             </div>
