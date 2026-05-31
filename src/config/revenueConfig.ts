@@ -1,5 +1,13 @@
+export type SubscriptionPlan = 'free' | 'starter' | 'pro' | 'business';
+export type UserRole = 'buyer' | 'seller' | 'driver' | 'admin';
+export type BoostType = 'oneDay' | 'threeDays' | 'sevenDays' | 'homepage';
+
 export const REVENUE_CONFIG = {
   currency: 'XAF',
+
+  admin: {
+    email: 'realmswebs@gmail.com'
+  },
 
   platformFee: {
     rate: 0.02,
@@ -13,18 +21,17 @@ export const REVENUE_CONFIG = {
   },
 
   subscriptions: {
-    sellerStarter: 2500,
-    sellerPro: 7500,
-    sellerBusiness: 20000,
-    driverPro: 2000,
-    buyerPremium: 1500
+    free: { amount: 0, activeListingLimit: 5 },
+    starter: { amount: 2500, activeListingLimit: 25 },
+    pro: { amount: 7500, activeListingLimit: 100 },
+    business: { amount: 20000, activeListingLimit: Infinity }
   },
 
   boosts: {
-    oneDay: 500,
-    threeDays: 1000,
-    sevenDays: 2000,
-    homepage: 5000
+    oneDay: { amount: 500, durationHours: 24, label: '24 Hours' },
+    threeDays: { amount: 1000, durationHours: 72, label: '3 Days' },
+    sevenDays: { amount: 2000, durationHours: 168, label: '7 Days' },
+    homepage: { amount: 5000, durationHours: 168, label: 'Homepage Feature' }
   },
 
   verification: {
@@ -40,29 +47,26 @@ export const REVENUE_CONFIG = {
 } as const;
 
 export const calculatePlatformFee = (amount: number) => {
-  const fee = amount * REVENUE_CONFIG.platformFee.rate;
-
+  const rawFee = amount * REVENUE_CONFIG.platformFee.rate;
   return Math.min(
-    Math.max(fee, REVENUE_CONFIG.platformFee.minimum),
+    Math.max(rawFee, REVENUE_CONFIG.platformFee.minimum),
     REVENUE_CONFIG.platformFee.maximum
   );
 };
 
-export const calculateDeliveryCommission = (deliveryFee: number) => {
-  const platformCommission =
-    deliveryFee * REVENUE_CONFIG.deliveryCommission.platformRate;
+export const calculateDeliveryCommission = (deliveryFee: number) => ({
+  platformCommission: Math.round(deliveryFee * REVENUE_CONFIG.deliveryCommission.platformRate),
+  driverPayout: Math.round(deliveryFee * REVENUE_CONFIG.deliveryCommission.driverRate)
+});
 
-  const driverPayout =
-    deliveryFee * REVENUE_CONFIG.deliveryCommission.driverRate;
+export const calculateWithdrawalFee = (amount: number) =>
+  Math.max(Math.round(amount * REVENUE_CONFIG.withdrawals.rate), REVENUE_CONFIG.withdrawals.minimum);
 
-  return {
-    platformCommission,
-    driverPayout
-  };
-};
+export const getSubscriptionAmount = (plan: SubscriptionPlan) =>
+  REVENUE_CONFIG.subscriptions[plan].amount;
 
-export const calculateWithdrawalFee = (amount: number) => {
-  const fee = amount * REVENUE_CONFIG.withdrawals.rate;
+export const getListingLimitForPlan = (plan: SubscriptionPlan) =>
+  REVENUE_CONFIG.subscriptions[plan].activeListingLimit;
 
-  return Math.max(fee, REVENUE_CONFIG.withdrawals.minimum);
-};
+export const getBoostAmount = (boostType: BoostType) =>
+  REVENUE_CONFIG.boosts[boostType].amount;
