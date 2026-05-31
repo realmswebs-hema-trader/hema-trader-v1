@@ -1,15 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
-  collection,
   addDoc,
-  serverTimestamp,
-  query,
-  where,
-  getDocs,
-  limit,
+  collection,
+  deleteDoc,
   doc,
-  setDoc
+  getDoc,
+  getDocs,
+  increment,
+  limit,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where
 } from 'firebase/firestore';
 import {
   AlertCircle,
@@ -19,6 +23,7 @@ import {
   MapPin,
   Navigation,
   Package,
+  Trash2,
   WifiOff,
   X
 } from 'lucide-react';
@@ -46,6 +51,8 @@ const sellerListingLimits: Record<SellerSubscriptionPlan, number> = {
   pro: 100,
   business: Infinity
 };
+
+const lockedListingStatuses = ['in_trade', 'reserved', 'sold', 'completed'];
 
 const listingCategories = [
   'Animals',
@@ -198,15 +205,23 @@ export default function CreateListing() {
   const { user, profile } = useAuth();
   const { sendNotification } = useNotifications();
   const navigate = useNavigate();
+  const params = useParams<Record<string, string | undefined>>();
+
+  const editListingId = params.id || params.listingId || '';
+  const isEditing = Boolean(editListingId);
 
   const currencyInfo = getCurrencyInfo(profile);
   const sellerPlan = getSellerPlan(profile);
   const sellerLimit = sellerListingLimits[sellerPlan];
 
+  const [pageLoading, setPageLoading] = useState(Boolean(editListingId));
   const [loading, setLoading] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
   const [gpsError, setGpsError] = useState('');
   const [uploadWarning, setUploadWarning] = useState('');
+  const [tradeLockMessage, setTradeLockMessage] = useState('');
+  const [existingListing, setExistingListing] = useState<any>(null);
+  const [existingImageUrls, setExistingImageUrls] = useState<string[]>([]);
   const [gpsLocation, setGpsLocation] = useState<ListingGpsLocation | null>(null);
   const [images, setImages] = useState<File[]>([]);
   const [previewUrls, setPreviewUrls] = useState<string[]>([]);
@@ -250,7 +265,128 @@ export default function CreateListing() {
     };
   }, []);
 
+  const checkListingHasTrade = async (listingId: string, listingData?: any) => {
+    if (!listingId) return false;
+
+    if (
+      listingData?.hasTradeHistory ||
+      listingData?.activeTradeId ||
+      lockedListingStatuses.includes(listingData?.status) ||
+      lockedListingStatuses.includes(listingData?.listingStatus)
+    ) {
+      return true;
+    }
+
+    const tradeQuery = query(
+      collection(db, 'trades'),
+      where('listingId', '==', listingId),
+      limit(1)
+    );
+
+    const tradeSnap = await getDocs(tradeQuery);
+    return !tradeSnap.empty;
+  };
+
+  useEffect(() => {
+    if (!editListingId) {
+      setPageLoading(false);
+      return;
+    }
+
+    if (!user) {
+      setPageLoading(false);
+      return;
+    }
+
+    let mounted = true;
+
+    const loadListingForEdit = async () => {
+      setPageLoading(true);
+
+      try {
+        const listingRef = doc(db, 'listings', editListingId);
+        const listingSnap = await getDoc(listingRef);
+
+        if (!listingSnap.exists()) {
+          alert('Listing not found.');
+          navigate('/profile');
+          return;
+        }
+
+        const listingData = {
+          id: listingSnap.id,
+          ...listingSnap.data()
+        } as any;
+
+        const ownerId =
+          listingData.ownerId ||
+          listingData.sellerId ||
+          listingData.userId ||
+          listingData.createdBy;
+
+        if (ownerId !== user.uid) {
+          alert('You can only edit your own listings.');
+          navigate('/');
+          return;
+        }
+
+        const hasTrade = await checkListingHasTrade(editListingId, listingData);
+
+        if (!mounted) return;
+
+        setExistingListing(listingData);
+        setExistingImageUrls(listingData.images || listingData.imageUrls || []);
+        setTradeLockMessage(
+          hasTrade
+            ? 'This listing already has a trade record. Editing and deletion are locked to protect buyers and escrow records.'
+            : ''
+        );
+
+        setFormData({
+          title: listingData.title || listingData.name || listingData.productName || '',
+          description: listingData.description || '',
+          price: String(listingData.price || listingData.amount || listingData.priceValue || ''),
+          quantity: String(listingData.quantity || ''),
+          category: listingData.category || 'Animals',
+          location: listingData.locationName || listingData.location || '',
+          inventoryType:
+            listingData.inventoryType === 'stock' ||
+            listingData.inventoryType === 'multiple'
+              ? 'stock'
+              : 'single'
+        });
+
+        setMetadata(listingData.metadata || {});
+
+        if (
+          typeof listingData.latitude === 'number' &&
+          typeof listingData.longitude === 'number'
+        ) {
+          setGpsLocation({
+            latitude: listingData.latitude,
+            longitude: listingData.longitude,
+            accuracy: listingData.gpsAccuracy || undefined,
+            source: 'profile'
+          });
+        }
+      } catch (error) {
+        console.error('Listing edit load failed:', error);
+        alert('Could not load listing for editing.');
+        navigate('/profile');
+      } finally {
+        if (mounted) setPageLoading(false);
+      }
+    };
+
+    loadListingForEdit();
+
+    return () => {
+      mounted = false;
+    };
+  }, [editListingId, user?.uid, navigate]);
+
   const validateSellerListingLimit = async () => {
+    if (isEditing) return;
     if (!user) return;
 
     const limitForPlan = sellerListingLimits[getSellerPlan(profile)];
@@ -331,7 +467,7 @@ export default function CreateListing() {
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files) return;
+    if (!e.target.files || tradeLockMessage) return;
 
     setUploadWarning('');
 
@@ -360,10 +496,18 @@ export default function CreateListing() {
   };
 
   const removeImage = (index: number) => {
+    if (tradeLockMessage) return;
+
     URL.revokeObjectURL(previewUrls[index]);
 
     setImages(prev => prev.filter((_, i) => i !== index));
     setPreviewUrls(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const removeExistingImage = (index: number) => {
+    if (tradeLockMessage) return;
+
+    setExistingImageUrls(prev => prev.filter((_, i) => i !== index));
   };
 
   const uploadListingImagesSafely = async () => {
@@ -470,7 +614,7 @@ export default function CreateListing() {
           sendNotification(followerId, {
             title: `New from ${sellerName}`,
             body: `${sellerName} posted ${listingTitle}.`,
-            type: 'new_listing',
+            type: 'system',
             targetId: listingId,
             targetType: 'listing',
             actionUrl: `/listing/${listingId}`,
@@ -484,6 +628,106 @@ export default function CreateListing() {
     }
   };
 
+  const handleDeleteListing = async () => {
+    if (!user || !editListingId || !existingListing) return;
+
+    setLoading(true);
+
+    try {
+      const hasTrade = await checkListingHasTrade(editListingId, existingListing);
+
+      if (hasTrade) {
+        const message =
+          'You cannot delete this listing because a trade has already been opened on it. This protects buyers, sellers, and escrow records.';
+
+        setTradeLockMessage(message);
+        alert(message);
+        return;
+      }
+
+      const confirmed = window.confirm(
+        'Delete this listing? This cannot be undone.'
+      );
+
+      if (!confirmed) return;
+
+      await deleteDoc(doc(db, 'listings', editListingId));
+      alert('Listing deleted.');
+      navigate('/profile');
+    } catch (error) {
+      console.error('Delete listing failed:', error);
+      alert('Could not delete listing. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveEditedListing = async (
+    listingLatitude: number | null,
+    listingLongitude: number | null,
+    priceValue: number,
+    imageUrls: string[],
+    failedImageNames: string[]
+  ) => {
+    if (!editListingId) return;
+
+    const nextImages = [...existingImageUrls, ...imageUrls];
+
+    const nextImageUploadStatus =
+      failedImageNames.length > 0
+        ? nextImages.length > 0
+          ? 'partial'
+          : 'failed'
+        : nextImages.length > 0
+          ? 'uploaded'
+          : 'none';
+
+    await updateDoc(doc(db, 'listings', editListingId), {
+      title: formData.title.trim(),
+      description: formData.description.trim(),
+      price: priceValue,
+      priceDisplay: formatMoney(priceValue, currencyInfo.code, currencyInfo.locale),
+
+      currency: currencyInfo.code,
+      currencyCode: currencyInfo.code,
+      currencyLocale: currencyInfo.locale,
+      currencyLabel: currencyInfo.label,
+      country: profile?.country || existingListing?.country || 'Cameroon',
+
+      quantity: formData.quantity.trim(),
+      category: formData.category,
+      metadata: cleanMetadata(metadata),
+      inventoryType: formData.inventoryType,
+
+      location: formData.location.trim(),
+      locationName: formData.location.trim(),
+      latitude: listingLatitude,
+      longitude: listingLongitude,
+      currentLocation:
+        listingLatitude !== null && listingLongitude !== null
+          ? {
+              latitude: listingLatitude,
+              longitude: listingLongitude
+            }
+          : null,
+      gpsAccuracy: gpsLocation?.accuracy || null,
+      gpsSource: activeLocation?.source || existingListing?.gpsSource || 'missing',
+      isGeoTagged: listingLatitude !== null && listingLongitude !== null,
+
+      images: nextImages,
+      imageUrls: nextImages,
+      imageUploadStatus: nextImageUploadStatus,
+      failedImageNames,
+
+      editCount: increment(1),
+      lastEditedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    alert('Listing updated.');
+    navigate(`/listing/${editListingId}`);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -492,9 +736,14 @@ export default function CreateListing() {
       return;
     }
 
+    if (tradeLockMessage) {
+      alert(tradeLockMessage);
+      return;
+    }
+
     if (profile?.verificationStatus && profile.verificationStatus !== 'verified') {
       const proceed = window.confirm(
-        'Your account is not verified yet. You can still list items and trade, but buyers will see you as an unverified seller until you complete verification.\n\nContinue posting this listing?'
+        'Your account is not verified yet. You can still list items and trade, but buyers will see you as an unverified seller until you complete verification.\n\nContinue?'
       );
 
       if (!proceed) return;
@@ -506,9 +755,25 @@ export default function CreateListing() {
     try {
       await validateSellerListingLimit();
 
+      if (isEditing && editListingId) {
+        const hasTrade = await checkListingHasTrade(editListingId, existingListing);
+
+        if (hasTrade) {
+          const message =
+            'You cannot edit this listing because a trade has already been opened on it.';
+
+          setTradeLockMessage(message);
+          throw new Error(message);
+        }
+      }
+
       const { imageUrls, failedImageNames } = await uploadListingImagesSafely();
 
-      if (images.length > 0 && failedImageNames.length === images.length) {
+      if (
+        images.length > 0 &&
+        failedImageNames.length === images.length &&
+        (!isEditing || existingImageUrls.length === 0)
+      ) {
         throw new Error(
           'Photo upload failed. Please try again, or remove the photos and post the listing without images.'
         );
@@ -516,10 +781,10 @@ export default function CreateListing() {
 
       if (failedImageNames.length > 0) {
         setUploadWarning(
-          `Listing will be posted, but ${failedImageNames.length} photo upload failed.`
+          `Listing will be saved, but ${failedImageNames.length} photo upload failed.`
         );
         console.warn(
-          `Listing created, but ${failedImageNames.length} image upload(s) failed.`
+          `Listing saved, but ${failedImageNames.length} image upload(s) failed.`
         );
       }
 
@@ -527,6 +792,17 @@ export default function CreateListing() {
       const listingLatitude = activeLocation?.latitude ?? null;
       const listingLongitude = activeLocation?.longitude ?? null;
       const priceValue = parseFloat(formData.price) || 0;
+
+      if (isEditing) {
+        await saveEditedListing(
+          listingLatitude,
+          listingLongitude,
+          priceValue,
+          imageUrls,
+          failedImageNames
+        );
+        return;
+      }
 
       const imageUploadStatus =
         images.length === 0
@@ -562,8 +838,20 @@ export default function CreateListing() {
         sellerSubscriptionPlan: sellerPlan,
         listingLimitAtCreation: sellerLimit === Infinity ? null : sellerLimit,
 
-        listingStatus: 'available',
+        boost: {
+          isBoosted: false,
+          boostType: null,
+          startedAt: null,
+          expiresAt: null,
+          amountPaid: 0
+        },
+
+        editCount: 0,
+        lastEditedAt: null,
+        hasTradeHistory: false,
         activeTradeId: null,
+
+        listingStatus: 'available',
         soldAt: null,
         reservedAt: null,
 
@@ -608,12 +896,24 @@ export default function CreateListing() {
     }
   };
 
+  if (pageLoading) {
+    return (
+      <div className="flex min-h-[60vh] items-center justify-center">
+        <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-2xl space-y-10">
       <header className="px-2">
-        <h2 className="font-serif text-4xl text-white">Create New Listing</h2>
+        <h2 className="font-serif text-4xl text-white">
+          {isEditing ? 'Edit Listing' : 'Create New Listing'}
+        </h2>
         <p className="mt-2 text-[10px] font-bold uppercase tracking-wider text-amber-500/80">
-          Share your products with the marketplace
+          {isEditing
+            ? 'Update your product details before a trade begins'
+            : 'Share your products with the marketplace'}
         </p>
       </header>
 
@@ -653,7 +953,7 @@ export default function CreateListing() {
             <button
               type="button"
               onClick={requestListingLocation}
-              disabled={gpsLoading}
+              disabled={gpsLoading || Boolean(tradeLockMessage)}
               className="flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-5 py-3 text-[10px] font-black uppercase tracking-widest text-black shadow-xl disabled:opacity-50"
             >
               {gpsLoading ? (
@@ -703,6 +1003,13 @@ export default function CreateListing() {
           )}
         </div>
 
+        {tradeLockMessage && (
+          <div className="flex gap-3 rounded-2xl border border-red-500/20 bg-red-500/10 p-5 text-sm text-red-300">
+            <AlertCircle className="h-5 w-5 shrink-0" />
+            {tradeLockMessage}
+          </div>
+        )}
+
         {uploadWarning && (
           <div className="flex gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-5 text-sm text-amber-300">
             <AlertCircle className="h-5 w-5 shrink-0" />
@@ -722,6 +1029,28 @@ export default function CreateListing() {
           </div>
 
           <div className="grid grid-cols-3 gap-4 sm:grid-cols-4">
+            {existingImageUrls.map((url, i) => (
+              <div
+                key={url}
+                className="group relative aspect-square overflow-hidden rounded-xl border border-white/5 bg-black/40"
+              >
+                <img
+                  src={url}
+                  alt="Existing listing"
+                  className="h-full w-full object-cover grayscale-[0.3] transition-all group-hover:grayscale-0"
+                />
+                {!tradeLockMessage && (
+                  <button
+                    type="button"
+                    onClick={() => removeExistingImage(i)}
+                    className="absolute right-2 top-2 rounded-lg bg-black/60 p-2 text-white transition-colors hover:bg-red-500"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+
             {previewUrls.map((url, i) => (
               <div
                 key={url}
@@ -742,16 +1071,18 @@ export default function CreateListing() {
               </div>
             ))}
 
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="group flex aspect-square flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/[0.02] transition-all hover:border-amber-500/50 hover:bg-amber-500/5"
-            >
-              <ImagePlus className="mb-2 h-6 w-6 text-slate-700 group-hover:text-amber-500" />
-              <span className="text-[9px] font-black uppercase tracking-tighter text-slate-600 group-hover:text-amber-500">
-                Add Photo
-              </span>
-            </button>
+            {!tradeLockMessage && (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="group flex aspect-square flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/[0.02] transition-all hover:border-amber-500/50 hover:bg-amber-500/5"
+              >
+                <ImagePlus className="mb-2 h-6 w-6 text-slate-700 group-hover:text-amber-500" />
+                <span className="text-[9px] font-black uppercase tracking-tighter text-slate-600 group-hover:text-amber-500">
+                  Add Photo
+                </span>
+              </button>
+            )}
           </div>
 
           <input
@@ -778,13 +1109,14 @@ export default function CreateListing() {
                 <button
                   key={option.value}
                   type="button"
+                  disabled={Boolean(tradeLockMessage)}
                   onClick={() =>
                     setFormData(prev => ({
                       ...prev,
                       inventoryType: option.value
                     }))
                   }
-                  className={`flex min-h-32 flex-col items-start justify-between rounded-2xl border p-4 text-left transition-all ${
+                  className={`flex min-h-32 flex-col items-start justify-between rounded-2xl border p-4 text-left transition-all disabled:opacity-60 ${
                     selected
                       ? 'border-amber-500 bg-amber-500/10 shadow-[0_0_24px_rgba(245,158,11,0.08)]'
                       : 'border-white/5 bg-black/30 hover:border-white/15'
@@ -825,11 +1157,12 @@ export default function CreateListing() {
           </label>
           <input
             required
+            disabled={Boolean(tradeLockMessage)}
             type="text"
             value={formData.title}
             onChange={e => setFormData({ ...formData, title: e.target.value })}
             placeholder={getTitlePlaceholder(formData.category)}
-            className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
+            className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none disabled:opacity-60"
           />
         </div>
 
@@ -841,11 +1174,12 @@ export default function CreateListing() {
             </label>
             <input
               required
+              disabled={Boolean(tradeLockMessage)}
               type="number"
               value={formData.price}
               onChange={e => setFormData({ ...formData, price: e.target.value })}
               placeholder={`Example: ${formatMoney(45000, currencyInfo.code, currencyInfo.locale)}`}
-              className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
+              className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none disabled:opacity-60"
             />
           </div>
 
@@ -856,11 +1190,12 @@ export default function CreateListing() {
             </label>
             <input
               required
+              disabled={Boolean(tradeLockMessage)}
               type="text"
               value={formData.quantity}
               onChange={e => setFormData({ ...formData, quantity: e.target.value })}
               placeholder={getQuantityPlaceholder(formData.category, formData.inventoryType)}
-              className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
+              className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none disabled:opacity-60"
             />
           </div>
 
@@ -870,12 +1205,13 @@ export default function CreateListing() {
               Category
             </label>
             <select
+              disabled={Boolean(tradeLockMessage)}
               value={formData.category}
               onChange={e => {
                 setFormData({ ...formData, category: e.target.value });
                 setMetadata({});
               }}
-              className="w-full appearance-none rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white focus:border-amber-500/50 focus:outline-none"
+              className="w-full appearance-none rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white focus:border-amber-500/50 focus:outline-none disabled:opacity-60"
             >
               {listingCategories.map(category => (
                 <option key={category} value={category} className="bg-brand-card">
@@ -892,11 +1228,12 @@ export default function CreateListing() {
             </label>
             <input
               required
+              disabled={Boolean(tradeLockMessage)}
               type="text"
               value={formData.location}
               onChange={e => setFormData({ ...formData, location: e.target.value })}
               placeholder="District, Village..."
-              className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
+              className="w-full rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none disabled:opacity-60"
             />
           </div>
         </div>
@@ -915,11 +1252,12 @@ export default function CreateListing() {
                   {field}
                 </label>
                 <input
+                  disabled={Boolean(tradeLockMessage)}
                   type="text"
                   value={metadata[field] || ''}
                   onChange={e => setMetadata({ ...metadata, [field]: e.target.value })}
                   placeholder={field}
-                  className="w-full rounded-lg border border-white/5 bg-black/20 p-3 text-xs text-white focus:border-amber-500/30 focus:outline-none"
+                  className="w-full rounded-lg border border-white/5 bg-black/20 p-3 text-xs text-white focus:border-amber-500/30 focus:outline-none disabled:opacity-60"
                 />
               </div>
             ))}
@@ -933,21 +1271,40 @@ export default function CreateListing() {
           </label>
           <textarea
             required
+            disabled={Boolean(tradeLockMessage)}
             rows={4}
             value={formData.description}
             onChange={e => setFormData({ ...formData, description: e.target.value })}
             placeholder="Describe quality, condition, and any other important details..."
-            className="w-full resize-none rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none"
+            className="w-full resize-none rounded-xl border border-white/5 bg-black/40 p-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500/50 focus:outline-none disabled:opacity-60"
           />
         </div>
 
         <button
-          disabled={loading}
+          disabled={loading || Boolean(tradeLockMessage)}
           type="submit"
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-white py-5 text-[10px] font-bold uppercase tracking-widest text-black shadow-2xl transition-all hover:bg-amber-500 disabled:opacity-50"
         >
-          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Post Listing'}
+          {loading ? (
+            <Loader2 className="h-5 w-5 animate-spin" />
+          ) : isEditing ? (
+            'Save Listing'
+          ) : (
+            'Post Listing'
+          )}
         </button>
+
+        {isEditing && (
+          <button
+            type="button"
+            onClick={handleDeleteListing}
+            disabled={loading || Boolean(tradeLockMessage)}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 py-4 text-[10px] font-bold uppercase tracking-widest text-red-400 transition-all hover:bg-red-500 hover:text-white disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete Listing
+          </button>
+        )}
       </form>
     </div>
   );
