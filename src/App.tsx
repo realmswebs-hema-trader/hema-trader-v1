@@ -218,6 +218,33 @@ function AppRoutes() {
           />
 
           <Route
+            path="/listing/:id/edit"
+            element={
+              <PrivateRoute>
+                <CreateListing />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/listings/:id/edit"
+            element={
+              <PrivateRoute>
+                <CreateListing />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
+            path="/edit-listing/:id"
+            element={
+              <PrivateRoute>
+                <CreateListing />
+              </PrivateRoute>
+            }
+          />
+
+          <Route
             path="/create"
             element={
               <PrivateRoute>
