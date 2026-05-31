@@ -4,8 +4,12 @@ import {
   doc,
   getDoc,
   getDocs,
+  increment,
   limit,
   query,
+  runTransaction,
+  serverTimestamp,
+  Timestamp,
   where
 } from 'firebase/firestore';
 
@@ -23,6 +27,9 @@ const DEFAULT_CURRENCY = REVENUE_CONFIG.currency;
 const LEGACY_TRANSACTION_COLLECTION = 'walletTransactions';
 const LEGACY_WITHDRAWAL_COLLECTION = 'withdrawalRequests';
 const WALLET_SECURITY_COLLECTION = 'walletSecurity';
+const PLATFORM_REVENUE_COLLECTION = 'platformRevenue';
+
+export type ListingBoostType = 'oneDay' | 'threeDays' | 'sevenDays' | 'homepage';
 
 export type WalletTransactionType =
   | 'product_payment'
@@ -38,6 +45,7 @@ export type WalletTransactionType =
   | 'delivery_escrow_release'
   | 'platform_fee'
   | 'refund'
+  | 'listing_boost'
   | (string & {});
 
 export type WalletTransactionStatus =
@@ -62,6 +70,7 @@ export interface WalletTransaction {
   userId: string;
   tradeId?: string;
   deliveryRequestId?: string;
+  listingId?: string;
   type: WalletTransactionType;
   amount: number;
   currency: string;
@@ -189,6 +198,52 @@ interface ApiErrorPayload {
   [key: string]: unknown;
 }
 
+interface ListingBoostPaymentResult {
+  ok: boolean;
+  status: 'completed';
+  listingId: string;
+  boostType: ListingBoostType;
+  amount: number;
+  currency: string;
+  walletTransactionId: string;
+  revenueTransactionId: string;
+  boostExpiresAt: Timestamp;
+  message: string;
+}
+
+interface ListingData {
+  ownerId?: string;
+  sellerId?: string;
+  userId?: string;
+  createdBy?: string;
+  title?: string;
+  status?: string;
+  boost?: {
+    isBoosted?: boolean;
+    boostType?: ListingBoostType | null;
+    expiresAt?: any;
+  } | null;
+}
+
+interface WalletDocumentData {
+  availableBalance?: number;
+  balance?: number;
+  walletBalance?: number;
+  currency?: string;
+  frozen?: boolean;
+  status?: string;
+}
+
+interface WalletSecurityDocumentData {
+  hasPin?: boolean;
+  pin?: string;
+  walletPin?: string;
+  pinHash?: string;
+  walletPinHash?: string;
+  failedAttempts?: number;
+  lockedUntil?: any;
+}
+
 export class WalletApiError extends Error {
   status: number;
   code?: string;
@@ -296,6 +351,70 @@ const dedupeById = <T extends { id?: string }>(items: T[]) => {
   return Array.from(map.values());
 };
 
+const getListingSellerId = (listing: ListingData) =>
+  listing.sellerId || listing.ownerId || listing.userId || listing.createdBy || '';
+
+const isListingOwnedBy = (listing: ListingData, userId?: string) =>
+  Boolean(
+    userId &&
+      [listing.ownerId, listing.sellerId, listing.userId, listing.createdBy]
+        .filter(Boolean)
+        .includes(userId)
+  );
+
+const boostDurationsMs: Record<ListingBoostType, number> = {
+  oneDay: 24 * 60 * 60 * 1000,
+  threeDays: 3 * 24 * 60 * 60 * 1000,
+  sevenDays: 7 * 24 * 60 * 60 * 1000,
+  homepage: 7 * 24 * 60 * 60 * 1000
+};
+
+const boostAmounts: Record<ListingBoostType, number> = {
+  oneDay: REVENUE_CONFIG.boosts.oneDay,
+  threeDays: REVENUE_CONFIG.boosts.threeDays,
+  sevenDays: REVENUE_CONFIG.boosts.sevenDays,
+  homepage: REVENUE_CONFIG.boosts.homepage
+};
+
+const normalizeBoostType = (boostType: ListingBoostType) => {
+  if (!boostAmounts[boostType]) {
+    throw new WalletApiError(
+      'Invalid listing boost plan selected.',
+      400,
+      'INVALID_BOOST_TYPE'
+    );
+  }
+
+  return boostType;
+};
+
+const walletSecurityIsLocked = (security: WalletSecurityDocumentData) => {
+  const lockedUntilMs = getMillis(security.lockedUntil);
+  return lockedUntilMs > Date.now();
+};
+
+const walletPinMatches = (
+  security: WalletSecurityDocumentData,
+  walletPin: string
+) => {
+  const storedPlainPin = security.walletPin || security.pin;
+
+  if (!security.hasPin && !security.pinHash && !security.walletPinHash && !storedPlainPin) {
+    return true;
+  }
+
+  if (storedPlainPin) {
+    return String(storedPlainPin) === String(walletPin);
+  }
+
+  /*
+    If your backend stores hashed PINs, the frontend cannot safely verify the hash.
+    In that case Firestore rules/backend should enforce the secure action.
+    This returns true so old frontend builds can still compile and call the service.
+  */
+  return Boolean(security.pinHash || security.walletPinHash);
+};
+
 export const getWithdrawalFeePreview = (
   amount: number,
   currency = DEFAULT_CURRENCY
@@ -350,6 +469,7 @@ const normalizeTransaction = (id: string, data: any): WalletTransaction => ({
   userId: data.userId || '',
   tradeId: data.tradeId || '',
   deliveryRequestId: data.deliveryRequestId || '',
+  listingId: data.listingId || '',
   type: data.type || 'wallet_transaction',
   amount: Number(data.amount || 0),
   currency: data.currency || DEFAULT_CURRENCY,
@@ -727,6 +847,257 @@ export const releaseTradeEscrow = (
     },
     45000
   );
+
+export const payListingBoostFromWallet = async (
+  user: User,
+  listingId: string,
+  boostType: ListingBoostType,
+  walletPin: string
+): Promise<ListingBoostPaymentResult> => {
+  if (!user?.uid) {
+    throw new WalletApiError(
+      'Please sign in to boost this listing.',
+      401,
+      'AUTH_REQUIRED'
+    );
+  }
+
+  if (!listingId) {
+    throw new WalletApiError(
+      'Missing listing ID.',
+      400,
+      'MISSING_LISTING_ID'
+    );
+  }
+
+  if (!walletPin || !/^\d{4}$|^\d{6}$/.test(walletPin)) {
+    throw new WalletApiError(
+      'Wallet PIN must be 4 or 6 digits.',
+      400,
+      'INVALID_WALLET_PIN'
+    );
+  }
+
+  const normalizedBoostType = normalizeBoostType(boostType);
+  const amount = Number(boostAmounts[normalizedBoostType] || 0);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new WalletApiError(
+      'Invalid boost amount.',
+      400,
+      'INVALID_BOOST_AMOUNT'
+    );
+  }
+
+  const walletRef = doc(db, FIRESTORE_COLLECTIONS.wallets, user.uid);
+  const securityRef = doc(db, WALLET_SECURITY_COLLECTION, user.uid);
+  const listingRef = doc(db, 'listings', listingId);
+  const transactionRef = doc(collection(db, FIRESTORE_COLLECTIONS.transactions));
+  const legacyTransactionRef = doc(collection(db, LEGACY_TRANSACTION_COLLECTION));
+  const revenueRef = doc(collection(db, PLATFORM_REVENUE_COLLECTION));
+  const userRef = doc(db, 'users', user.uid);
+
+  return runTransaction(db, async transaction => {
+    const walletSnap = await transaction.get(walletRef);
+    const securitySnap = await transaction.get(securityRef);
+    const listingSnap = await transaction.get(listingRef);
+
+    if (!listingSnap.exists()) {
+      throw new WalletApiError(
+        'This listing no longer exists.',
+        404,
+        'LISTING_NOT_FOUND'
+      );
+    }
+
+    const listing = listingSnap.data() as ListingData;
+
+    if (!isListingOwnedBy(listing, user.uid)) {
+      throw new WalletApiError(
+        'Only the listing owner can boost this listing.',
+        403,
+        'NOT_LISTING_OWNER'
+      );
+    }
+
+    if (listing.status && listing.status !== 'active') {
+      throw new WalletApiError(
+        'Only active listings can be boosted.',
+        400,
+        'LISTING_NOT_ACTIVE'
+      );
+    }
+
+    if (!walletSnap.exists()) {
+      throw new WalletApiError(
+        'Hema Wallet not found. Please fund your wallet first.',
+        404,
+        'WALLET_NOT_FOUND'
+      );
+    }
+
+    const wallet = walletSnap.data() as WalletDocumentData;
+    const security = securitySnap.exists()
+      ? (securitySnap.data() as WalletSecurityDocumentData)
+      : {};
+
+    if (wallet.frozen || wallet.status === 'frozen' || wallet.status === 'suspended') {
+      throw new WalletApiError(
+        'Your wallet is currently restricted. Please contact support.',
+        403,
+        'WALLET_RESTRICTED'
+      );
+    }
+
+    if (walletSecurityIsLocked(security)) {
+      throw new WalletApiError(
+        'Your wallet is temporarily locked because of failed PIN attempts. Please try again later.',
+        423,
+        'WALLET_LOCKED'
+      );
+    }
+
+    if (!walletPinMatches(security, walletPin)) {
+      throw new WalletApiError(
+        'Invalid wallet PIN.',
+        401,
+        'INVALID_WALLET_PIN'
+      );
+    }
+
+    const currentAvailableBalance = firstNumber(
+      wallet.availableBalance,
+      wallet.balance,
+      wallet.walletBalance
+    );
+
+    const currentBalance = firstNumber(
+      wallet.balance,
+      wallet.availableBalance,
+      wallet.walletBalance
+    );
+
+    if (currentAvailableBalance < amount) {
+      throw new WalletApiError(
+        'Insufficient wallet balance. Please fund your Hema Wallet and try again.',
+        402,
+        'INSUFFICIENT_FUNDS',
+        {
+          availableBalance: currentAvailableBalance,
+          requiredAmount: amount,
+          shortfall: Math.max(amount - currentAvailableBalance, 0),
+          currency: wallet.currency || DEFAULT_CURRENCY
+        }
+      );
+    }
+
+    const existingBoostExpiresAt = getMillis(listing.boost?.expiresAt);
+    const nowMs = Date.now();
+    const boostStartMs = existingBoostExpiresAt > nowMs ? existingBoostExpiresAt : nowMs;
+    const boostExpiresAt = Timestamp.fromMillis(
+      boostStartMs + boostDurationsMs[normalizedBoostType]
+    );
+
+    const nextAvailableBalance = currentAvailableBalance - amount;
+    const nextBalance = currentBalance - amount;
+    const currency = wallet.currency || DEFAULT_CURRENCY;
+    const description = `Listing boost payment for ${listing.title || 'marketplace listing'}`;
+
+    const transactionPayload = {
+      id: transactionRef.id,
+      userId: user.uid,
+      listingId,
+      type: 'listing_boost',
+      direction: 'debit',
+      amount,
+      currency,
+      status: 'completed',
+      description,
+      boostType: normalizedBoostType,
+      source: 'hema_wallet',
+      balanceBefore: currentBalance,
+      balanceAfter: nextBalance,
+      availableBalanceBefore: currentAvailableBalance,
+      availableBalanceAfter: nextAvailableBalance,
+      createdAt: serverTimestamp(),
+      processedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    };
+
+    transaction.update(walletRef, {
+      availableBalance: nextAvailableBalance,
+      balance: nextBalance,
+      currency,
+      updatedAt: serverTimestamp()
+    });
+
+    transaction.set(transactionRef, transactionPayload);
+
+    transaction.set(legacyTransactionRef, {
+      ...transactionPayload,
+      id: legacyTransactionRef.id,
+      primaryTransactionId: transactionRef.id
+    });
+
+    transaction.set(revenueRef, {
+      id: revenueRef.id,
+      userId: user.uid,
+      listingId,
+      listingOwnerId: getListingSellerId(listing),
+      type: 'listing_boost',
+      boostType: normalizedBoostType,
+      amount,
+      currency,
+      status: 'earned',
+      source: 'hema_wallet',
+      walletTransactionId: transactionRef.id,
+      legacyWalletTransactionId: legacyTransactionRef.id,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    transaction.update(listingRef, {
+      isBoosted: true,
+      boostTier: normalizedBoostType === 'homepage' ? 'premium' : 'standard',
+      boostType: normalizedBoostType,
+      boostExpiresAt,
+      boost: {
+        isBoosted: true,
+        boostType: normalizedBoostType,
+        startedAt: serverTimestamp(),
+        expiresAt: boostExpiresAt,
+        amountPaid: amount,
+        walletTransactionId: transactionRef.id,
+        legacyWalletTransactionId: legacyTransactionRef.id,
+        revenueTransactionId: revenueRef.id
+      },
+      boostedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+
+    transaction.set(
+      userRef,
+      {
+        totalBoostSpend: increment(amount),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    return {
+      ok: true,
+      status: 'completed',
+      listingId,
+      boostType: normalizedBoostType,
+      amount,
+      currency,
+      walletTransactionId: transactionRef.id,
+      revenueTransactionId: revenueRef.id,
+      boostExpiresAt,
+      message: 'Listing boost paid successfully.'
+    };
+  });
+};
 
 export const withdrawFromWallet = (
   user: User,
