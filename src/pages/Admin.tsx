@@ -1,28 +1,85 @@
-import { useState, useEffect, useMemo } from 'react';
-import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp, increment, orderBy, limit, addDoc, startAfter, QueryDocumentSnapshot } from 'firebase/firestore';
-import { db } from '../lib/firebase';
-import { useAuth } from '../components/auth/AuthContext';
-import { 
-  ShieldAlert, Check, X, FileSearch, Loader2, ExternalLink, 
-  AlertTriangle, UserMinus, ShieldCheck, Users, BarChart3, 
-  ShoppingBag, Truck, DollarSign, Search, Filter, Activity,
-  Clock, Gavel, Scale, AlertOctagon, TrendingUp, HeartPulse
+import { useEffect, useMemo, useState } from 'react';
+import {
+  addDoc,
+  collection,
+  doc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  serverTimestamp,
+  startAfter,
+  updateDoc,
+  where,
+  type Query,
+  type QueryDocumentSnapshot
+} from 'firebase/firestore';
+import {
+  Activity,
+  AlertOctagon,
+  AlertTriangle,
+  BadgeCheck,
+  Banknote,
+  BarChart3,
+  Clock,
+  CreditCard,
+  DollarSign,
+  FileSearch,
+  Gavel,
+  HeartPulse,
+  Loader2,
+  Scale,
+  ShieldAlert,
+  ShieldCheck,
+  ShoppingBag,
+  TrendingUp,
+  Truck,
+  Users,
+  WalletCards
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, 
-  ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line 
+import { AnimatePresence, motion } from 'motion/react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
 } from 'recharts';
+
+import { useAuth } from '../components/auth/AuthContext';
+import { REVENUE_CONFIG } from '../config/revenueConfig';
+import { db } from '../lib/firebase';
+
+const ADMIN_EMAIL = 'realmswebs@gmail.com';
+const PAGE_SIZE = 20;
+const CHART_COLORS = ['#f59e0b', '#22c55e', '#38bdf8', '#a855f7', '#f97316', '#ef4444'];
+
+type AdminTab = 'ops' | 'users' | 'disputes' | 'risk' | 'fraud' | 'revenue';
+type RevenueKind =
+  | 'trade_fee'
+  | 'delivery_commission'
+  | 'subscription'
+  | 'boost'
+  | 'verification'
+  | 'withdrawal_fee'
+  | 'other';
 
 interface UserProfile {
   userId: string;
-  displayName: string;
-  email: string;
-  verificationStatus: string;
+  uid?: string;
+  displayName?: string;
+  name?: string;
+  email?: string;
+  verificationStatus?: string;
   warningCount?: number;
   isBanned?: boolean;
   isSuspended?: boolean;
-  roles: string[];
+  roles?: string[];
   riskLevel?: 'none' | 'low' | 'medium' | 'high';
   reliabilityScore?: number;
   deliveriesCount?: number;
@@ -31,32 +88,109 @@ interface UserProfile {
   driverTier?: 'none' | 'trusted' | 'master';
   totalTrades?: number;
   averageRating?: number;
+  subscription?: {
+    plan?: 'free' | 'starter' | 'pro' | 'business';
+    status?: 'active' | 'expired' | 'cancelled';
+    paymentStatus?: 'paid' | 'unpaid' | 'trial';
+    startedAt?: any;
+    expiresAt?: any;
+  };
 }
 
 interface Trade {
   id: string;
-  buyerId: string;
-  sellerId: string;
-  amount: number;
-  status: string;
+  buyerId?: string;
+  sellerId?: string;
+  driverId?: string;
+  amount?: number;
+  status?: string;
   isDisputed?: boolean;
   disputeStatus?: string;
   platformFee?: number;
   deliveryFee?: number;
   driverCommission?: number;
-  createdAt: any;
+  sellerPayout?: number;
+  escrowStatus?: string;
+  paymentStatus?: string;
+  createdAt?: any;
+  updatedAt?: any;
   lastActivityAt?: any;
 }
 
 interface Report {
   id: string;
-  reporterId: string;
-  targetId: string;
-  reason: string;
-  description: string;
-  status: string;
+  reporterId?: string;
+  targetId?: string;
+  reason?: string;
+  description?: string;
+  status?: string;
   adminNote?: string;
-  createdAt: any;
+  createdAt?: any;
+}
+
+interface PlatformRevenueRecord {
+  id: string;
+  type?: string;
+  category?: string;
+  source?: string;
+  amount?: number;
+  platformAmount?: number;
+  fee?: number;
+  amountPaid?: number;
+  currency?: string;
+  status?: string;
+  tradeId?: string;
+  sellerId?: string;
+  driverId?: string;
+  userId?: string;
+  createdAt?: any;
+  metadata?: Record<string, any>;
+}
+
+interface PayoutRequest {
+  id: string;
+  userId?: string;
+  role?: 'seller' | 'driver' | 'buyer';
+  type?: string;
+  amount?: number;
+  grossAmount?: number;
+  fee?: number;
+  withdrawalFee?: number;
+  netAmount?: number;
+  status?: 'pending' | 'processing' | 'paid' | 'rejected' | 'cancelled';
+  createdAt?: any;
+}
+
+interface SubscriptionRecord {
+  id: string;
+  userId?: string;
+  plan?: 'free' | 'starter' | 'pro' | 'business';
+  role?: 'buyer' | 'seller' | 'driver';
+  status?: 'active' | 'expired' | 'cancelled';
+  paymentStatus?: 'paid' | 'unpaid' | 'trial';
+  amount?: number;
+  amountPaid?: number;
+  createdAt?: any;
+}
+
+interface BoostRecord {
+  id: string;
+  listingId?: string;
+  sellerId?: string;
+  boostType?: 'oneDay' | 'threeDays' | 'sevenDays' | 'homepage';
+  amountPaid?: number;
+  status?: string;
+  createdAt?: any;
+}
+
+interface VerificationRequest {
+  id: string;
+  userId?: string;
+  type?: 'seller' | 'driver' | 'business';
+  status?: 'pending' | 'approved' | 'rejected';
+  paymentStatus?: 'paid' | 'unpaid';
+  amountPaid?: number;
+  createdAt?: any;
 }
 
 interface SystemHealth {
@@ -66,124 +200,252 @@ interface SystemHealth {
   systemLoad: 'optimal' | 'high' | 'critical';
 }
 
-export default function Admin() {
-  const { user: authUser } = useAuth();
-  const [activeTab, setActiveTab] = useState<'ops' | 'users' | 'disputes' | 'risk' | 'revenue' | 'fraud'>('ops');
+const safeNumber = (value: any, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
 
-  const handleFreezeUser = async (userId: string, reason: string) => {
-    setProcessing(userId);
-    try {
-      const userRef = doc(db, 'users', userId);
-      await updateDoc(userRef, {
-        isSuspended: true,
-        riskLevel: 'high',
-        riskFlags: ['Manually Suspended by Fraud Engine'],
-        updatedAt: serverTimestamp()
-      });
-      await logAudit('ACCOUNT_FREEZE', userId, reason);
-      alert('Account frozen successfully');
-      fetchData();
-    } catch (err) {
-      alert('Freeze failed');
-    } finally {
-      setProcessing(null);
-    }
-  };
+const getMillis = (value: any) => {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  if (value.seconds) return value.seconds * 1000;
+  if (value._seconds) return value._seconds * 1000;
+
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const formatMoney = (amount = 0, currency = REVENUE_CONFIG.currency || 'XAF') => {
+  try {
+    return new Intl.NumberFormat('fr-CM', {
+      style: 'currency',
+      currency,
+      maximumFractionDigits: ['XAF', 'XOF', 'UGX', 'RWF'].includes(currency) ? 0 : 2
+    }).format(amount);
+  } catch {
+    return `${currency} ${Math.round(amount).toLocaleString()}`;
+  }
+};
+
+const normalizeRevenueKind = (record: PlatformRevenueRecord): RevenueKind => {
+  const raw = `${record.type || record.category || record.source || ''}`.toLowerCase();
+
+  if (raw.includes('delivery')) return 'delivery_commission';
+  if (raw.includes('subscription')) return 'subscription';
+  if (raw.includes('boost')) return 'boost';
+  if (raw.includes('verification')) return 'verification';
+  if (raw.includes('withdraw')) return 'withdrawal_fee';
+  if (raw.includes('trade') || raw.includes('platform') || raw.includes('escrow')) return 'trade_fee';
+
+  return 'other';
+};
+
+const getRevenueAmount = (record: PlatformRevenueRecord) =>
+  safeNumber(record.amount ?? record.platformAmount ?? record.fee ?? record.amountPaid);
+
+const getSubscriptionPrice = (plan?: string) => {
+  const subscriptions = REVENUE_CONFIG.subscriptions as any;
+
+  switch (plan) {
+    case 'starter':
+      return subscriptions.sellerStarter ?? subscriptions.starter ?? 2500;
+    case 'pro':
+      return subscriptions.sellerPro ?? subscriptions.pro ?? 7500;
+    case 'business':
+      return subscriptions.sellerBusiness ?? subscriptions.business ?? 20000;
+    default:
+      return 0;
+  }
+};
+
+const getDisplayName = (user: UserProfile) =>
+  user.displayName || user.name || user.email || `User ${user.userId?.slice(-6) || ''}`;
+
+export default function Admin() {
+  const { user: authUser, profile, loading: authLoading } = useAuth();
+  const [activeTab, setActiveTab] = useState<AdminTab>('ops');
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
+  const [revenueRecords, setRevenueRecords] = useState<PlatformRevenueRecord[]>([]);
+  const [payouts, setPayouts] = useState<PayoutRequest[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
+  const [boosts, setBoosts] = useState<BoostRecord[]>([]);
+  const [verifications, setVerifications] = useState<VerificationRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState<string | null>(null);
   const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot | null>(null);
   const [hasMore, setHasMore] = useState(false);
 
+  const isAdmin =
+    authUser?.email?.toLowerCase() === ADMIN_EMAIL ||
+    profile?.roles?.includes('admin') ||
+    profile?.admin === true;
+
   useEffect(() => {
     setLastDoc(null);
     setUsers([]);
     setTrades([]);
-    fetchData();
-  }, [activeTab]);
+    setReports([]);
+    void fetchData(false);
+  }, [activeTab, authUser?.uid, isAdmin]);
+
+  const readQuery = async <T,>(
+    request: Query,
+    mapper: (docSnap: QueryDocumentSnapshot) => T,
+    label: string
+  ): Promise<T[]> => {
+    try {
+      const snap = await getDocs(request);
+      return snap.docs.map(mapper);
+    } catch (error) {
+      console.error(`${label} fetch failed:`, error);
+      return [];
+    }
+  };
+
+  const fetchRevenueData = async () => {
+    const [nextRevenue, nextPayouts, nextSubscriptions, nextBoosts, nextVerifications] =
+      await Promise.all([
+        readQuery(
+          query(collection(db, 'platformRevenue'), orderBy('createdAt', 'desc'), limit(300)),
+          d => ({ id: d.id, ...d.data() } as PlatformRevenueRecord),
+          'Platform revenue'
+        ),
+        readQuery(
+          query(collection(db, 'payouts'), orderBy('createdAt', 'desc'), limit(150)),
+          d => ({ id: d.id, ...d.data() } as PayoutRequest),
+          'Payouts'
+        ),
+        readQuery(
+          query(collection(db, 'subscriptions'), orderBy('createdAt', 'desc'), limit(150)),
+          d => ({ id: d.id, ...d.data() } as SubscriptionRecord),
+          'Subscriptions'
+        ),
+        readQuery(
+          query(collection(db, 'boosts'), orderBy('createdAt', 'desc'), limit(150)),
+          d => ({ id: d.id, ...d.data() } as BoostRecord),
+          'Boosts'
+        ),
+        readQuery(
+          query(collection(db, 'verifications'), orderBy('createdAt', 'desc'), limit(150)),
+          d => ({ id: d.id, ...d.data() } as VerificationRequest),
+          'Verifications'
+        )
+      ]);
+
+    setRevenueRecords(nextRevenue);
+    setPayouts(nextPayouts);
+    setSubscriptions(nextSubscriptions);
+    setBoosts(nextBoosts);
+    setVerifications(nextVerifications);
+  };
 
   const fetchData = async (isMore = false) => {
+    if (!authUser || !isAdmin) {
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
-      const PAGE_SIZE = 20;
 
-      if (activeTab === 'ops' || activeTab === 'revenue') {
-        const tradesSnap = await getDocs(query(collection(db, 'trades'), orderBy('createdAt', 'desc'), limit(100)));
-        setTrades(tradesSnap.docs.map(d => ({ id: d.id, ...d.data() } as Trade)));
-        
-        const usersSnap = await getDocs(query(collection(db, 'users'), limit(100)));
-        setUsers(usersSnap.docs.map(d => d.data() as UserProfile));
-      } else if (activeTab === 'users') {
-        let q = query(collection(db, 'users'), orderBy('displayName'), limit(PAGE_SIZE));
-        if (isMore && lastDoc) {
-          q = query(collection(db, 'users'), orderBy('displayName'), startAfter(lastDoc), limit(PAGE_SIZE));
+      if (activeTab === 'ops' || activeTab === 'revenue' || activeTab === 'fraud') {
+        const [nextTrades, nextUsers, nextReports] = await Promise.all([
+          readQuery(
+            query(collection(db, 'trades'), orderBy('createdAt', 'desc'), limit(150)),
+            d => ({ id: d.id, ...d.data() } as Trade),
+            'Trades'
+          ),
+          readQuery(
+            query(collection(db, 'users'), limit(150)),
+            d => ({ userId: d.id, ...d.data() } as UserProfile),
+            'Users'
+          ),
+          readQuery(
+            query(collection(db, 'reports'), where('status', '==', 'pending'), limit(75)),
+            d => ({ id: d.id, ...d.data() } as Report),
+            'Reports'
+          )
+        ]);
+
+        setTrades(nextTrades);
+        setUsers(nextUsers);
+        setReports(nextReports);
+
+        if (activeTab === 'revenue') {
+          await fetchRevenueData();
         }
-        const snap = await getDocs(q);
-        const newUsers = snap.docs.map(d => d.data() as UserProfile);
-        setUsers(prev => isMore ? [...prev, ...newUsers] : newUsers);
+      } else if (activeTab === 'users') {
+        let userQuery = query(collection(db, 'users'), orderBy('displayName'), limit(PAGE_SIZE));
+
+        if (isMore && lastDoc) {
+          userQuery = query(
+            collection(db, 'users'),
+            orderBy('displayName'),
+            startAfter(lastDoc),
+            limit(PAGE_SIZE)
+          );
+        }
+
+        const snap = await getDocs(userQuery);
+        const newUsers = snap.docs.map(
+          d => ({ userId: d.id, ...d.data() } as UserProfile)
+        );
+
+        setUsers(prev => (isMore ? [...prev, ...newUsers] : newUsers));
         setLastDoc(snap.docs[snap.docs.length - 1] || null);
         setHasMore(snap.docs.length === PAGE_SIZE);
       } else if (activeTab === 'disputes') {
-        const snap = await getDocs(query(collection(db, 'trades'), where('isDisputed', '==', true), orderBy('lastActivityAt', 'desc')));
-        setTrades(snap.docs.map(d => ({ id: d.id, ...d.data() } as Trade)));
+        const nextTrades = await readQuery(
+          query(
+            collection(db, 'trades'),
+            where('isDisputed', '==', true),
+            orderBy('lastActivityAt', 'desc')
+          ),
+          d => ({ id: d.id, ...d.data() } as Trade),
+          'Disputed trades'
+        );
+
+        setTrades(nextTrades);
       } else if (activeTab === 'risk') {
-        const snap = await getDocs(query(collection(db, 'users'), where('riskLevel', 'in', ['medium', 'high'])));
-        setUsers(snap.docs.map(d => d.data() as UserProfile));
-        const reportsSnap = await getDocs(query(collection(db, 'reports'), where('status', '==', 'pending')));
-        setReports(reportsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Report)));
+        const [nextUsers, nextReports] = await Promise.all([
+          readQuery(
+            query(collection(db, 'users'), where('riskLevel', 'in', ['medium', 'high'])),
+            d => ({ userId: d.id, ...d.data() } as UserProfile),
+            'Risk users'
+          ),
+          readQuery(
+            query(collection(db, 'reports'), where('status', '==', 'pending')),
+            d => ({ id: d.id, ...d.data() } as Report),
+            'Pending reports'
+          )
+        ]);
+
+        setUsers(nextUsers);
+        setReports(nextReports);
       }
     } catch (err) {
-      console.error('Ops Fetch error:', err);
+      console.error('Admin fetch error:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  const revenueData = useMemo(() => {
-    const data = {
-      trades: 0,
-      delivery: 0,
-      boosts: 0,
-    };
-    trades.forEach(t => {
-      if (t.status === 'completed') {
-        data.trades += (t.platformFee || 0);
-        data.delivery += (t.deliveryFee ? t.deliveryFee * 0.2 : 0); // Platform take
-      }
-    });
-    // Simulating boost revenue for the chart
-    data.boosts = 125000; 
-
-    return [
-      { name: 'Escrow Fees', val: data.trades },
-      { name: 'Logistics', val: data.delivery },
-      { name: 'Listing Boosts', val: data.boosts }
-    ];
-  }, [trades]);
-
-  const platformHealth = useMemo((): SystemHealth => {
-    const now = Date.now();
-    const stuck = trades.filter(t => {
-      if (t.status === 'completed' || t.status === 'cancelled') return false;
-      const lastActive = t.lastActivityAt?.toMillis() || t.createdAt?.toMillis();
-      return (now - lastActive) > 172800000; // 48 hours
-    }).length;
-
-    return {
-      stuckTrades: stuck,
-      openReports: reports.length,
-      avgResolutionTime: '14.2h',
-      systemLoad: stuck > 10 ? 'high' : 'optimal'
-    };
-  }, [trades, reports]);
-
-  const logAudit = async (action: string, targetId: string, reason: string, metadata = {}) => {
+  const logAudit = async (
+    action: string,
+    targetId: string,
+    reason: string,
+    metadata: Record<string, any> = {}
+  ) => {
     if (!authUser) return;
+
     try {
-      await addDoc(collection(db, 'audit_logs'), {
+      await addDoc(collection(db, 'adminLogs'), {
         adminId: authUser.uid,
+        adminEmail: authUser.email || '',
         action,
         targetId,
         reason,
@@ -191,26 +453,47 @@ export default function Admin() {
         createdAt: serverTimestamp()
       });
     } catch (e) {
-      console.error('Audit Log failed:', e);
+      console.error('Admin log failed:', e);
+    }
+  };
+
+  const handleFreezeUser = async (userId: string, reason: string) => {
+    setProcessing(userId);
+
+    try {
+      await updateDoc(doc(db, 'users', userId), {
+        isSuspended: true,
+        riskLevel: 'high',
+        riskFlags: ['Manually suspended by admin'],
+        updatedAt: serverTimestamp()
+      });
+
+      await logAudit('ACCOUNT_FREEZE', userId, reason);
+      alert('Account frozen successfully.');
+      void fetchData(false);
+    } catch (err) {
+      console.error('Freeze failed:', err);
+      alert('Freeze failed.');
+    } finally {
+      setProcessing(null);
     }
   };
 
   const syncUserTiers = async () => {
     setProcessing('sync_tiers');
+
     try {
       const snap = await getDocs(collection(db, 'users'));
-      const batchSize = snap.size;
       let processed = 0;
 
       for (const userDoc of snap.docs) {
-        const u = userDoc.data() as UserProfile;
-        const updates: any = { updatedAt: serverTimestamp() };
+        const u = { userId: userDoc.id, ...userDoc.data() } as UserProfile;
+        const updates: Record<string, any> = { updatedAt: serverTimestamp() };
         const badges: string[] = [];
 
-        // Automation Logic
         if (u.verificationStatus === 'verified') badges.push('Verified');
-        
-        let newSellerTier: any = 'none';
+
+        let newSellerTier: UserProfile['sellerTier'] = 'none';
         if ((u.totalTrades || 0) > 50 && (u.averageRating || 0) > 4.7) {
           newSellerTier = 'elite';
           badges.push('Elite Seller');
@@ -219,7 +502,7 @@ export default function Admin() {
           badges.push('Trusted');
         }
 
-        let newDriverTier: any = 'none';
+        let newDriverTier: UserProfile['driverTier'] = 'none';
         if ((u.deliveriesCount || 0) > 100 && (u.reliabilityScore || 0) > 98) {
           newDriverTier = 'master';
           badges.push('Master Driver');
@@ -233,70 +516,349 @@ export default function Admin() {
         updates.badges = badges;
 
         await updateDoc(doc(db, 'users', u.userId), updates);
-        processed++;
+        processed += 1;
       }
-      alert(`Sync Complete: ${processed} users audited.`);
-      fetchData();
+
+      await logAudit('USER_TIERS_SYNCED', 'users', `${processed} users audited.`);
+      alert(`Sync complete: ${processed} users audited.`);
+      void fetchData(false);
     } catch (err) {
       console.error('Sync failed:', err);
-      alert('Tier synchronization failed');
+      alert('Tier synchronization failed.');
     } finally {
       setProcessing(null);
     }
   };
 
-  const handleDisputeResolution = async (tradeId: string, resolution: 'buyer' | 'seller' | 'split') => {
+  const handleDisputeResolution = async (
+    tradeId: string,
+    resolution: 'buyer' | 'seller' | 'split'
+  ) => {
     setProcessing(tradeId);
+
     try {
-      const tradeRef = doc(db, 'trades', tradeId);
-      await updateDoc(tradeRef, {
+      await updateDoc(doc(db, 'trades', tradeId), {
         isDisputed: false,
         disputeStatus: 'resolved',
-        status: resolution === 'buyer' ? 'cancelled' : 'completed', // Simplified
+        disputeResolution: resolution,
+        status: resolution === 'buyer' ? 'cancelled' : 'completed',
         updatedAt: serverTimestamp()
       });
+
       await logAudit('DISPUTE_RESOLVED', tradeId, `Resolution: ${resolution}`);
-      fetchData();
+      void fetchData(false);
     } catch (err) {
-      alert('Dispute resolution failed');
+      console.error('Dispute resolution failed:', err);
+      alert('Dispute resolution failed.');
     } finally {
       setProcessing(null);
     }
   };
 
-  if (loading) return (
-    <div className="flex h-[60vh] flex-col items-center justify-center gap-4">
-      <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
-      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Initializing Ops Hub...</p>
-    </div>
-  );
+  const handleVerificationReview = async (
+    request: VerificationRequest,
+    status: 'approved' | 'rejected'
+  ) => {
+    if (!request.userId) return;
+
+    setProcessing(`verification_${request.id}`);
+
+    try {
+      await updateDoc(doc(db, 'verifications', request.id), {
+        status,
+        reviewedBy: authUser?.uid || '',
+        reviewedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      if (status === 'approved') {
+        const userUpdates: Record<string, any> = {
+          verificationStatus: 'verified',
+          updatedAt: serverTimestamp()
+        };
+
+        if (request.type === 'seller') userUpdates.sellerVerified = true;
+        if (request.type === 'driver') userUpdates.driverVerified = true;
+        if (request.type === 'business') userUpdates.businessVerified = true;
+
+        await updateDoc(doc(db, 'users', request.userId), userUpdates);
+      }
+
+      await logAudit(
+        status === 'approved' ? 'VERIFICATION_APPROVED' : 'VERIFICATION_REJECTED',
+        request.userId,
+        `${request.type || 'user'} verification ${status}`,
+        { verificationId: request.id }
+      );
+
+      void fetchRevenueData();
+    } catch (error) {
+      console.error('Verification review failed:', error);
+      alert('Verification review failed.');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  const handlePayoutStatus = async (
+    payout: PayoutRequest,
+    status: 'processing' | 'paid' | 'rejected'
+  ) => {
+    setProcessing(`payout_${payout.id}`);
+
+    try {
+      await updateDoc(doc(db, 'payouts', payout.id), {
+        status,
+        reviewedBy: authUser?.uid || '',
+        reviewedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await logAudit('PAYOUT_STATUS_UPDATED', payout.id, `Payout marked ${status}`, {
+        userId: payout.userId,
+        amount: payout.amount
+      });
+
+      void fetchRevenueData();
+    } catch (error) {
+      console.error('Payout update failed:', error);
+      alert('Payout update failed.');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  const revenueSummary = useMemo(() => {
+    const byType: Record<RevenueKind, number> = {
+      trade_fee: 0,
+      delivery_commission: 0,
+      subscription: 0,
+      boost: 0,
+      verification: 0,
+      withdrawal_fee: 0,
+      other: 0
+    };
+
+    revenueRecords.forEach(record => {
+      byType[normalizeRevenueKind(record)] += getRevenueAmount(record);
+    });
+
+    const completedTrades = trades.filter(t => t.status === 'completed');
+    const fallbackTradeFees = completedTrades.reduce(
+      (sum, trade) => sum + safeNumber(trade.platformFee),
+      0
+    );
+    const fallbackDelivery = completedTrades.reduce((sum, trade) => {
+      const deliveryFee = safeNumber(trade.deliveryFee);
+      const driverCommission = safeNumber(trade.driverCommission);
+      const platformCommission =
+        driverCommission > 0
+          ? Math.max(deliveryFee - driverCommission, 0)
+          : deliveryFee * REVENUE_CONFIG.deliveryCommission.platformRate;
+
+      return sum + platformCommission;
+    }, 0);
+    const fallbackSubscriptions = subscriptions.reduce(
+      (sum, item) =>
+        sum +
+        safeNumber(item.amountPaid ?? item.amount ?? getSubscriptionPrice(item.plan)),
+      0
+    );
+    const fallbackBoosts = boosts.reduce(
+      (sum, boost) => sum + safeNumber(boost.amountPaid),
+      0
+    );
+    const fallbackVerification = verifications.reduce(
+      (sum, item) => sum + safeNumber(item.amountPaid),
+      0
+    );
+    const fallbackWithdrawalFees = payouts.reduce(
+      (sum, payout) => sum + safeNumber(payout.fee ?? payout.withdrawalFee),
+      0
+    );
+
+    const tradeFees = byType.trade_fee || fallbackTradeFees;
+    const deliveryCommissions = byType.delivery_commission || fallbackDelivery;
+    const subscriptionRevenue = byType.subscription || fallbackSubscriptions;
+    const boostRevenue = byType.boost || fallbackBoosts;
+    const verificationRevenue = byType.verification || fallbackVerification;
+    const withdrawalFees = byType.withdrawal_fee || fallbackWithdrawalFees;
+    const otherRevenue = byType.other;
+    const totalPlatformRevenue =
+      tradeFees +
+      deliveryCommissions +
+      subscriptionRevenue +
+      boostRevenue +
+      verificationRevenue +
+      withdrawalFees +
+      otherRevenue;
+
+    const pendingEscrowBalance = trades
+      .filter(
+        trade =>
+          !['completed', 'cancelled'].includes(trade.status || '') &&
+          (trade.escrowStatus === 'funded' ||
+            trade.paymentStatus === 'paid' ||
+            ['funded', 'shipped', 'disputed'].includes(trade.status || ''))
+      )
+      .reduce((sum, trade) => sum + safeNumber(trade.amount), 0);
+
+    const sellerPayouts = payouts
+      .filter(payout => payout.role === 'seller' || payout.type === 'seller_payout')
+      .reduce(
+        (sum, payout) =>
+          sum + safeNumber(payout.netAmount ?? payout.amount ?? payout.grossAmount),
+        0
+      );
+
+    const driverPayouts = payouts
+      .filter(payout => payout.role === 'driver' || payout.type === 'driver_payout')
+      .reduce(
+        (sum, payout) =>
+          sum + safeNumber(payout.netAmount ?? payout.amount ?? payout.grossAmount),
+        0
+      );
+
+    const activeSubscriptions = users.filter(
+      user =>
+        user.subscription?.status === 'active' &&
+        user.subscription?.paymentStatus === 'paid'
+    );
+
+    const monthlyRecurringRevenue = activeSubscriptions.reduce(
+      (sum, user) => sum + getSubscriptionPrice(user.subscription?.plan),
+      0
+    );
+
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const monthStartMillis = monthStart.getTime();
+    const currentMonthRevenue = revenueRecords
+      .filter(record => getMillis(record.createdAt) >= monthStartMillis)
+      .reduce((sum, record) => sum + getRevenueAmount(record), 0);
+
+    const topSellers = Array.from(
+      completedTrades.reduce((map, trade) => {
+        const sellerId = trade.sellerId || 'unknown';
+        const current = map.get(sellerId) || { sellerId, volume: 0, trades: 0 };
+        current.volume += safeNumber(trade.amount);
+        current.trades += 1;
+        map.set(sellerId, current);
+        return map;
+      }, new Map<string, { sellerId: string; volume: number; trades: number }>())
+    )
+      .map(([, seller]) => {
+        const sellerProfile = users.find(user => user.userId === seller.sellerId);
+        return {
+          ...seller,
+          name: sellerProfile ? getDisplayName(sellerProfile) : `Seller ${seller.sellerId.slice(-6)}`
+        };
+      })
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 5);
+
+    const categories = [
+      { name: 'Trade Fees', value: tradeFees },
+      { name: 'Delivery', value: deliveryCommissions },
+      { name: 'Subscriptions', value: subscriptionRevenue },
+      { name: 'Boosts', value: boostRevenue },
+      { name: 'Verification', value: verificationRevenue },
+      { name: 'Withdrawals', value: withdrawalFees }
+    ].filter(item => item.value > 0);
+
+    return {
+      totalPlatformRevenue,
+      tradeFees,
+      deliveryCommissions,
+      subscriptionRevenue,
+      boostRevenue,
+      verificationRevenue,
+      withdrawalFees,
+      otherRevenue,
+      pendingEscrowBalance,
+      sellerPayouts,
+      driverPayouts,
+      monthlyRecurringRevenue,
+      currentMonthRevenue,
+      topSellers,
+      categories
+    };
+  }, [boosts, payouts, revenueRecords, subscriptions, trades, users, verifications]);
+
+  const platformHealth = useMemo((): SystemHealth => {
+    const now = Date.now();
+    const stuckTrades = trades.filter(t => {
+      if (t.status === 'completed' || t.status === 'cancelled') return false;
+      const lastActive = getMillis(t.lastActivityAt) || getMillis(t.updatedAt) || getMillis(t.createdAt);
+      return lastActive > 0 && now - lastActive > 172800000;
+    }).length;
+
+    return {
+      stuckTrades,
+      openReports: reports.length,
+      avgResolutionTime: '14.2h',
+      systemLoad: stuckTrades > 20 ? 'critical' : stuckTrades > 10 ? 'high' : 'optimal'
+    };
+  }, [trades, reports]);
+
+  const pendingVerifications = verifications.filter(item => item.status === 'pending');
+  const pendingPayouts = payouts.filter(item => item.status === 'pending');
+
+  if (authLoading || loading) {
+    return (
+      <div className="flex h-[60vh] flex-col items-center justify-center gap-4">
+        <Loader2 className="h-10 w-10 animate-spin text-amber-500" />
+        <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+          Initializing Ops Hub...
+        </p>
+      </div>
+    );
+  }
+
+  if (!authUser || !isAdmin) {
+    return (
+      <div className="mx-auto max-w-xl rounded-[2.5rem] border border-red-500/20 bg-red-500/10 p-10 text-center">
+        <ShieldAlert className="mx-auto h-12 w-12 text-red-400" />
+        <h1 className="mt-5 font-serif text-3xl text-white">Admin Access Required</h1>
+        <p className="mt-3 text-sm leading-relaxed text-red-100/80">
+          This console is restricted to Hema Trader administrators.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-7xl space-y-10 px-4 pb-24 pt-8">
-      {/* Platform Header */}
-      <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between px-2">
+      <div className="flex flex-col gap-8 px-2 lg:flex-row lg:items-end lg:justify-between">
         <div className="space-y-2">
           <div className="flex items-center gap-3">
-             <div className="h-8 w-1 bg-amber-500 rounded-full" />
-             <h1 className="font-serif text-5xl text-white tracking-tighter">Ops Console</h1>
+            <div className="h-8 w-1 rounded-full bg-amber-500" />
+            <h1 className="font-serif text-5xl tracking-tighter text-white">
+              Ops Console
+            </h1>
           </div>
-          <p className="text-[10px] uppercase tracking-[0.3em] text-slate-500 font-black">Marketplace Integrity & Logistics Surveillance</p>
+          <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">
+            Marketplace Integrity, Revenue, and Logistics Surveillance
+          </p>
         </div>
 
-        <div className="flex flex-wrap gap-1.5 rounded-2xl bg-black/40 p-1.5 border border-white/5 backdrop-blur-xl">
+        <div className="flex flex-wrap gap-1.5 rounded-2xl border border-white/5 bg-black/40 p-1.5 backdrop-blur-xl">
           {[
             { id: 'ops', icon: Activity, label: 'Overview' },
             { id: 'users', icon: Users, label: 'Users' },
             { id: 'disputes', icon: Scale, label: 'Disputes' },
             { id: 'risk', icon: AlertOctagon, label: 'Risk Radar' },
-            { id: 'fraud', icon: ShieldAlert, label: 'Fraud Detection' },
-            { id: 'revenue', icon: DollarSign, label: 'Capital' }
-          ].map((tab) => (
+            { id: 'fraud', icon: ShieldAlert, label: 'Fraud' },
+            { id: 'revenue', icon: DollarSign, label: 'Revenue' }
+          ].map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2.5 px-6 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${
-                activeTab === tab.id ? 'bg-amber-500 text-black shadow-xl shadow-amber-500/20' : 'text-slate-500 hover:text-slate-200'
+              onClick={() => setActiveTab(tab.id as AdminTab)}
+              className={`flex items-center gap-2.5 rounded-xl px-6 py-3 text-[9px] font-black uppercase tracking-widest transition-all ${
+                activeTab === tab.id
+                  ? 'bg-amber-500 text-black shadow-xl shadow-amber-500/20'
+                  : 'text-slate-500 hover:text-slate-200'
               }`}
             >
               <tab.icon className="h-3.5 w-3.5" />
@@ -308,107 +870,145 @@ export default function Admin() {
 
       <AnimatePresence mode="wait">
         {activeTab === 'ops' && (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-8">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              <div className="rounded-[2.5rem] bg-brand-card p-8 border border-white/5 space-y-4">
-                <HeartPulse className={`h-6 w-6 ${platformHealth.systemLoad === 'optimal' ? 'text-green-500' : 'text-red-500'}`} />
-                <div>
-                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">System State</p>
-                   <p className="font-serif text-3xl text-white uppercase">{platformHealth.systemLoad}</p>
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="space-y-8"
+          >
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+              {[
+                {
+                  label: 'System State',
+                  value: platformHealth.systemLoad,
+                  icon: HeartPulse,
+                  color: platformHealth.systemLoad === 'optimal' ? 'text-green-500' : 'text-red-500'
+                },
+                {
+                  label: 'Stuck Trades',
+                  value: platformHealth.stuckTrades,
+                  icon: Clock,
+                  color: 'text-amber-500'
+                },
+                {
+                  label: 'Open Reports',
+                  value: platformHealth.openReports,
+                  icon: Gavel,
+                  color: 'text-blue-400'
+                },
+                {
+                  label: 'Trade Volume',
+                  value: formatMoney(
+                    trades.reduce((sum, trade) => sum + safeNumber(trade.amount), 0)
+                  ),
+                  icon: TrendingUp,
+                  color: 'text-green-500'
+                }
+              ].map(item => (
+                <div
+                  key={item.label}
+                  className="space-y-4 rounded-[2.5rem] border border-white/5 bg-brand-card p-8"
+                >
+                  <item.icon className={`h-6 w-6 ${item.color}`} />
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      {item.label}
+                    </p>
+                    <p className="mt-1 font-serif text-3xl uppercase text-white">
+                      {item.value}
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <div className="rounded-[2.5rem] bg-brand-card p-8 border border-white/5 space-y-4">
-                <Clock className="h-6 w-6 text-amber-500" />
-                <div>
-                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Stuck Trades</p>
-                   <p className="font-serif text-3xl text-white tracking-widest">{platformHealth.stuckTrades}</p>
-                </div>
-              </div>
-              <div className="rounded-[2.5rem] bg-brand-card p-8 border border-white/5 space-y-4">
-                <Gavel className="h-6 w-6 text-blue-500" />
-                <div>
-                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Avg Resolution</p>
-                   <p className="font-serif text-3xl text-white">{platformHealth.avgResolutionTime}</p>
-                </div>
-              </div>
-              <div className="rounded-[2.5rem] bg-brand-card p-8 border border-white/5 space-y-4">
-                <TrendingUp className="h-6 w-6 text-green-500" />
-                <div>
-                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Daily Volume</p>
-                   <p className="font-serif text-3xl text-white">{(trades.length * 1.2).toFixed(0)}</p>
-                </div>
-              </div>
-              <div className="rounded-[2.5rem] bg-brand-card p-8 border border-white/5 space-y-4">
-                <Activity className="h-6 w-6 text-purple-500" />
-                <div>
-                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Queue Throughput</p>
-                   <p className="font-serif text-3xl text-white tracking-widest">99.8%</p>
-                </div>
-              </div>
+              ))}
             </div>
 
-            {/* Automation Controls */}
-            <div className="rounded-[2.5rem] bg-amber-500/10 border border-amber-500/20 p-8 flex flex-col md:flex-row items-center justify-between gap-6">
-               <div className="space-y-1">
-                 <h3 className="font-serif text-xl text-amber-500">Tier Synchronization</h3>
-                 <p className="text-[10px] text-amber-500/60 font-medium uppercase tracking-wider">Audit all users and update Elite/Trusted statuses based on performance metrics</p>
-               </div>
-               <button 
+            <div className="flex flex-col items-center justify-between gap-6 rounded-[2.5rem] border border-amber-500/20 bg-amber-500/10 p-8 md:flex-row">
+              <div className="space-y-1">
+                <h3 className="font-serif text-xl text-amber-500">
+                  Tier Synchronization
+                </h3>
+                <p className="text-[10px] font-medium uppercase tracking-wider text-amber-500/60">
+                  Audit users and refresh Elite, Trusted, and Driver performance badges.
+                </p>
+              </div>
+              <button
                 onClick={syncUserTiers}
                 disabled={!!processing}
-                className="px-8 py-3 bg-amber-500 text-black text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-amber-500/20 active:scale-95 disabled:opacity-50"
-               >
-                 {processing === 'sync_tiers' ? 'Auditing Nodes...' : 'Run Audit Cycle'}
-               </button>
+                className="rounded-xl bg-amber-500 px-8 py-3 text-[10px] font-black uppercase tracking-widest text-black shadow-lg shadow-amber-500/20 active:scale-95 disabled:opacity-50"
+              >
+                {processing === 'sync_tiers' ? 'Auditing...' : 'Run Audit Cycle'}
+              </button>
             </div>
 
-            {/* Performance Rankings */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-               <div className="rounded-[2.5rem] bg-brand-card p-10 border border-white/5 space-y-6">
-                  <h3 className="font-serif text-2xl text-white flex items-center gap-3">
-                    <Truck className="h-5 w-5 text-amber-500" />
-                    Top Performing Drivers
-                  </h3>
-                  <div className="space-y-4">
-                    {users.filter(u => u.roles?.includes('driver'))
-                      .sort((a,b) => (b.reliabilityScore || 0) - (a.reliabilityScore || 0))
-                      .slice(0, 5).map((d, i) => (
-                      <div key={d.userId} className="flex items-center justify-between p-4 rounded-2xl bg-black/40 border border-white/5 transition-all hover:bg-black/60">
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+              <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-10">
+                <h3 className="flex items-center gap-3 font-serif text-2xl text-white">
+                  <Truck className="h-5 w-5 text-amber-500" />
+                  Top Performing Drivers
+                </h3>
+                <div className="space-y-4">
+                  {users
+                    .filter(u => u.roles?.includes('driver'))
+                    .sort((a, b) => (b.reliabilityScore || 0) - (a.reliabilityScore || 0))
+                    .slice(0, 5)
+                    .map((driver, index) => (
+                      <div
+                        key={driver.userId}
+                        className="flex items-center justify-between rounded-2xl border border-white/5 bg-black/40 p-4"
+                      >
                         <div className="flex items-center gap-4">
-                          <span className="text-[10px] font-black text-slate-600">0{i+1}</span>
+                          <span className="text-[10px] font-black text-slate-600">
+                            0{index + 1}
+                          </span>
                           <div>
-                            <p className="text-xs font-bold text-white uppercase tracking-wider">{d.displayName}</p>
-                            <p className="text-[9px] text-slate-500 uppercase tracking-widest">{d.deliveriesCount || 0} Trips</p>
+                            <p className="text-xs font-bold uppercase tracking-wider text-white">
+                              {getDisplayName(driver)}
+                            </p>
+                            <p className="text-[9px] uppercase tracking-widest text-slate-500">
+                              {driver.deliveriesCount || 0} Trips
+                            </p>
                           </div>
                         </div>
-                        <div className="text-right">
-                          <p className="text-[10px] font-black text-green-500 uppercase">{d.reliabilityScore || 100}% Trust</p>
-                        </div>
+                        <p className="text-[10px] font-black uppercase text-green-500">
+                          {driver.reliabilityScore || 100}% Trust
+                        </p>
                       </div>
                     ))}
-                  </div>
-               </div>
+                </div>
+              </div>
 
-               <div className="rounded-[2.5rem] bg-brand-card p-10 border border-white/5 space-y-6">
-                  <h3 className="font-serif text-2xl text-white flex items-center gap-3">
-                    <AlertTriangle className="h-5 w-5 text-red-500" />
-                    Stuck Logistics Monitor
-                  </h3>
-                  <div className="space-y-4">
-                     {trades.filter(t => {
-                        const lastActive = t.lastActivityAt?.toMillis() || t.createdAt?.toMillis();
-                        return (Date.now() - lastActive) > 86400000 && t.status !== 'completed';
-                     }).slice(0, 5).map(t => (
-                       <div key={t.id} className="p-5 rounded-2xl bg-red-500/5 border border-red-500/10 space-y-2">
-                          <div className="flex justify-between items-center">
-                             <span className="text-[9px] font-black uppercase text-red-500">IDLE: 24H+</span>
-                             <span className="text-[9px] font-mono text-slate-600">#{t.id.slice(-6)}</span>
-                          </div>
-                          <p className="text-xs font-bold text-slate-300">Valuation: {t.amount.toLocaleString()} CFA</p>
-                       </div>
-                     ))}
-                  </div>
-               </div>
+              <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-10">
+                <h3 className="flex items-center gap-3 font-serif text-2xl text-white">
+                  <AlertTriangle className="h-5 w-5 text-red-500" />
+                  Stuck Logistics Monitor
+                </h3>
+                <div className="space-y-4">
+                  {trades
+                    .filter(t => {
+                      const lastActive = getMillis(t.lastActivityAt) || getMillis(t.createdAt);
+                      return lastActive > 0 && Date.now() - lastActive > 86400000 && t.status !== 'completed';
+                    })
+                    .slice(0, 5)
+                    .map(trade => (
+                      <div
+                        key={trade.id}
+                        className="space-y-2 rounded-2xl border border-red-500/10 bg-red-500/5 p-5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-[9px] font-black uppercase text-red-500">
+                            Idle: 24H+
+                          </span>
+                          <span className="font-mono text-[9px] text-slate-600">
+                            #{trade.id.slice(-6)}
+                          </span>
+                        </div>
+                        <p className="text-xs font-bold text-slate-300">
+                          Valuation: {formatMoney(safeNumber(trade.amount))}
+                        </p>
+                      </div>
+                    ))}
+                </div>
+              </div>
             </div>
           </motion.div>
         )}
@@ -416,40 +1016,73 @@ export default function Admin() {
         {activeTab === 'users' && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
             <div className="grid gap-6">
-               {users.map(u => (
-                  <div key={u.userId} className="rounded-[2.5rem] bg-brand-card p-10 border border-white/5 flex flex-col md:flex-row items-center justify-between gap-8 shadow-2xl">
-                    <div className="flex items-center gap-6">
-                       <div className="h-16 w-16 rounded-[1.5rem] bg-gradient-to-br from-amber-500/20 to-amber-500/5 border border-white/5 flex items-center justify-center text-amber-500 font-serif text-2xl uppercase">
-                         {u.displayName?.slice(0, 1) || 'U'}
-                       </div>
-                       <div>
-                         <h4 className="font-serif text-2xl text-white">{u.displayName}</h4>
-                         <div className="flex flex-wrap gap-1.5 mt-2">
-                            {u.badges?.map(b => (
-                              <span key={b} className="px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-500 text-[8px] font-black uppercase border border-amber-500/20">{b}</span>
-                            ))}
-                            {u.sellerTier === 'elite' && <span className="px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-400 text-[8px] font-black uppercase border border-purple-500/30 tracking-tighter">Elite Player</span>}
-                         </div>
-                         <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-2">{u.email}</p>
-                       </div>
+              {users.map(u => (
+                <div
+                  key={u.userId}
+                  className="flex flex-col items-center justify-between gap-8 rounded-[2.5rem] border border-white/5 bg-brand-card p-10 shadow-2xl md:flex-row"
+                >
+                  <div className="flex items-center gap-6">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-[1.5rem] border border-white/5 bg-gradient-to-br from-amber-500/20 to-amber-500/5 font-serif text-2xl uppercase text-amber-500">
+                      {getDisplayName(u).slice(0, 1)}
                     </div>
-
-                    <div className="flex gap-4 w-full md:w-auto">
-                       <button className="flex-1 md:flex-none px-8 py-3 rounded-xl bg-white/5 border border-white/10 text-white text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all">Inspect</button>
-                       <button className="flex-1 md:flex-none px-8 py-3 rounded-xl bg-amber-500 text-black text-[10px] font-black uppercase tracking-widest hover:shadow-xl hover:shadow-amber-500/20 transition-all">Verification</button>
+                    <div>
+                      <h4 className="font-serif text-2xl text-white">
+                        {getDisplayName(u)}
+                      </h4>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {u.badges?.map(badge => (
+                          <span
+                            key={badge}
+                            className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-[8px] font-black uppercase text-amber-500"
+                          >
+                            {badge}
+                          </span>
+                        ))}
+                        {u.sellerTier === 'elite' && (
+                          <span className="rounded-full border border-purple-500/30 bg-purple-500/20 px-2.5 py-1 text-[8px] font-black uppercase tracking-tighter text-purple-400">
+                            Elite Seller
+                          </span>
+                        )}
+                        {u.subscription?.plan && (
+                          <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2.5 py-1 text-[8px] font-black uppercase tracking-tighter text-green-400">
+                            {u.subscription.plan} Plan
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-2 text-[10px] uppercase tracking-widest text-slate-500">
+                        {u.email}
+                      </p>
                     </div>
                   </div>
-               ))}
+
+                  <div className="flex w-full gap-4 md:w-auto">
+                    <button
+                      onClick={() => handleFreezeUser(u.userId, 'Manual admin freeze from user table')}
+                      disabled={!!processing}
+                      className="flex-1 rounded-xl border border-red-500/20 bg-red-500/10 px-8 py-3 text-[10px] font-black uppercase tracking-widest text-red-400 transition-all hover:bg-red-500 hover:text-black disabled:opacity-50 md:flex-none"
+                    >
+                      Freeze
+                    </button>
+                    <button
+                      disabled
+                      className="flex-1 rounded-xl bg-white/5 px-8 py-3 text-[10px] font-black uppercase tracking-widest text-white opacity-60 md:flex-none"
+                    >
+                      Inspect
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
+
             {hasMore && (
-              <div className="flex justify-center pt-10 pb-20">
-                 <button 
-                  onClick={() => fetchData(true)} 
+              <div className="flex justify-center pb-20 pt-10">
+                <button
+                  onClick={() => fetchData(true)}
                   disabled={loading}
-                  className="px-12 py-4 rounded-2xl bg-white/5 border border-white/10 text-white text-[10px] font-black uppercase tracking-[0.3em] hover:bg-white/10 transition-all flex items-center gap-3 disabled:opacity-50"
-                 >
-                   {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Load More Citizens'}
-                 </button>
+                  className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-12 py-4 text-[10px] font-black uppercase tracking-[0.3em] text-white transition-all hover:bg-white/10 disabled:opacity-50"
+                >
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Load More Users'}
+                </button>
               </div>
             )}
           </motion.div>
@@ -457,173 +1090,524 @@ export default function Admin() {
 
         {activeTab === 'disputes' && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
-             {trades.filter(t => t.isDisputed).length === 0 ? (
-               <div className="rounded-[3rem] bg-brand-card p-20 text-center border border-white/5 shadow-2xl">
-                 <ShieldCheck className="h-12 w-12 text-slate-800 mx-auto" />
-                 <h3 className="mt-8 font-serif text-3xl text-white italic">Clear Justice Docket</h3>
-                 <p className="mt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">No active disputes requiring intervention.</p>
-               </div>
-             ) : (
-               <div className="grid gap-6">
-                 {trades.filter(t => t.isDisputed).map(t => (
-                    <div key={t.id} className="rounded-[2.5rem] bg-brand-card p-10 border border-white/5 space-y-8 shadow-2xl">
-                       <div className="flex flex-col md:flex-row justify-between items-start gap-6 border-b border-white/5 pb-8">
-                          <div className="space-y-2">
-                             <div className="flex items-center gap-3">
-                                <Scale className="h-5 w-5 text-amber-500" />
-                                <h3 className="font-serif text-3xl text-white">Pending Arbitration</h3>
-                             </div>
-                             <p className="text-xs text-slate-500">Trade reference: <span className="text-amber-500 font-mono tracking-widest">#{t.id.toUpperCase()}</span></p>
+            {trades.filter(t => t.isDisputed).length === 0 ? (
+              <div className="rounded-[3rem] border border-white/5 bg-brand-card p-20 text-center shadow-2xl">
+                <ShieldCheck className="mx-auto h-12 w-12 text-slate-800" />
+                <h3 className="mt-8 font-serif text-3xl italic text-white">
+                  Clear Justice Docket
+                </h3>
+                <p className="mt-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                  No active disputes requiring intervention.
+                </p>
+              </div>
+            ) : (
+              <div className="grid gap-6">
+                {trades
+                  .filter(t => t.isDisputed)
+                  .map(trade => (
+                    <div
+                      key={trade.id}
+                      className="space-y-8 rounded-[2.5rem] border border-white/5 bg-brand-card p-10 shadow-2xl"
+                    >
+                      <div className="flex flex-col items-start justify-between gap-6 border-b border-white/5 pb-8 md:flex-row">
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-3">
+                            <Scale className="h-5 w-5 text-amber-500" />
+                            <h3 className="font-serif text-3xl text-white">
+                              Pending Arbitration
+                            </h3>
                           </div>
-                          <div className="text-right">
-                             <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Impact Value</p>
-                             <p className="font-serif text-3xl text-white">{t.amount.toLocaleString()} CFA</p>
-                          </div>
-                       </div>
-                       
-                       <div className="flex flex-col md:flex-row gap-4">
-                          <button onClick={() => handleDisputeResolution(t.id, 'seller')} className="flex-1 rounded-xl bg-white p-5 text-[10px] font-black uppercase tracking-widest text-black hover:bg-amber-500 transition-all shadow-xl">Rule for Seller</button>
-                          <button onClick={() => handleDisputeResolution(t.id, 'buyer')} className="flex-1 rounded-xl border border-white/10 bg-white/5 p-5 text-[10px] font-black uppercase tracking-widest text-white hover:bg-red-500/10 hover:border-red-500/20 transition-all">Rule for Buyer</button>
-                       </div>
+                          <p className="text-xs text-slate-500">
+                            Trade reference:{' '}
+                            <span className="font-mono tracking-widest text-amber-500">
+                              #{trade.id.toUpperCase()}
+                            </span>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="mb-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                            Impact Value
+                          </p>
+                          <p className="font-serif text-3xl text-white">
+                            {formatMoney(safeNumber(trade.amount))}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-4 md:flex-row">
+                        <button
+                          onClick={() => handleDisputeResolution(trade.id, 'seller')}
+                          disabled={processing === trade.id}
+                          className="flex-1 rounded-xl bg-white p-5 text-[10px] font-black uppercase tracking-widest text-black shadow-xl transition-all hover:bg-amber-500 disabled:opacity-50"
+                        >
+                          Rule for Seller
+                        </button>
+                        <button
+                          onClick={() => handleDisputeResolution(trade.id, 'buyer')}
+                          disabled={processing === trade.id}
+                          className="flex-1 rounded-xl border border-white/10 bg-white/5 p-5 text-[10px] font-black uppercase tracking-widest text-white transition-all hover:border-red-500/20 hover:bg-red-500/10 disabled:opacity-50"
+                        >
+                          Rule for Buyer
+                        </button>
+                      </div>
                     </div>
-                 ))}
-               </div>
-             )}
+                  ))}
+              </div>
+            )}
           </motion.div>
         )}
 
         {activeTab === 'revenue' && (
-           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div className="rounded-[3rem] bg-brand-card p-12 border border-white/5 shadow-2xl space-y-10">
-                   <h3 className="font-serif text-3xl text-white">Segmented Capital</h3>
-                   <div className="h-80">
-                     <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={revenueData}>
-                           <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
-                           <XAxis dataKey="name" stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                           <YAxis stroke="#475569" fontSize={10} axisLine={false} tickLine={false} />
-                           <Bar dataKey="val" fill="#f59e0b" radius={[12, 12, 0, 0]} barSize={40} />
-                        </BarChart>
-                     </ResponsiveContainer>
-                   </div>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                {
+                  label: 'Total Revenue',
+                  value: formatMoney(revenueSummary.totalPlatformRevenue),
+                  icon: WalletCards,
+                  color: 'text-amber-500'
+                },
+                {
+                  label: 'This Month',
+                  value: formatMoney(revenueSummary.currentMonthRevenue),
+                  icon: BarChart3,
+                  color: 'text-green-400'
+                },
+                {
+                  label: 'MRR',
+                  value: formatMoney(revenueSummary.monthlyRecurringRevenue),
+                  icon: CreditCard,
+                  color: 'text-blue-400'
+                },
+                {
+                  label: 'Pending Escrow',
+                  value: formatMoney(revenueSummary.pendingEscrowBalance),
+                  icon: ShieldCheck,
+                  color: 'text-purple-400'
+                }
+              ].map(metric => (
+                <div
+                  key={metric.label}
+                  className="rounded-[2.2rem] border border-white/5 bg-brand-card p-7 shadow-xl"
+                >
+                  <metric.icon className={`h-6 w-6 ${metric.color}`} />
+                  <p className="mt-5 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    {metric.label}
+                  </p>
+                  <p className="mt-2 font-serif text-3xl text-white">
+                    {metric.value}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 gap-8 xl:grid-cols-[1.25fr_0.75fr]">
+              <div className="space-y-8 rounded-[3rem] border border-white/5 bg-brand-card p-10 shadow-2xl">
+                <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                  <div>
+                    <h3 className="font-serif text-3xl text-white">
+                      Revenue Ledger
+                    </h3>
+                    <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      Platform fees, commissions, boosts, verification, and withdrawals
+                    </p>
+                  </div>
+                  <p className="rounded-full border border-amber-500/20 bg-amber-500/10 px-4 py-2 text-[9px] font-black uppercase tracking-widest text-amber-500">
+                    {revenueRecords.length} ledger records
+                  </p>
                 </div>
 
-                <div className="space-y-6">
-                   {revenueData.map((s, i) => (
-                     <div key={i} className="rounded-[2.5rem] bg-brand-card p-8 border border-white/5 shadow-xl flex items-center justify-between">
-                        <div className="space-y-1">
-                           <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">{s.name}</p>
-                           <p className="font-serif text-3xl text-white">{s.val.toLocaleString()} CFA</p>
-                        </div>
-                        <div className="h-12 w-12 rounded-2xl bg-black/40 flex items-center justify-center">
-                           <TrendingUp className="h-5 w-5 text-green-500" />
-                        </div>
-                     </div>
-                   ))}
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={revenueSummary.categories}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" vertical={false} />
+                      <XAxis
+                        dataKey="name"
+                        stroke="#64748b"
+                        fontSize={10}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        stroke="#64748b"
+                        fontSize={10}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <Tooltip
+                        formatter={(value: any) => formatMoney(safeNumber(value))}
+                        contentStyle={{
+                          background: '#09090b',
+                          border: '1px solid rgba(255,255,255,.1)',
+                          borderRadius: '14px',
+                          color: 'white'
+                        }}
+                      />
+                      <Bar dataKey="value" fill="#f59e0b" radius={[12, 12, 0, 0]} barSize={42} />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
-           </motion.div>
+
+              <div className="rounded-[3rem] border border-white/5 bg-brand-card p-10 shadow-2xl">
+                <h3 className="font-serif text-2xl text-white">Revenue Mix</h3>
+                <div className="mt-6 h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={revenueSummary.categories}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius={58}
+                        outerRadius={92}
+                        paddingAngle={4}
+                      >
+                        {revenueSummary.categories.map((entry, index) => (
+                          <Cell
+                            key={entry.name}
+                            fill={CHART_COLORS[index % CHART_COLORS.length]}
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        formatter={(value: any) => formatMoney(safeNumber(value))}
+                        contentStyle={{
+                          background: '#09090b',
+                          border: '1px solid rgba(255,255,255,.1)',
+                          borderRadius: '14px',
+                          color: 'white'
+                        }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {revenueSummary.categories.map((item, index) => (
+                    <div key={item.name} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
+                        />
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                          {item.name}
+                        </p>
+                      </div>
+                      <p className="text-sm font-bold text-white">{formatMoney(item.value)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+              {[
+                { label: 'Trade Fees', value: revenueSummary.tradeFees, icon: ShoppingBag },
+                { label: 'Delivery Commission', value: revenueSummary.deliveryCommissions, icon: Truck },
+                { label: 'Subscriptions', value: revenueSummary.subscriptionRevenue, icon: CreditCard },
+                { label: 'Listing Boosts', value: revenueSummary.boostRevenue, icon: TrendingUp },
+                { label: 'Verification', value: revenueSummary.verificationRevenue, icon: BadgeCheck },
+                { label: 'Withdrawal Fees', value: revenueSummary.withdrawalFees, icon: Banknote }
+              ].map(item => (
+                <div
+                  key={item.label}
+                  className="flex items-center justify-between rounded-[2rem] border border-white/5 bg-brand-card p-6"
+                >
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      {item.label}
+                    </p>
+                    <p className="mt-2 font-serif text-2xl text-white">
+                      {formatMoney(item.value)}
+                    </p>
+                  </div>
+                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-black/40 text-amber-500">
+                    <item.icon className="h-5 w-5" />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 gap-8 xl:grid-cols-2">
+              <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8">
+                <h3 className="font-serif text-2xl text-white">Top Sellers by Volume</h3>
+                <div className="space-y-3">
+                  {revenueSummary.topSellers.length > 0 ? (
+                    revenueSummary.topSellers.map((seller, index) => (
+                      <div
+                        key={seller.sellerId}
+                        className="flex items-center justify-between rounded-2xl border border-white/5 bg-black/30 p-4"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-[10px] font-black text-slate-600">
+                            0{index + 1}
+                          </span>
+                          <div>
+                            <p className="text-sm font-bold text-white">{seller.name}</p>
+                            <p className="text-[9px] uppercase tracking-widest text-slate-500">
+                              {seller.trades} completed trades
+                            </p>
+                          </div>
+                        </div>
+                        <p className="font-serif text-lg text-white">
+                          {formatMoney(seller.volume)}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-white/5 bg-black/30 p-6 text-center text-sm text-slate-500">
+                      No completed seller volume yet.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8">
+                <div className="flex items-center justify-between gap-4">
+                  <h3 className="font-serif text-2xl text-white">Payout Queue</h3>
+                  <span className="rounded-full bg-amber-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-amber-500">
+                    {pendingPayouts.length} pending
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {pendingPayouts.slice(0, 5).map(payout => (
+                    <div
+                      key={payout.id}
+                      className="space-y-4 rounded-2xl border border-white/5 bg-black/30 p-4"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-bold text-white">
+                            {formatMoney(safeNumber(payout.netAmount ?? payout.amount))}
+                          </p>
+                          <p className="text-[9px] uppercase tracking-widest text-slate-500">
+                            {payout.role || payout.type || 'wallet'} payout
+                          </p>
+                        </div>
+                        <p className="text-[9px] font-black uppercase tracking-widest text-amber-500">
+                          {payout.status || 'pending'}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handlePayoutStatus(payout, 'processing')}
+                          disabled={processing === `payout_${payout.id}`}
+                          className="flex-1 rounded-xl bg-white/5 py-2 text-[9px] font-black uppercase text-slate-300 disabled:opacity-50"
+                        >
+                          Processing
+                        </button>
+                        <button
+                          onClick={() => handlePayoutStatus(payout, 'paid')}
+                          disabled={processing === `payout_${payout.id}`}
+                          className="flex-1 rounded-xl bg-green-500 py-2 text-[9px] font-black uppercase text-black disabled:opacity-50"
+                        >
+                          Paid
+                        </button>
+                        <button
+                          onClick={() => handlePayoutStatus(payout, 'rejected')}
+                          disabled={processing === `payout_${payout.id}`}
+                          className="flex-1 rounded-xl bg-red-500/10 py-2 text-[9px] font-black uppercase text-red-400 disabled:opacity-50"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {pendingPayouts.length === 0 && (
+                    <div className="rounded-2xl border border-white/5 bg-black/30 p-6 text-center text-sm text-slate-500">
+                      No payout requests are waiting.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="font-serif text-2xl text-white">Verification Review</h3>
+                  <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    Verified sellers receive more buyer trust.
+                  </p>
+                </div>
+                <span className="rounded-full bg-amber-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-amber-500">
+                  {pendingVerifications.length} pending
+                </span>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                {pendingVerifications.slice(0, 6).map(request => (
+                  <div
+                    key={request.id}
+                    className="space-y-4 rounded-2xl border border-white/5 bg-black/30 p-5"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-bold uppercase tracking-wider text-white">
+                          {request.type || 'User'} Verification
+                        </p>
+                        <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
+                          User: {request.userId?.slice(-8) || 'unknown'}
+                        </p>
+                      </div>
+                      <p className="text-sm font-black text-amber-500">
+                        {formatMoney(safeNumber(request.amountPaid))}
+                      </p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleVerificationReview(request, 'approved')}
+                        disabled={processing === `verification_${request.id}`}
+                        className="flex-1 rounded-xl bg-green-500 py-3 text-[9px] font-black uppercase text-black disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => handleVerificationReview(request, 'rejected')}
+                        disabled={processing === `verification_${request.id}`}
+                        className="flex-1 rounded-xl bg-red-500/10 py-3 text-[9px] font-black uppercase text-red-400 disabled:opacity-50"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {pendingVerifications.length === 0 && (
+                <div className="rounded-2xl border border-white/5 bg-black/30 p-6 text-center text-sm text-slate-500">
+                  No verification requests are waiting.
+                </div>
+              )}
+            </div>
+          </motion.div>
         )}
 
         {activeTab === 'risk' && (
-           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                 <div className="lg:col-span-2 space-y-6">
-                    <h3 className="font-serif text-2xl text-white px-2">High Risk User Nodes</h3>
-                    {users.filter(u => u.riskLevel === 'high' || u.riskLevel === 'medium').map(u => (
-                      <div key={u.userId} className="rounded-[2rem] bg-brand-card p-8 border border-red-500/10 flex items-center justify-between">
-                        <div className="flex items-center gap-5">
-                           <div className="h-14 w-14 rounded-2xl bg-red-500/10 flex items-center justify-center text-red-500">
-                             <AlertOctagon className="h-6 w-6" />
-                           </div>
-                           <div>
-                              <h4 className="font-serif text-xl text-white">{u.displayName}</h4>
-                              <p className="text-[9px] text-red-500/80 font-black uppercase tracking-widest">RISK LEVEL: {u.riskLevel}</p>
-                           </div>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+              <div className="space-y-6 lg:col-span-2">
+                <h3 className="px-2 font-serif text-2xl text-white">
+                  High Risk User Nodes
+                </h3>
+                {users
+                  .filter(u => u.riskLevel === 'high' || u.riskLevel === 'medium')
+                  .map(u => (
+                    <div
+                      key={u.userId}
+                      className="flex items-center justify-between rounded-[2rem] border border-red-500/10 bg-brand-card p-8"
+                    >
+                      <div className="flex items-center gap-5">
+                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-red-500/10 text-red-500">
+                          <AlertOctagon className="h-6 w-6" />
                         </div>
-                        <div className="flex gap-2">
-                          <button 
-                            onClick={() => handleFreezeUser(u.userId, 'Flagged by risk engine')}
-                            disabled={!!processing}
-                            className="px-6 py-3 rounded-xl bg-red-500 text-black text-[10px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50"
-                          >
-                            Freeze
-                          </button>
+                        <div>
+                          <h4 className="font-serif text-xl text-white">{getDisplayName(u)}</h4>
+                          <p className="text-[9px] font-black uppercase tracking-widest text-red-500/80">
+                            Risk Level: {u.riskLevel}
+                          </p>
                         </div>
                       </div>
-                    ))}
-                 </div>
-                 
-                 <div className="rounded-[2.5rem] bg-brand-card p-10 border border-white/5 space-y-8">
-                    <h3 className="font-serif text-xl text-white italic">Safety KPI</h3>
-                    <div className="space-y-6">
-                       <div className="space-y-2">
-                          <div className="flex justify-between text-[10px] font-black uppercase tracking-widest">
-                             <span className="text-slate-500">Trust Index</span>
-                             <span className="text-white">88%</span>
-                          </div>
-                          <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                             <div className="h-full bg-amber-500 w-[88%]" />
-                          </div>
-                       </div>
-                       <div className="space-y-2">
-                          <div className="flex justify-between text-[10px] font-black uppercase tracking-widest">
-                             <span className="text-slate-500">Fraud Prevention</span>
-                             <span className="text-white">99.4%</span>
-                          </div>
-                          <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                             <div className="h-full bg-green-500 w-[99.4%]" />
-                          </div>
-                       </div>
+                      <button
+                        onClick={() => handleFreezeUser(u.userId, 'Flagged by risk engine')}
+                        disabled={!!processing}
+                        className="rounded-xl bg-red-500 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-black transition-transform active:scale-95 disabled:opacity-50"
+                      >
+                        Freeze
+                      </button>
                     </div>
-                 </div>
+                  ))}
               </div>
-           </motion.div>
+
+              <div className="space-y-8 rounded-[2.5rem] border border-white/5 bg-brand-card p-10">
+                <h3 className="font-serif text-xl italic text-white">Safety KPI</h3>
+                {[
+                  { label: 'Trust Index', value: 88, color: 'bg-amber-500' },
+                  { label: 'Fraud Prevention', value: 99.4, color: 'bg-green-500' }
+                ].map(item => (
+                  <div key={item.label} className="space-y-2">
+                    <div className="flex justify-between text-[10px] font-black uppercase tracking-widest">
+                      <span className="text-slate-500">{item.label}</span>
+                      <span className="text-white">{item.value}%</span>
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/5">
+                      <div className={`h-full ${item.color}`} style={{ width: `${item.value}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
         )}
 
         {activeTab === 'fraud' && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-10">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className="lg:col-span-2 space-y-6">
-                 <h3 className="font-serif text-2xl text-white px-2">Fraud Signal Monitor</h3>
-                 {trades.filter(t => t.amount > 500000 || t.isDisputed).map(t => (
-                   <div key={t.id} className="rounded-[2rem] bg-brand-card p-8 border border-red-500/10 space-y-4 shadow-xl">
-                      <div className="flex justify-between items-start">
-                         <div className="flex items-center gap-4">
-                           <div className="p-3 bg-red-500/10 rounded-xl text-red-500">
-                             <FileSearch className="h-5 w-5" />
-                           </div>
-                           <div>
-                              <p className="text-xs font-black text-white">Large Transaction: {t.amount.toLocaleString()} CFA</p>
-                              <p className="text-[9px] text-slate-500 uppercase tracking-widest">Trade: #{t.id.slice(-8)}</p>
-                           </div>
-                         </div>
-                         <span className="px-3 py-1 rounded-full bg-red-500 text-black text-[8px] font-black uppercase">Suspicious</span>
+            <div className="grid grid-cols-1 gap-8 lg:grid-cols-3">
+              <div className="space-y-6 lg:col-span-2">
+                <h3 className="px-2 font-serif text-2xl text-white">
+                  Fraud Signal Monitor
+                </h3>
+                {trades
+                  .filter(t => safeNumber(t.amount) > 500000 || t.isDisputed)
+                  .map(trade => (
+                    <div
+                      key={trade.id}
+                      className="space-y-4 rounded-[2rem] border border-red-500/10 bg-brand-card p-8 shadow-xl"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-center gap-4">
+                          <div className="rounded-xl bg-red-500/10 p-3 text-red-500">
+                            <FileSearch className="h-5 w-5" />
+                          </div>
+                          <div>
+                            <p className="text-xs font-black text-white">
+                              Large Transaction: {formatMoney(safeNumber(trade.amount))}
+                            </p>
+                            <p className="text-[9px] uppercase tracking-widest text-slate-500">
+                              Trade: #{trade.id.slice(-8)}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="rounded-full bg-red-500 px-3 py-1 text-[8px] font-black uppercase text-black">
+                          Suspicious
+                        </span>
                       </div>
                       <div className="flex gap-2 pt-2">
-                         <button onClick={() => handleDisputeResolution(t.id, 'buyer')} className="flex-1 py-3 bg-red-500/10 text-red-500 text-[10px] font-black uppercase border border-red-500/20 rounded-xl">Hold Transaction</button>
-                         <button className="flex-1 py-3 bg-white/5 text-slate-400 text-[10px] font-black uppercase border border-white/5 rounded-xl">Verify ID</button>
+                        <button
+                          onClick={() => handleDisputeResolution(trade.id, 'buyer')}
+                          className="flex-1 rounded-xl border border-red-500/20 bg-red-500/10 py-3 text-[10px] font-black uppercase text-red-500"
+                        >
+                          Hold Transaction
+                        </button>
+                        <button className="flex-1 rounded-xl border border-white/5 bg-white/5 py-3 text-[10px] font-black uppercase text-slate-400">
+                          Verify ID
+                        </button>
                       </div>
-                   </div>
-                 ))}
+                    </div>
+                  ))}
               </div>
 
-               <div className="space-y-6">
-                <div className="rounded-[2.5rem] bg-brand-card p-10 border border-white/5 space-y-6">
-                   <h4 className="font-serif text-lg text-white">Threat Indicators</h4>
-                   <div className="space-y-4">
-                      {[
-                        { label: 'Sybil Attack Patterns', count: 0 },
-                        { label: 'Card Testing Signals', count: 1 },
-                        { label: 'Location Mismatches', count: 3 },
-                      ].map((item, i) => (
-                        <div key={i} className="flex justify-between items-center p-4 bg-black/40 rounded-2xl border border-white/5">
-                           <p className="text-[10px] font-bold text-slate-400">{item.label}</p>
-                           <span className="text-[10px] font-black text-red-500 bg-red-500/10 px-2 py-1 rounded-md">{item.count}</span>
-                        </div>
-                      ))}
-                   </div>
+              <div className="space-y-6">
+                <div className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-10">
+                  <h4 className="font-serif text-lg text-white">Threat Indicators</h4>
+                  <div className="space-y-4">
+                    {[
+                      { label: 'Sybil Attack Patterns', count: 0 },
+                      { label: 'Card Testing Signals', count: 1 },
+                      { label: 'Location Mismatches', count: 3 }
+                    ].map(item => (
+                      <div
+                        key={item.label}
+                        className="flex items-center justify-between rounded-2xl border border-white/5 bg-black/40 p-4"
+                      >
+                        <p className="text-[10px] font-bold text-slate-400">{item.label}</p>
+                        <span className="rounded-md bg-red-500/10 px-2 py-1 text-[10px] font-black text-red-500">
+                          {item.count}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
