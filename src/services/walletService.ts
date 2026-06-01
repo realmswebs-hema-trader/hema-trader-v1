@@ -369,11 +369,64 @@ const boostDurationsMs: Record<ListingBoostType, number> = {
   homepage: 7 * 24 * 60 * 60 * 1000
 };
 
+const boostAmountFallbacks: Record<ListingBoostType, number> = {
+  oneDay: 500,
+  threeDays: 1000,
+  sevenDays: 2000,
+  homepage: 5000
+};
+
+const getConfiguredBoostAmount = (
+  value: unknown,
+  fallback: number
+): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  if (value && typeof value === 'object') {
+    const amountSource = value as Record<string, unknown>;
+    const candidates = [
+      amountSource.amount,
+      amountSource.price,
+      amountSource.fee,
+      amountSource.value
+    ];
+
+    for (const candidate of candidates) {
+      const parsed = Number(candidate);
+
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return fallback;
+};
+
 const boostAmounts: Record<ListingBoostType, number> = {
-  oneDay: REVENUE_CONFIG.boosts.oneDay,
-  threeDays: REVENUE_CONFIG.boosts.threeDays,
-  sevenDays: REVENUE_CONFIG.boosts.sevenDays,
-  homepage: REVENUE_CONFIG.boosts.homepage
+  oneDay: getConfiguredBoostAmount(
+    REVENUE_CONFIG.boosts.oneDay,
+    boostAmountFallbacks.oneDay
+  ),
+  threeDays: getConfiguredBoostAmount(
+    REVENUE_CONFIG.boosts.threeDays,
+    boostAmountFallbacks.threeDays
+  ),
+  sevenDays: getConfiguredBoostAmount(
+    REVENUE_CONFIG.boosts.sevenDays,
+    boostAmountFallbacks.sevenDays
+  ),
+  homepage: getConfiguredBoostAmount(
+    REVENUE_CONFIG.boosts.homepage,
+    boostAmountFallbacks.homepage
+  )
 };
 
 const normalizeBoostType = (boostType: ListingBoostType) => {
