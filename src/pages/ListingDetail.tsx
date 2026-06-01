@@ -253,6 +253,47 @@ const listingAvailabilityClass = (listing: Listing) => {
   return 'border-red-500/20 bg-red-500/10 text-red-400';
 };
 
+const boostAmountFallbacks: Record<ListingBoostType, number> = {
+  oneDay: 500,
+  threeDays: 1000,
+  sevenDays: 2000,
+  homepage: 5000
+};
+
+const getConfiguredBoostAmount = (
+  value: unknown,
+  fallback: number
+): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  if (value && typeof value === 'object') {
+    const amountSource = value as Record<string, unknown>;
+    const candidates = [
+      amountSource.amount,
+      amountSource.price,
+      amountSource.fee,
+      amountSource.value
+    ];
+
+    for (const candidate of candidates) {
+      const parsed = Number(candidate);
+
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return fallback;
+};
+
 const boostPlans: Record<
   ListingBoostType,
   {
@@ -264,22 +305,34 @@ const boostPlans: Record<
   oneDay: {
     label: '1-Day Boost',
     helper: '24 hours priority placement',
-    amount: REVENUE_CONFIG.boosts.oneDay
+    amount: getConfiguredBoostAmount(
+      REVENUE_CONFIG.boosts.oneDay,
+      boostAmountFallbacks.oneDay
+    )
   },
   threeDays: {
     label: '3-Day Boost',
     helper: '3 days priority placement',
-    amount: REVENUE_CONFIG.boosts.threeDays
+    amount: getConfiguredBoostAmount(
+      REVENUE_CONFIG.boosts.threeDays,
+      boostAmountFallbacks.threeDays
+    )
   },
   sevenDays: {
     label: '7-Day Boost',
     helper: '7 days priority placement',
-    amount: REVENUE_CONFIG.boosts.sevenDays
+    amount: getConfiguredBoostAmount(
+      REVENUE_CONFIG.boosts.sevenDays,
+      boostAmountFallbacks.sevenDays
+    )
   },
   homepage: {
     label: 'Homepage Feature',
     helper: 'Featured homepage placement',
-    amount: REVENUE_CONFIG.boosts.homepage
+    amount: getConfiguredBoostAmount(
+      REVENUE_CONFIG.boosts.homepage,
+      boostAmountFallbacks.homepage
+    )
   }
 };
 
