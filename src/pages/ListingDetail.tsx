@@ -336,6 +336,13 @@ const boostPlans: Record<
   }
 };
 
+const boostPlanOrder: ListingBoostType[] = [
+  'oneDay',
+  'threeDays',
+  'sevenDays',
+  'homepage'
+];
+
 const getActiveListingBoost = (listing: Listing): ListingBoost | null => {
   const boost = listing.boost;
 
@@ -1270,49 +1277,53 @@ export default function ListingDetail() {
             )}
 
             <div className="mt-5 grid gap-3">
-              <button
-                onClick={() => handleBoostListing('sevenDays')}
-                disabled={Boolean(boosting)}
-                className="rounded-2xl border border-white/5 bg-black/40 p-4 text-left transition hover:border-amber-500/50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <h4 className="font-serif text-base text-white">
-                  {boostPlans.sevenDays.label}
-                </h4>
-                <p className="mt-1 text-[8px] uppercase tracking-widest text-slate-500">
-                  {boostPlans.sevenDays.helper}
-                </p>
-                <p className="mt-3 text-lg font-bold text-white">
-                  {boosting === 'sevenDays'
-                    ? 'Processing...'
-                    : formatMoney(
-                        boostPlans.sevenDays.amount,
-                        REVENUE_CONFIG.currency,
-                        'fr-CM'
-                      )}
-                </p>
-              </button>
+              {boostPlanOrder.map(boostType => {
+                const plan = boostPlans[boostType];
+                const isHomepage = boostType === 'homepage';
+                const isActivePlan = activeBoost?.boostType === boostType;
 
-              <button
-                onClick={() => handleBoostListing('homepage')}
-                disabled={Boolean(boosting)}
-                className="rounded-2xl border border-l-4 border-white/5 border-l-amber-500 bg-black/40 p-4 text-left transition hover:border-amber-500/50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <h4 className="font-serif text-base text-white">
-                  {boostPlans.homepage.label}
-                </h4>
-                <p className="mt-1 text-[8px] uppercase tracking-widest text-slate-500">
-                  {boostPlans.homepage.helper}
-                </p>
-                <p className="mt-3 text-lg font-bold text-white">
-                  {boosting === 'homepage'
-                    ? 'Processing...'
-                    : formatMoney(
-                        boostPlans.homepage.amount,
-                        REVENUE_CONFIG.currency,
-                        'fr-CM'
+                return (
+                  <button
+                    key={boostType}
+                    onClick={() => handleBoostListing(boostType)}
+                    disabled={Boolean(boosting)}
+                    className={`rounded-2xl border bg-black/40 p-4 text-left transition hover:border-amber-500/50 disabled:cursor-not-allowed disabled:opacity-60 ${
+                      isHomepage
+                        ? 'border-l-4 border-white/5 border-l-amber-500'
+                        : isActivePlan
+                          ? 'border-green-500/30'
+                          : 'border-white/5'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h4 className="font-serif text-base text-white">
+                          {plan.label}
+                        </h4>
+                        <p className="mt-1 text-[8px] uppercase tracking-widest text-slate-500">
+                          {plan.helper}
+                        </p>
+                      </div>
+
+                      {isActivePlan && (
+                        <span className="rounded-full border border-green-500/20 bg-green-500/10 px-2 py-1 text-[7px] font-black uppercase tracking-widest text-green-400">
+                          Active
+                        </span>
                       )}
-                </p>
-              </button>
+                    </div>
+
+                    <p className="mt-3 text-lg font-bold text-white">
+                      {boosting === boostType
+                        ? 'Processing...'
+                        : formatMoney(
+                            plan.amount,
+                            REVENUE_CONFIG.currency,
+                            'fr-CM'
+                          )}
+                    </p>
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
