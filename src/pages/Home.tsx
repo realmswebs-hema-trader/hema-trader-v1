@@ -72,6 +72,7 @@ interface Listing {
   longitude?: number;
   status: string;
   listingStatus?: string;
+  stockStatus?: string;
   isBoosted?: boolean;
   boost?: ListingBoost | null;
   hasTradeHistory?: boolean;
@@ -212,6 +213,11 @@ const sortListingsForMarketplace = <T extends Listing>(items: T[]) =>
 
     return getMillis(b.createdAt) - getMillis(a.createdAt);
   });
+
+const isListingSold = (listing: Pick<Listing, 'status' | 'listingStatus' | 'stockStatus'>) =>
+  listing.status === 'sold' ||
+  listing.listingStatus === 'sold' ||
+  listing.stockStatus === 'sold';
 
 const profileMatchesSearch = (profile: UserProfile, searchTerm: string) => {
   if (!searchTerm) return true;
@@ -699,6 +705,16 @@ export default function Home() {
       return;
     }
 
+    if (isListingSold(listing)) {
+      alert('Product sold.');
+      return;
+    }
+
+    if (listing.status !== 'active') {
+      alert('This product is not available for trade.');
+      return;
+    }
+
     const buyerVerificationStatus = profile?.verificationStatus || 'unverified';
     const sellerVerificationStatus = await getSellerVerificationStatus(listing.ownerId);
 
@@ -762,15 +778,6 @@ export default function Home() {
           location: listing.locationName || listing.location || ''
         },
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-
-      await updateDoc(doc(db, 'listings', listing.id), {
-        hasTradeHistory: true,
-        activeTradeId: tradeRef.id,
-        status: 'in_trade',
-        listingStatus: 'in_trade',
-        reservedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
 
@@ -1017,6 +1024,7 @@ export default function Home() {
           <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
             {filteredListings.map(listing => {
               const isOwnListing = listing.ownerId === user?.uid;
+              const listingSold = isListingSold(listing);
               const seller = getCachedSeller(listing.ownerId);
               const sellerVerified = seller?.verificationStatus === 'verified';
               const listingBoosted = isListingBoostActive(listing);
@@ -1115,15 +1123,17 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={event => startTradeFromListing(event, listing)}
-                        disabled={startingTradeId === listing.id || isOwnListing}
+                        disabled={startingTradeId === listing.id || isOwnListing || listingSold}
                         className="flex items-center justify-center gap-1.5 rounded-xl bg-amber-500 px-3 py-3 text-[8px] font-black uppercase tracking-widest text-black transition hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {startingTradeId === listing.id ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : listingSold ? (
+                          <Lock className="h-3.5 w-3.5" />
                         ) : (
                           <ShoppingBag className="h-3.5 w-3.5" />
                         )}
-                        {isOwnListing ? 'Listed' : 'Trade'}
+                        {listingSold ? 'Product Sold' : isOwnListing ? 'Listed' : 'Trade'}
                       </button>
                     </div>
                   </div>
