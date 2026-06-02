@@ -11,6 +11,11 @@ service cloud.firestore {
         request.auth.token.email == 'realmswebs@gmail.com';
     }
 
+    function isTemporaryModeratorEmail() {
+      return signedIn() &&
+        request.auth.token.email == 'realmscity@gmail.com';
+    }
+
     function isAdmin() {
       return signedIn() &&
         (
@@ -68,6 +73,7 @@ service cloud.firestore {
           data.sellerId == request.auth.uid ||
           data.driverId == request.auth.uid ||
           data.assignedDriverId == request.auth.uid ||
+          data.moderatorId == request.auth.uid ||
           data.userId == request.auth.uid ||
           data.createdBy == request.auth.uid ||
           data.requesterId == request.auth.uid ||
@@ -105,6 +111,7 @@ service cloud.firestore {
           data.sellerId == request.auth.uid ||
           data.driverId == request.auth.uid ||
           data.assignedDriverId == request.auth.uid ||
+          data.moderatorId == request.auth.uid ||
           data.userId == request.auth.uid ||
           data.createdBy == request.auth.uid ||
           data.requesterId == request.auth.uid ||
@@ -146,6 +153,7 @@ service cloud.firestore {
           data.sellerId == request.auth.uid ||
           data.driverId == request.auth.uid ||
           data.assignedDriverId == request.auth.uid ||
+          data.moderatorId == request.auth.uid ||
           data.userId == request.auth.uid ||
           data.createdBy == request.auth.uid ||
           (
@@ -238,8 +246,139 @@ service cloud.firestore {
           'availableBalance',
           'escrowBalance',
           'pendingWithdrawalBalance',
-          'totalEarned'
+          'totalEarned',
+          'isModerator',
+          'moderatorVerified',
+          'moderatorStatus',
+          'moderatorApplicationStatus',
+          'moderatorApprovedAt',
+          'moderatorApprovedBy',
+          'moderatorRegions',
+          'moderatorRoutes',
+          'moderatorAvailability',
+          'moderatorWalletBalance',
+          'moderatorCanWithdrawImmediately',
+          'moderatorRating',
+          'completedModeratorDeliveries'
         ]);
+    }
+
+    function isApprovedModerator(userId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/users/$(userId)) &&
+        get(/databases/$(database)/documents/users/$(userId)).data.isModerator == true &&
+        get(/databases/$(database)/documents/users/$(userId)).data.moderatorVerified == true &&
+        get(/databases/$(database)/documents/users/$(userId)).data.moderatorStatus == 'approved';
+    }
+
+    function isModeratorDeliveryParticipant(data) {
+      return signedIn() &&
+        (
+          isAdmin() ||
+          data.buyerId == request.auth.uid ||
+          data.sellerId == request.auth.uid ||
+          data.moderatorId == request.auth.uid ||
+          (
+            data.participantIds is list &&
+            request.auth.uid in data.participantIds
+          ) ||
+          (
+            data.tradeId is string &&
+            isTradeParticipantById(data.tradeId)
+          )
+        );
+    }
+
+    function validModeratorDeliveryCreate(data) {
+      return signedIn() &&
+        data.buyerId == request.auth.uid &&
+        data.tradeId is string &&
+        isTradeParticipantById(data.tradeId) &&
+        data.moderatorId is string &&
+        isApprovedModerator(data.moderatorId) &&
+        data.status == 'moderator_requested' &&
+        data.moderatorPaymentStatus == 'unpaid' &&
+        data.moderatorFee is number &&
+        data.moderatorFee > 0 &&
+        data.moderatorPlatformFee is number &&
+        data.moderatorPlatformFee >= 0 &&
+        data.moderatorNetEarning is number &&
+        data.moderatorNetEarning >= 0 &&
+        data.moderatorNetEarning + data.moderatorPlatformFee == data.moderatorFee;
+    }
+
+    function assignedModeratorCanUpdateDelivery() {
+      return isApprovedModerator(request.auth.uid) &&
+        resource.data.moderatorId == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'moderatorAcceptedAt',
+          'moderatorPickedUpAt',
+          'moderatorInTransitAt',
+          'moderatorDeliveredAt',
+          'updatedAt'
+        ]) &&
+        request.resource.data.status in [
+          'moderator_accepted',
+          'moderator_declined',
+          'picked_up_by_moderator',
+          'in_transit_by_moderator',
+          'delivered_by_moderator'
+        ];
+    }
+
+    function buyerCanRequestModeratorPayment() {
+      return signedIn() &&
+        resource.data.buyerId == request.auth.uid &&
+        resource.data.moderatorPaymentStatus == 'unpaid' &&
+        request.resource.data.moderatorPaymentStatus == 'payment_requested' &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'moderatorPaymentStatus',
+          'updatedAt'
+        ]);
+    }
+
+    function safeTemporaryModeratorSelfActivation() {
+      return isTemporaryModeratorEmail() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'roles',
+          'isModerator',
+          'moderatorVerified',
+          'moderatorStatus',
+          'moderatorApplicationStatus',
+          'moderatorAvailability',
+          'moderatorRegions',
+          'moderatorRoutes',
+          'moderatorCanWithdrawImmediately',
+          'email',
+          'updatedAt',
+          'moderatorApprovedAt',
+          'moderatorApprovedBy'
+        ]) &&
+        request.resource.data.roles is list &&
+        request.resource.data.roles.hasOnly(['buyer', 'seller', 'moderator']) &&
+        request.resource.data.isModerator == true &&
+        request.resource.data.moderatorVerified == true &&
+        request.resource.data.moderatorStatus == 'approved' &&
+        request.resource.data.moderatorApplicationStatus == 'approved' &&
+        request.resource.data.moderatorAvailability in ['available', 'busy', 'offline'] &&
+        request.resource.data.moderatorRegions is list &&
+        request.resource.data.moderatorRoutes is list &&
+        request.resource.data.moderatorCanWithdrawImmediately == true;
+    }
+
+    function safeModeratorAvailabilityUpdate(userId) {
+      return isUser(userId) &&
+        isApprovedModerator(userId) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'moderatorAvailability',
+          'updatedAt'
+        ]) &&
+        request.resource.data.moderatorAvailability in [
+          'available',
+          'busy',
+          'offline'
+        ];
     }
 
     function safeSelfUserWrite(data) {
@@ -262,6 +401,22 @@ service cloud.firestore {
         (
           !('verificationStatus' in data) ||
           data.verificationStatus in ['unverified', 'pending']
+        ) &&
+        (
+          !('isModerator' in data) ||
+          data.isModerator == false
+        ) &&
+        (
+          !('moderatorVerified' in data) ||
+          data.moderatorVerified == false
+        ) &&
+        (
+          !('moderatorStatus' in data) ||
+          data.moderatorStatus in [null, '', 'pending_review']
+        ) &&
+        (
+          !('moderatorApplicationStatus' in data) ||
+          data.moderatorApplicationStatus in [null, '', 'pending_review']
         );
     }
 
@@ -483,7 +638,11 @@ service cloud.firestore {
       allow update: if isAdmin() ||
         (
           isUser(userId) &&
-          safeSelfUserWrite(request.resource.data)
+          (
+            safeSelfUserWrite(request.resource.data) ||
+            safeTemporaryModeratorSelfActivation() ||
+            safeModeratorAvailabilityUpdate(userId)
+          )
         );
 
       allow delete: if isAdmin();
@@ -742,6 +901,76 @@ service cloud.firestore {
         );
 
       allow create, update, delete: if isAdmin();
+    }
+
+    match /moderatorApplications/{applicationId} {
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending_review'
+        && request.resource.data.acceptedTerms == true;
+
+      allow read: if isAdmin() ||
+        (
+          signedIn() &&
+          resource.data.userId == request.auth.uid
+        );
+
+      allow update: if isAdmin() ||
+        (
+          signedIn() &&
+          resource.data.userId == request.auth.uid &&
+          request.resource.data.userId == request.auth.uid &&
+          resource.data.status in ['pending_review', 'rejected'] &&
+          request.resource.data.status == 'pending_review' &&
+          request.resource.data.acceptedTerms == true &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'displayName',
+            'phoneNumber',
+            'cityOrRegion',
+            'routes',
+            'routeKeys',
+            'transportCapacity',
+            'identityDocumentUrl',
+            'acceptedTerms',
+            'status',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    match /moderatorDeliveries/{requestId} {
+      allow create: if validModeratorDeliveryCreate(request.resource.data);
+
+      allow read: if isModeratorDeliveryParticipant(resource.data);
+
+      allow update: if isAdmin() ||
+        assignedModeratorCanUpdateDelivery() ||
+        buyerCanRequestModeratorPayment();
+
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isModeratorDeliveryParticipant(
+          get(/databases/$(database)/documents/moderatorDeliveries/$(requestId)).data
+        );
+
+        allow create: if isModeratorDeliveryParticipant(
+          get(/databases/$(database)/documents/moderatorDeliveries/$(requestId)).data
+        )
+          && (
+            isAdmin() ||
+            request.resource.data.senderId == request.auth.uid ||
+            request.resource.data.userId == request.auth.uid
+          );
+
+        allow update: if isModeratorDeliveryParticipant(
+          get(/databases/$(database)/documents/moderatorDeliveries/$(requestId)).data
+        );
+
+        allow delete: if isAdmin();
+      }
     }
 
     match /platformRevenue/{revenueId} {
