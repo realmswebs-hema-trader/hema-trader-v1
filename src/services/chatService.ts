@@ -230,7 +230,7 @@ export const sendTradeMessage = async ({
     contactVisibleAfterPayment: allowContactInfo
   });
 
-  await addDoc(collection(db, 'messages'), messageData);
+  const messageRef = await addDoc(collection(db, 'messages'), messageData);
 
   if (mirrorToLegacyThread && !allowContactInfo) {
     await safelyMirrorToLegacyThread(tradeId, messageData);
@@ -259,7 +259,14 @@ export const sendTradeMessage = async ({
         targetType: 'trade',
         actionUrl: `/trade/${tradeId}`,
         senderId,
-        senderName
+        senderName,
+        metadata: {
+          sound: true,
+          tradeId,
+          listingId,
+          messageId: messageRef.id,
+          notificationKind: allowContactInfo ? 'delivery_contact' : 'chat_message'
+        }
       })
     ),
     'Trade message notifications'
@@ -292,7 +299,7 @@ export const sendSystemTradeMessage = async ({
     status
   });
 
-  await addDoc(collection(db, 'messages'), messageData);
+  const messageRef = await addDoc(collection(db, 'messages'), messageData);
 
   if (mirrorToLegacyThread) {
     await safelyMirrorToLegacyThread(tradeId, messageData);
@@ -316,7 +323,16 @@ export const sendSystemTradeMessage = async ({
         type: 'trade_update',
         targetId: tradeId,
         targetType: 'trade',
-        actionUrl: `/trade/${tradeId}`
+        actionUrl: `/trade/${tradeId}`,
+        senderId: 'system',
+        senderName: 'Hema Trader',
+        metadata: {
+          sound: true,
+          tradeId,
+          listingId,
+          messageId: messageRef.id,
+          notificationKind: 'system_trade_message'
+        }
       })
     ),
     'System trade notifications'
