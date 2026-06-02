@@ -42,6 +42,7 @@ import {
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import DeliveryRequestPanel from '../components/delivery/DeliveryRequestPanel';
+import ModeratorDeliveryRequestPanel from '../components/delivery/ModeratorDeliveryRequestPanel';
 import RatingModal from '../components/trade/RatingModal';
 import DriverRatingModal from '../components/trade/DriverRatingModal';
 import {
@@ -200,6 +201,21 @@ interface Trade {
   sellerPayout?: number;
   agreedAmount?: number;
   priceAgreementStatus?: string;
+  deliveryMode?: 'standard_driver' | 'moderator_assisted' | 'pickup';
+  moderatorDeliveryRequestId?: string;
+  moderatorId?: string;
+  moderatorName?: string;
+  moderatorStatus?: string;
+  moderatorFee?: number;
+  moderatorPlatformFee?: number;
+  moderatorNetEarning?: number;
+  moderatorPaymentStatus?: string;
+  moderatorAssignedAt?: any;
+  moderatorAcceptedAt?: any;
+  moderatorPickedUpAt?: any;
+  moderatorDeliveredAt?: any;
+  moderatorCanSeeBuyerPhone?: boolean;
+  moderatorCanSeeSellerPhone?: boolean;
 }
 
 interface Listing {
@@ -330,6 +346,23 @@ const offerStatusClass = (status: Offer['status']) => {
   return 'border-amber-500 bg-amber-500 text-black';
 };
 
+const moderatorStatusLabel = (status?: string) => {
+  const labels: Record<string, string> = {
+    moderator_requested: 'Waiting for Moderator',
+    moderator_assigned: 'Moderator Assigned',
+    moderator_accepted: 'Moderator Accepted',
+    moderator_declined: 'Moderator Declined',
+    picked_up_by_moderator: 'Product Picked Up',
+    in_transit_by_moderator: 'In Transit',
+    delivered_by_moderator: 'Delivered by Moderator',
+    completed: 'Completed',
+    cancelled: 'Cancelled',
+    frozen_by_admin: 'Frozen by Admin'
+  };
+
+  return labels[status || ''] || 'Moderator Requested';
+};
+
 const getListingImages = (listing?: Listing | null) => {
   if (Array.isArray(listing?.images) && listing.images.length > 0) {
     return listing.images;
@@ -368,6 +401,7 @@ export default function TradeDetail() {
   const [drivers, setDrivers] = useState<any[]>([]);
   const [showDriverSelection, setShowDriverSelection] = useState(false);
   const [showDeliveryRequestPanel, setShowDeliveryRequestPanel] = useState(false);
+  const [showModeratorDeliveryPanel, setShowModeratorDeliveryPanel] = useState(false);
   const [broadcasting, setBroadcasting] = useState(false);
   const [deliveryFundingError, setDeliveryFundingError] = useState<string | null>(null);
   const [deliveryCountdownTick, setDeliveryCountdownTick] = useState(0);
@@ -1484,6 +1518,17 @@ export default function TradeDetail() {
     trade?.status === 'funded' &&
     !trade?.deliveryRequestId;
 
+  const canRequestModeratorDelivery =
+    Boolean(trade && user) &&
+    isBuyer &&
+    !invalidTradeAccess &&
+    ['funded', 'shipped'].includes(trade?.status || '') &&
+    !trade?.moderatorDeliveryRequestId &&
+    trade?.deliveryMode !== 'moderator_assisted' &&
+    trade?.status !== 'cancelled' &&
+    trade?.status !== 'completed' &&
+    trade?.status !== 'disputed';
+
   if (loading) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-6 bg-brand-bg p-12">
@@ -1803,6 +1848,16 @@ export default function TradeDetail() {
             >
               {broadcasting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Truck className="h-4 w-4" />}
               {trade.deliveryRequestStatus === 'open' ? 'Request Sent' : 'Request Delivery'}
+            </button>
+          )}
+
+          {canRequestModeratorDelivery && (
+            <button
+              onClick={() => setShowModeratorDeliveryPanel(true)}
+              className="flex w-full items-center justify-center gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 py-5 text-[10px] font-bold uppercase tracking-widest text-amber-400 shadow-2xl"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              Request Verified Moderator
             </button>
           )}
 
@@ -2328,6 +2383,52 @@ export default function TradeDetail() {
                 </div>
               ) : null}
 
+              {trade.moderatorDeliveryRequestId || trade.deliveryMode === 'moderator_assisted' ? (
+                <div className="space-y-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10">
+                      <ShieldCheck className="h-5 w-5 text-amber-500" />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-white">
+                        Verified Moderator Delivery
+                      </p>
+                      <p className="text-[9px] uppercase tracking-widest text-slate-500">
+                        {trade.moderatorName || 'Hema Moderator'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-white/5 pt-2">
+                    <span className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+                      Status
+                    </span>
+                    <span className="text-[8px] font-black uppercase tracking-widest text-amber-400">
+                      {moderatorStatusLabel(trade.moderatorStatus)}
+                    </span>
+                  </div>
+
+                  {trade.moderatorFee ? (
+                    <div className="flex items-center justify-between">
+                      <span className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+                        Fee
+                      </span>
+                      <span className="text-[8px] font-black uppercase tracking-widest text-white">
+                        {formatMoney(
+                          Number(trade.moderatorFee || 0),
+                          getTradeCurrency(trade),
+                          getTradeLocale(trade)
+                        )}
+                      </span>
+                    </div>
+                  ) : null}
+
+                  <p className="rounded-xl border border-white/5 bg-black/30 p-3 text-center text-[8px] font-black uppercase leading-relaxed tracking-widest text-slate-500">
+                    Product escrow stays protected until verified delivery confirmation.
+                  </p>
+                </div>
+              ) : null}
+
               {canSelectDriver && (
                 <div className="space-y-3">
                   <button
@@ -2364,6 +2465,16 @@ export default function TradeDetail() {
                 >
                   <Navigation className="h-4 w-4" />
                   Advanced Delivery Form
+                </button>
+              )}
+
+              {canRequestModeratorDelivery && (
+                <button
+                  onClick={() => setShowModeratorDeliveryPanel(true)}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 py-3 text-[10px] font-black uppercase tracking-widest text-amber-400 hover:bg-amber-500 hover:text-black"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  Request Verified Moderator
                 </button>
               )}
 
@@ -2650,6 +2761,40 @@ export default function TradeDetail() {
               <button
                 onClick={() => setShowDeliveryRequestPanel(false)}
                 className="mt-4 w-full rounded-2xl border border-white/10 bg-white/5 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:bg-white hover:text-black"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showModeratorDeliveryPanel && trade && (
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-black/90 p-4 backdrop-blur-md">
+            <div className="mx-auto my-8 max-w-4xl space-y-4">
+              <ModeratorDeliveryRequestPanel
+                tradeId={trade.id}
+                listingId={trade.listingId}
+                buyerId={trade.buyerId}
+                sellerId={trade.sellerId}
+                pickupAddress={
+                  trade.deliveryPickupAddress ||
+                  listing?.locationName ||
+                  listing?.location ||
+                  'Seller pickup location'
+                }
+                dropoffAddress={
+                  buildDropoffAddress(profileData) ||
+                  'Buyer delivery location'
+                }
+                buyerPhone={profileData?.phoneNumber || ''}
+                currencyCode={getTradeCurrency(trade)}
+                currencyLocale={getTradeLocale(trade)}
+                onCreated={() => setShowModeratorDeliveryPanel(false)}
+              />
+
+              <button
+                onClick={() => setShowModeratorDeliveryPanel(false)}
+                className="w-full rounded-2xl border border-white/10 bg-white/5 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400 hover:bg-white hover:text-black"
               >
                 Close
               </button>
