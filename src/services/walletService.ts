@@ -264,6 +264,7 @@ export class WalletApiError extends Error {
 }
 
 const DEFAULT_API_TIMEOUT_MS = 25000;
+const WALLET_OVERVIEW_API_TIMEOUT_MS = 3500;
 
 const apiBaseUrl = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '')
   .trim()
@@ -517,6 +518,25 @@ const normalizeWalletSecurity = (data: any = {}): WalletSecurity => ({
   lockedUntil: data.lockedUntil || null
 });
 
+const emptyWalletOverview = (currency = DEFAULT_CURRENCY): WalletOverview => ({
+  wallet: {
+    availableBalance: 0,
+    escrowBalance: 0,
+    pendingWithdrawalBalance: 0,
+    totalEarned: 0,
+    totalWithdrawn: 0,
+    currency,
+    frozen: false
+  },
+  walletSecurity: {
+    hasPin: false,
+    failedAttempts: 0,
+    lockedUntil: null
+  },
+  transactions: [],
+  withdrawals: []
+});
+
 const normalizeTransaction = (id: string, data: any): WalletTransaction => ({
   id,
   userId: data.userId || '',
@@ -736,16 +756,34 @@ export const isInsufficientDeliveryFundsError = (error: unknown) =>
     error.code === 'INSUFFICIENT_FUNDS' ||
     error.message === INSUFFICIENT_DELIVERY_FUNDS_MESSAGE);
 
-export const getWalletOverview = async (user: User) => {
+export const getWalletOverview = async (user: User): Promise<WalletOverview> => {
   try {
-    return await apiRequest<WalletOverview>(user, '/api/wallet/me');
-  } catch (error) {
-    if (!shouldFallbackToFirestore(error)) {
-      throw error;
-    }
+    return await getWalletOverviewFromFirestore(user);
+  } catch (firestoreError) {
+    console.warn(
+      'Wallet Firestore overview unavailable. Trying wallet API fallback:',
+      firestoreError
+    );
 
-    console.warn('Wallet API unavailable. Loading wallet overview from Firestore:', error);
-    return getWalletOverviewFromFirestore(user);
+    try {
+      return await apiRequest<WalletOverview>(
+        user,
+        '/api/wallet/me',
+        {},
+        WALLET_OVERVIEW_API_TIMEOUT_MS
+      );
+    } catch (apiError) {
+      if (!shouldFallbackToFirestore(apiError)) {
+        throw apiError;
+      }
+
+      console.warn(
+        'Wallet API unavailable. Showing safe empty wallet overview:',
+        apiError
+      );
+
+      return emptyWalletOverview();
+    }
   }
 };
 
