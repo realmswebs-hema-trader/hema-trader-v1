@@ -53,7 +53,7 @@ const UNVERIFIED_ACCOUNT_WARNING =
   'Your account is not verified yet. You can still use Hema Trader, but other users will see you as an unverified trader until you complete verification.';
 
 const SINGLE_PRODUCT_UNAVAILABLE_MESSAGE =
-  'This item is currently in a trade and is not available.';
+  'Product sold.';
 
 type ListingBoostType = 'oneDay' | 'threeDays' | 'sevenDays' | 'homepage';
 
@@ -92,6 +92,7 @@ interface Listing {
   activeTradeId?: string | null;
   reservedAt?: any;
   soldAt?: any;
+  stockStatus?: string;
   latitude?: number;
   longitude?: number;
   currentLocation?: {
@@ -202,6 +203,7 @@ const isListingOwnedBy = (
 const getInventoryType = (listing: Listing) => listing.inventoryType || 'stock';
 
 const getListingStatus = (listing: Listing) => {
+  if (listing.stockStatus === 'sold') return 'sold';
   if (listing.listingStatus) return listing.listingStatus;
   if (listing.status === 'sold') return 'sold';
   if (listing.status === 'cancelled') return 'cancelled';
@@ -212,14 +214,7 @@ const getListingStatus = (listing: Listing) => {
 const isSingleProductBlocked = (listing: Listing) => {
   if (getInventoryType(listing) !== 'single') return false;
 
-  const listingStatus = getListingStatus(listing);
-
-  return (
-    listingStatus === 'reserved' ||
-    listingStatus === 'in_trade' ||
-    listingStatus === 'sold' ||
-    Boolean(listing.activeTradeId)
-  );
+  return getListingStatus(listing) === 'sold';
 };
 
 const listingAvailabilityLabel = (listing: Listing) => {
@@ -229,8 +224,7 @@ const listingAvailabilityLabel = (listing: Listing) => {
 
   const status = getListingStatus(listing);
 
-  if (status === 'sold') return 'Sold';
-  if (status === 'reserved' || status === 'in_trade') return 'Currently in trade';
+  if (status === 'sold') return 'Product Sold';
   if (status === 'cancelled') return 'Unavailable';
 
   return listing.status === 'active' ? 'Available' : 'Unavailable';
@@ -238,13 +232,6 @@ const listingAvailabilityLabel = (listing: Listing) => {
 
 const listingAvailabilityClass = (listing: Listing) => {
   const status = getListingStatus(listing);
-
-  if (
-    getInventoryType(listing) === 'single' &&
-    (status === 'reserved' || status === 'in_trade')
-  ) {
-    return 'border-amber-500/20 bg-amber-500/10 text-amber-400';
-  }
 
   if (listing.status === 'active' && status === 'available') {
     return 'border-green-500/20 bg-green-500/10 text-green-400';
@@ -699,15 +686,8 @@ export default function ListingDetail() {
           throw new Error('This listing is not available for a new trade.');
         }
 
-        if (
-          freshInventoryType === 'single' &&
-          (freshListingStatus !== 'available' || Boolean(freshListing.activeTradeId))
-        ) {
-          throw new Error(
-            freshListingStatus === 'sold'
-              ? 'This single product has already been sold.'
-              : SINGLE_PRODUCT_UNAVAILABLE_MESSAGE
-          );
+        if (freshInventoryType === 'single' && freshListingStatus === 'sold') {
+          throw new Error(SINGLE_PRODUCT_UNAVAILABLE_MESSAGE);
         }
 
         transaction.set(tradeRef, {
@@ -783,14 +763,6 @@ export default function ListingDetail() {
           updatedAt: serverTimestamp()
         });
 
-        if (freshInventoryType === 'single') {
-          transaction.update(listingRef, {
-            listingStatus: 'in_trade',
-            activeTradeId: tradeRef.id,
-            reservedAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          });
-        }
       });
 
       const messageData = {
@@ -838,16 +810,6 @@ export default function ListingDetail() {
       }).catch(err => {
         console.warn('Trade notification failed:', err);
       });
-
-      setListing(prev =>
-        prev && getInventoryType(prev) === 'single'
-          ? {
-              ...prev,
-              listingStatus: 'in_trade',
-              activeTradeId: tradeRef.id
-            }
-          : prev
-      );
 
       navigate(`/trade/${tradeRef.id}`);
     } catch (err: any) {
