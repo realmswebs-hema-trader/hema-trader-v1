@@ -931,66 +931,7 @@ export default function Home() {
 
   return (
     <div className="space-y-12 pb-24">
-      <section className="space-y-8 pt-8">
-        <div className="mx-auto flex max-w-2xl flex-wrap justify-center gap-4">
-          <Link
-            to="/drivers"
-            className="flex items-center gap-3 rounded-full border border-amber-500/30 bg-amber-500/10 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-amber-500 transition hover:bg-amber-500 hover:text-black"
-          >
-            <Truck className="h-4 w-4" />
-            Find Drivers
-          </Link>
-
-          <button
-            onClick={() => {
-              const nextNearby = !nearbyOnly;
-              setNearbyOnly(nextNearby);
-              setDistanceFilter(nextNearby ? '10' : 'all');
-            }}
-            className={`flex items-center gap-3 rounded-full border px-6 py-3 text-[10px] font-black uppercase tracking-widest transition ${
-              nearbyOnly
-                ? 'border-amber-500 bg-amber-500 text-black'
-                : 'border-white/10 bg-white/5 text-slate-400 hover:border-amber-500/30'
-            }`}
-          >
-            <Compass className="h-4 w-4" />
-            Nearby Only
-          </button>
-
-          <button
-            onClick={handleRequestLocation}
-            disabled={locating}
-            className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 transition hover:border-amber-500/30 disabled:opacity-60"
-          >
-            {locating ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Navigation className="h-4 w-4" />
-            )}
-            Use GPS
-          </button>
-
-          <button className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 transition hover:border-amber-500/30">
-            <Filter className="h-4 w-4" />
-            Advanced Filters
-          </button>
-        </div>
-
-        <div className="mx-auto max-w-2xl px-4">
-          <div className="group relative flex items-center">
-            <Search className="absolute left-6 h-5 w-5 text-slate-600 group-focus-within:text-amber-500" />
-            <input
-              value={searchQuery}
-              onChange={event => setSearchQuery(event.target.value)}
-              placeholder="Search merchants, products, cities, villages, or regions..."
-              className="w-full rounded-2xl border border-white/10 bg-brand-card py-5 pl-16 pr-14 text-sm text-white shadow-2xl outline-none transition placeholder:text-slate-600 focus:border-amber-500/50"
-            />
-            <Search className="absolute right-6 h-4 w-4 text-slate-500" />
-          </div>
-        </div>
-      </section>
-
-      <section className="space-y-6">
+      <section className="space-y-6 pt-8">
         <div className="flex items-center gap-4 px-2">
           <h2 className="font-serif text-3xl text-white">Marketplace</h2>
           <div className="h-px flex-1 bg-white/5" />
@@ -1003,6 +944,19 @@ export default function Home() {
           <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">
             {filteredListings.length} listings available
           </span>
+        </div>
+
+        <div className="mx-auto max-w-3xl px-2">
+          <div className="group relative flex items-center">
+            <Search className="absolute left-6 h-5 w-5 text-slate-600 group-focus-within:text-amber-500" />
+            <input
+              value={searchQuery}
+              onChange={event => setSearchQuery(event.target.value)}
+              placeholder="Search products, sellers, cities, villages, or regions..."
+              className="w-full rounded-2xl border border-white/10 bg-brand-card py-5 pl-16 pr-14 text-sm text-white shadow-2xl outline-none transition placeholder:text-slate-600 focus:border-amber-500/50"
+            />
+            <Search className="absolute right-6 h-4 w-4 text-slate-500" />
+          </div>
         </div>
 
         {loading ? (
@@ -1315,6 +1269,50 @@ export default function Home() {
           action="Live Nearby"
           tone="amber"
         />
+
+        <div className="mx-auto flex max-w-3xl flex-wrap justify-center gap-3 px-2">
+          <Link
+            to="/drivers"
+            className="flex items-center gap-3 rounded-full border border-amber-500/30 bg-amber-500/10 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-amber-500 transition hover:bg-amber-500 hover:text-black"
+          >
+            <Truck className="h-4 w-4" />
+            Find Drivers
+          </Link>
+
+          <button
+            onClick={() => {
+              const nextNearby = !nearbyOnly;
+              setNearbyOnly(nextNearby);
+              setDistanceFilter(nextNearby ? '10' : 'all');
+            }}
+            className={`flex items-center gap-3 rounded-full border px-6 py-3 text-[10px] font-black uppercase tracking-widest transition ${
+              nearbyOnly
+                ? 'border-amber-500 bg-amber-500 text-black'
+                : 'border-white/10 bg-white/5 text-slate-400 hover:border-amber-500/30'
+            }`}
+          >
+            <Compass className="h-4 w-4" />
+            Nearby Only
+          </button>
+
+          <button
+            onClick={handleRequestLocation}
+            disabled={locating}
+            className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 transition hover:border-amber-500/30 disabled:opacity-60"
+          >
+            {locating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Navigation className="h-4 w-4" />
+            )}
+            Use GPS
+          </button>
+
+          <button className="flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-6 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 transition hover:border-amber-500/30">
+            <Filter className="h-4 w-4" />
+            Advanced Filters
+          </button>
+        </div>
 
         <div className="flex flex-wrap gap-2 px-2">
           {[
