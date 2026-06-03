@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   BrowserRouter as Router,
@@ -25,30 +25,30 @@ import {
 } from 'lucide-react';
 
 // =====================================
-// PAGES
+// LAZY PAGES
 // =====================================
 
-import Home from './pages/Home';
-import ListingDetail from './pages/ListingDetail';
-import CreateListing from './pages/CreateListing';
-import Profile from './pages/Profile';
-import Trades from './pages/Trades';
-import TradeDetail from './pages/TradeDetail';
-import Inbox from './pages/Inbox';
-import Wallet from './pages/Wallet';
-import DriverDashboard from './pages/DriverDashboard';
-import DriverDeliveries from './pages/DriverDeliveries';
-import DriverDiscovery from './pages/DriverDiscovery';
-import Drivers from './pages/Drivers';
-import DriverProfile from './pages/DriverProfile';
-import DeliveryDetail from './pages/DeliveryDetail';
-import DeliveryTracking from './pages/DeliveryTracking';
-import MapView from './pages/MapView';
-import Admin from './pages/Admin';
-import Moderators from './pages/Moderators';
-import ModeratorDashboard from './pages/ModeratorDashboard';
-import PrivacyPolicy from './pages/PrivacyPolicy';
-import TermsOfService from './pages/TermsOfService';
+const Home = lazy(() => import('./pages/Home'));
+const ListingDetail = lazy(() => import('./pages/ListingDetail'));
+const CreateListing = lazy(() => import('./pages/CreateListing'));
+const Profile = lazy(() => import('./pages/Profile'));
+const Trades = lazy(() => import('./pages/Trades'));
+const TradeDetail = lazy(() => import('./pages/TradeDetail'));
+const Inbox = lazy(() => import('./pages/Inbox'));
+const Wallet = lazy(() => import('./pages/Wallet'));
+const DriverDashboard = lazy(() => import('./pages/DriverDashboard'));
+const DriverDeliveries = lazy(() => import('./pages/DriverDeliveries'));
+const DriverDiscovery = lazy(() => import('./pages/DriverDiscovery'));
+const Drivers = lazy(() => import('./pages/Drivers'));
+const DriverProfile = lazy(() => import('./pages/DriverProfile'));
+const DeliveryDetail = lazy(() => import('./pages/DeliveryDetail'));
+const DeliveryTracking = lazy(() => import('./pages/DeliveryTracking'));
+const MapView = lazy(() => import('./pages/MapView'));
+const Admin = lazy(() => import('./pages/Admin'));
+const Moderators = lazy(() => import('./pages/Moderators'));
+const ModeratorDashboard = lazy(() => import('./pages/ModeratorDashboard'));
+const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
+const TermsOfService = lazy(() => import('./pages/TermsOfService'));
 
 // =====================================
 // COMPONENTS
@@ -59,6 +59,15 @@ import Header from './components/layout/Header';
 import BottomNav from './components/layout/BottomNav';
 import RoleSelection from './components/auth/RoleSelection';
 
+const PageLoader = ({ label = 'Loading page...' }: { label?: string }) => (
+  <div className="flex min-h-[55vh] flex-col items-center justify-center gap-4 text-slate-500">
+    <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
+    <span className="text-[10px] font-bold uppercase tracking-wider text-white">
+      {label}
+    </span>
+  </div>
+);
+
 // =====================================
 // PRIVATE ROUTE
 // =====================================
@@ -68,14 +77,7 @@ const PrivateRoute = ({ children }: { children: ReactNode }) => {
   const location = useLocation();
 
   if (loading) {
-    return (
-      <div className="flex h-[80vh] flex-col items-center justify-center gap-4 text-slate-500">
-        <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
-        <span className="text-[10px] font-bold uppercase tracking-wider">
-          Loading your profile...
-        </span>
-      </div>
-    );
+    return <PageLoader label="Loading your profile..." />;
   }
 
   if (!user) {
@@ -103,14 +105,7 @@ const AdminRoute = ({ children }: { children: ReactNode }) => {
   const { user, profile, loading } = useAuth();
 
   if (loading) {
-    return (
-      <div className="flex h-[80vh] flex-col items-center justify-center gap-4 text-slate-500">
-        <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
-        <span className="text-[10px] font-bold uppercase tracking-wider">
-          Verifying permissions...
-        </span>
-      </div>
-    );
+    return <PageLoader label="Verifying permissions..." />;
   }
 
   const hasAdminRole =
@@ -168,14 +163,7 @@ function AppRoutes() {
   const isPublicRoute = ['/privacy', '/terms'].includes(location.pathname);
 
   if (loading) {
-    return (
-      <div className="flex h-[80vh] flex-col items-center justify-center gap-4 text-slate-500">
-        <Loader2 className="h-8 w-8 animate-spin text-amber-500" />
-        <span className="text-[10px] font-bold uppercase tracking-wider text-white">
-          Loading marketplace...
-        </span>
-      </div>
-    );
+    return <PageLoader label="Loading marketplace..." />;
   }
 
   if (!user && !isPublicRoute) {
@@ -203,246 +191,248 @@ function AppRoutes() {
       <Header />
 
       <main className="flex-1 px-4 py-6">
-        <Routes>
-          <Route
-            path="/"
-            element={<Home />}
-          />
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            <Route
+              path="/"
+              element={<Home />}
+            />
 
-          <Route
-            path="/auth"
-            element={<Navigate to="/" replace />}
-          />
+            <Route
+              path="/auth"
+              element={<Navigate to="/" replace />}
+            />
 
-          <Route
-            path="/listing/:id"
-            element={<ListingDetail />}
-          />
+            <Route
+              path="/listing/:id"
+              element={<ListingDetail />}
+            />
 
-          <Route
-            path="/listing/:id/edit"
-            element={
-              <PrivateRoute>
-                <CreateListing />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/listing/:id/edit"
+              element={
+                <PrivateRoute>
+                  <CreateListing />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/listings/:id/edit"
-            element={
-              <PrivateRoute>
-                <CreateListing />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/listings/:id/edit"
+              element={
+                <PrivateRoute>
+                  <CreateListing />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/edit-listing/:id"
-            element={
-              <PrivateRoute>
-                <CreateListing />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/edit-listing/:id"
+              element={
+                <PrivateRoute>
+                  <CreateListing />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/create"
-            element={
-              <PrivateRoute>
-                <CreateListing />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/create"
+              element={
+                <PrivateRoute>
+                  <CreateListing />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/create-listing"
-            element={
-              <PrivateRoute>
-                <CreateListing />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/create-listing"
+              element={
+                <PrivateRoute>
+                  <CreateListing />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/profile"
-            element={
-              <PrivateRoute>
-                <Profile />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/profile"
+              element={
+                <PrivateRoute>
+                  <Profile />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/profile/:userId"
-            element={<Profile />}
-          />
+            <Route
+              path="/profile/:userId"
+              element={<Profile />}
+            />
 
-          <Route
-            path="/trades"
-            element={
-              <PrivateRoute>
-                <Trades />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/trades"
+              element={
+                <PrivateRoute>
+                  <Trades />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/trade/:id"
-            element={
-              <PrivateRoute>
-                <TradeDetail />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/trade/:id"
+              element={
+                <PrivateRoute>
+                  <TradeDetail />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/trades/:id"
-            element={
-              <PrivateRoute>
-                <TradeDetail />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/trades/:id"
+              element={
+                <PrivateRoute>
+                  <TradeDetail />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/inbox"
-            element={
-              <PrivateRoute>
-                <Inbox />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/inbox"
+              element={
+                <PrivateRoute>
+                  <Inbox />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/messages"
-            element={
-              <PrivateRoute>
-                <Inbox />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/messages"
+              element={
+                <PrivateRoute>
+                  <Inbox />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/messages/:id"
-            element={
-              <PrivateRoute>
-                <TradeDetail />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/messages/:id"
+              element={
+                <PrivateRoute>
+                  <TradeDetail />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/wallet"
-            element={
-              <PrivateRoute>
-                <Wallet />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/wallet"
+              element={
+                <PrivateRoute>
+                  <Wallet />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/map"
-            element={
-              <PrivateRoute>
-                <MapView />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/map"
+              element={
+                <PrivateRoute>
+                  <MapView />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/driver"
-            element={
-              <PrivateRoute>
-                <DriverDashboard />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/driver"
+              element={
+                <PrivateRoute>
+                  <DriverDashboard />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/driver/deliveries"
-            element={
-              <PrivateRoute>
-                <DriverDeliveries />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/driver/deliveries"
+              element={
+                <PrivateRoute>
+                  <DriverDeliveries />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/drivers"
-            element={<Drivers />}
-          />
+            <Route
+              path="/drivers"
+              element={<Drivers />}
+            />
 
-          <Route
-            path="/drivers/:id"
-            element={
-              <PrivateRoute>
-                <DriverProfile />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/drivers/:id"
+              element={
+                <PrivateRoute>
+                  <DriverProfile />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/driver-discovery"
-            element={<DriverDiscovery />}
-          />
+            <Route
+              path="/driver-discovery"
+              element={<DriverDiscovery />}
+            />
 
-          <Route
-            path="/delivery/:id"
-            element={
-              <PrivateRoute>
-                <DeliveryTracking />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/delivery/:id"
+              element={
+                <PrivateRoute>
+                  <DeliveryTracking />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/delivery-detail/:id"
-            element={
-              <PrivateRoute>
-                <DeliveryDetail />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/delivery-detail/:id"
+              element={
+                <PrivateRoute>
+                  <DeliveryDetail />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/moderator"
-            element={
-              <PrivateRoute>
-                <ModeratorDashboard />
-              </PrivateRoute>
-            }
-          />
+            <Route
+              path="/moderator"
+              element={
+                <PrivateRoute>
+                  <ModeratorDashboard />
+                </PrivateRoute>
+              }
+            />
 
-          <Route
-            path="/moderators"
-            element={<Moderators />}
-          />
+            <Route
+              path="/moderators"
+              element={<Moderators />}
+            />
 
-          <Route
-            path="/admin"
-            element={
-              <AdminRoute>
-                <Admin />
-              </AdminRoute>
-            }
-          />
+            <Route
+              path="/admin"
+              element={
+                <AdminRoute>
+                  <Admin />
+                </AdminRoute>
+              }
+            />
 
-          <Route
-            path="/privacy"
-            element={<PrivacyPolicy />}
-          />
+            <Route
+              path="/privacy"
+              element={<PrivacyPolicy />}
+            />
 
-          <Route
-            path="/terms"
-            element={<TermsOfService />}
-          />
+            <Route
+              path="/terms"
+              element={<TermsOfService />}
+            />
 
-          <Route
-            path="*"
-            element={<Navigate to="/" replace />}
-          />
-        </Routes>
+            <Route
+              path="*"
+              element={<Navigate to="/" replace />}
+            />
+          </Routes>
+        </Suspense>
       </main>
 
       <BottomNav />
