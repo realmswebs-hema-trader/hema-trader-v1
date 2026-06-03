@@ -3,16 +3,13 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   addDoc,
   collection,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
-  increment,
   limit,
   query,
   runTransaction,
   serverTimestamp,
-  setDoc,
   updateDoc,
   where
 } from 'firebase/firestore';
@@ -40,6 +37,11 @@ import { useNotifications } from '../components/notifications/NotificationContex
 import { REVENUE_CONFIG } from '../config/revenueConfig';
 import { db } from '../lib/firebase';
 import { payListingBoostFromWallet } from '../services/walletService';
+import {
+  followUser,
+  subscribeToFollowState,
+  unfollowUser
+} from '../services/followService';
 import {
   calculateDistance,
   formatDistance,
@@ -396,41 +398,19 @@ export default function ListingDetail() {
   useEffect(() => {
     if (!user || !listing) return;
 
-    const checkFollow = async () => {
-      try {
-        const sellerId = getListingSellerId(listing);
+    const sellerId = getListingSellerId(listing);
 
-        if (!sellerId || sellerId === user.uid) {
-          setIsFollowing(false);
-          return;
-        }
-
-        const followId = `${user.uid}_${sellerId}`;
-        const followSnap = await getDoc(doc(db, 'follows', followId));
-
-        setIsFollowing(followSnap.exists());
-      } catch (err) {
-        console.warn('Could not check follow state:', err);
-        setIsFollowing(false);
-      }
-    };
-
-    checkFollow();
-  }, [user, listing]);
-
-  const updateUserCounterSafely = async (
-    userId: string,
-    field: 'followersCount' | 'followingCount',
-    amount: number
-  ) => {
-    try {
-      await updateDoc(doc(db, 'users', userId), {
-        [field]: increment(amount)
-      });
-    } catch (err) {
-      console.warn(`Could not update ${field}:`, err);
+    if (!sellerId || sellerId === user.uid) {
+      setIsFollowing(false);
+      return;
     }
-  };
+
+    return subscribeToFollowState({
+      followerId: user.uid,
+      followingId: sellerId,
+      onChange: setIsFollowing
+    });
+  }, [user, listing]);
 
   const toggleFollow = async () => {
     if (!user || !listing || !seller) return;
@@ -441,12 +421,12 @@ export default function ListingDetail() {
 
     setFollowingLoading(true);
 
-    const followId = `${user.uid}_${sellerId}`;
-    const followRef = doc(db, 'follows', followId);
-
     try {
       if (isFollowing) {
-        await deleteDoc(followRef);
+        await unfollowUser({
+          followerId: user.uid,
+          followingId: sellerId
+        });
 
         setIsFollowing(false);
         setSeller(prev =>
@@ -457,16 +437,11 @@ export default function ListingDetail() {
               }
             : null
         );
-
-        void updateUserCounterSafely(user.uid, 'followingCount', -1);
-        void updateUserCounterSafely(sellerId, 'followersCount', -1);
       } else {
-        await setDoc(followRef, {
+        await followUser({
           followerId: user.uid,
           followingId: sellerId,
-          participantIds: [user.uid, sellerId],
-          participants: [user.uid, sellerId],
-          createdAt: serverTimestamp()
+          autoFollowedFounder: false
         });
 
         setIsFollowing(true);
@@ -478,9 +453,6 @@ export default function ListingDetail() {
               }
             : null
         );
-
-        void updateUserCounterSafely(user.uid, 'followingCount', 1);
-        void updateUserCounterSafely(sellerId, 'followersCount', 1);
 
         void sendNotification(sellerId, {
           title: 'New Follower',
