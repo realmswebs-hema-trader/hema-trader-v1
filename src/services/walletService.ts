@@ -136,6 +136,118 @@ export interface WalletTopupVerifyResponse {
   walletTransactionId?: string;
 }
 
+const TOPUP_SUCCESS_STATUSES = new Set([
+  'SUCCESS',
+  'SUCCESSFUL',
+  'COMPLETED',
+  'COMPLETE',
+  'PAID',
+  'APPROVED',
+  'CONFIRMED'
+]);
+
+const TOPUP_PENDING_STATUSES = new Set([
+  'PENDING',
+  'PROCESSING',
+  'INITIATED',
+  'WAITING',
+  'WAITING_FOR_CUSTOMER',
+  'IN_PROGRESS',
+  'REQUEST_SENT'
+]);
+
+const normalizeTopupStatus = (status?: string) =>
+  (status || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+
+const assertValidTopupInput = (input: {
+  amount: number;
+  phoneNumber: string;
+  currency?: string;
+}) => {
+  const amount = Number(input.amount);
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new WalletApiError(
+      'Enter a valid wallet funding amount.',
+      400,
+      'INVALID_TOPUP_AMOUNT'
+    );
+  }
+
+  if (!input.phoneNumber?.trim()) {
+    throw new WalletApiError(
+      'Enter your MTN or Orange Money number.',
+      400,
+      'INVALID_TOPUP_PHONE'
+    );
+  }
+};
+
+const assertRealTopupStart = (response: WalletTopupResponse) => {
+  const status = normalizeTopupStatus(response.status);
+  const hasReference = Boolean(
+    response.txRef ||
+      response.providerReference ||
+      response.checkoutUrl ||
+      response.ussdCode ||
+      response.ussd_code
+  );
+
+  if (!hasReference) {
+    throw new WalletApiError(
+      'The payment provider did not return a transaction reference. No wallet funding request was created.',
+      502,
+      'TOPUP_PROVIDER_REFERENCE_MISSING',
+      response
+    );
+  }
+
+  if (status && !TOPUP_PENDING_STATUSES.has(status) && !TOPUP_SUCCESS_STATUSES.has(status)) {
+    throw new WalletApiError(
+      response.message ||
+        'The payment provider did not accept this funding request. Please try again.',
+      502,
+      'TOPUP_PROVIDER_START_FAILED',
+      response
+    );
+  }
+};
+
+const assertRealTopupVerification = (response: WalletTopupVerifyResponse) => {
+  const status = normalizeTopupStatus(response.status);
+
+  if (TOPUP_PENDING_STATUSES.has(status)) {
+    return {
+      ...response,
+      status: 'PENDING'
+    };
+  }
+
+  if (!TOPUP_SUCCESS_STATUSES.has(status)) {
+    throw new WalletApiError(
+      response.message ||
+        'Payment has not been confirmed by the Mobile Money provider yet.',
+      402,
+      'TOPUP_NOT_CONFIRMED',
+      response
+    );
+  }
+
+  if (!response.walletTransactionId) {
+    throw new WalletApiError(
+      'Payment status was returned, but no wallet transaction was created. Please contact support before trying again.',
+      502,
+      'TOPUP_WALLET_TRANSACTION_MISSING',
+      response
+    );
+  }
+
+  return {
+    ...response,
+    status: 'SUCCESS'
+  };
+};
+
 export interface DeliveryWalletValidation {
   canPay: boolean;
   availableBalance: number;
@@ -823,15 +935,17 @@ export const verifyWalletPin = (
     body: JSON.stringify(input)
   });
 
-export const startWalletTopup = (
+export const startWalletTopup = async (
   user: User,
   input: {
     amount: number;
     phoneNumber: string;
     currency?: string;
   }
-) =>
-  apiRequestRequired<WalletTopupResponse>(
+) => {
+  assertValidTopupInput(input);
+
+  const response = await apiRequestRequired<WalletTopupResponse>(
     user,
     '/api/wallet/topup/start',
     {
@@ -844,14 +958,27 @@ export const startWalletTopup = (
     45000
   );
 
-export const verifyWalletTopup = (
+  assertRealTopupStart(response);
+
+  return response;
+};
+
+export const verifyWalletTopup = async (
   user: User,
   input: {
     txRef?: string;
     providerReference?: string;
   }
-) =>
-  apiRequestRequired<WalletTopupVerifyResponse>(
+) => {
+  if (!input.txRef && !input.providerReference) {
+    throw new WalletApiError(
+      'Missing payment reference. Start a new Mobile Money funding request first.',
+      400,
+      'TOPUP_REFERENCE_REQUIRED'
+    );
+  }
+
+  const response = await apiRequestRequired<WalletTopupVerifyResponse>(
     user,
     '/api/wallet/topup/verify',
     {
@@ -860,6 +987,9 @@ export const verifyWalletTopup = (
     },
     45000
   );
+
+  return assertRealTopupVerification(response);
+};
 
 export const payTradeFromWallet = (
   user: User,
