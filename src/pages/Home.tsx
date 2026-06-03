@@ -5,7 +5,6 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   limit,
   onSnapshot,
   query,
@@ -556,11 +555,35 @@ export default function Home() {
     let isMounted = true;
     let listingsReady = false;
     let usersReady = false;
+    let allListingsCache: Listing[] = [];
+    let followingIdsCache: string[] = [];
 
     const finishLoading = () => {
       if (isMounted && listingsReady && usersReady) {
         setLoading(false);
       }
+    };
+
+    const refreshFollowedListings = () => {
+      if (!isMounted || !user) {
+        setFollowedListings([]);
+        return;
+      }
+
+      if (followingIdsCache.length === 0) {
+        setFollowedListings([]);
+        return;
+      }
+
+      setFollowedListings(
+        sortListingsForMarketplace(
+          allListingsCache.filter(
+            listing =>
+              listing.status === 'active' &&
+              followingIdsCache.includes(listing.ownerId)
+          )
+        ).slice(0, 10)
+      );
     };
 
     setLoading(true);
@@ -599,67 +622,67 @@ export default function Home() {
       }
     );
 
-    async function fetchListings() {
-      try {
-        const listingSnap = await getDocs(
-          query(collection(db, 'listings'), limit(100))
-        );
-
+    const unsubscribeListings = onSnapshot(
+      query(collection(db, 'listings'), limit(100)),
+      listingSnap => {
         if (!isMounted) return;
 
-        const allListings = listingSnap.docs.map(docSnap => ({
+        allListingsCache = listingSnap.docs.map(docSnap => ({
           id: docSnap.id,
           ...docSnap.data()
         })) as Listing[];
 
         const activeListings = sortListingsForMarketplace(
-          allListings.filter(listing => listing.status === 'active')
+          allListingsCache.filter(listing => listing.status === 'active')
         ).slice(0, 20);
 
         setListings(activeListings);
+        refreshFollowedListings();
 
-        if (user) {
-          const followSnap = await getDocs(
-            query(
-              collection(db, 'follows'),
-              where('followerId', '==', user.uid),
-              limit(100)
-            )
-          );
-
-          const followingIds = followSnap.docs.map(docSnap => docSnap.data().followingId);
-
-          if (followingIds.length > 0) {
-            setFollowedListings(
-              sortListingsForMarketplace(
-                allListings.filter(
-                  listing =>
-                    listing.status === 'active' &&
-                    followingIds.includes(listing.ownerId)
-                )
-              ).slice(0, 10)
-            );
-          } else {
-            setFollowedListings([]);
-          }
-        } else {
-          setFollowedListings([]);
-        }
-      } catch (err) {
-        if (isMounted) {
-          setError(handleFirestoreError(err, OperationType.READ, 'home/listings'));
-        }
-      } finally {
+        listingsReady = true;
+        finishLoading();
+      },
+      err => {
+        if (!isMounted) return;
+        setError(handleFirestoreError(err, OperationType.SUBSCRIBE, 'home/listings'));
         listingsReady = true;
         finishLoading();
       }
-    }
+    );
 
-    fetchListings();
+    const unsubscribeFollows = user
+      ? onSnapshot(
+          query(
+            collection(db, 'follows'),
+            where('followerId', '==', user.uid),
+            limit(250)
+          ),
+          followSnap => {
+            if (!isMounted) return;
+
+            followingIdsCache = Array.from(
+              new Set(
+                followSnap.docs
+                  .map(docSnap => docSnap.data().followingId)
+                  .filter(Boolean)
+              )
+            );
+
+            refreshFollowedListings();
+          },
+          err => {
+            handleFirestoreError(err, OperationType.SUBSCRIBE, 'home/follows');
+            followingIdsCache = [];
+            refreshFollowedListings();
+          }
+        )
+      : null;
 
     return () => {
       isMounted = false;
       unsubscribeUsers();
+      unsubscribeListings();
+      unsubscribeFollows?.();
     };
   }, [user]);
 
