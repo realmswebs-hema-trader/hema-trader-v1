@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   addDoc,
@@ -427,6 +427,11 @@ export default function Profile() {
     profile.verificationStatus === 'verified' ||
     founderAccount;
   const driverVerified = Boolean(profile.driverVerified) || founderAccount;
+  const verifiedModerator =
+    Boolean(profile.isModerator) &&
+    Boolean(profile.moderatorVerified) &&
+    profile.moderatorStatus === 'approved' &&
+    roles.includes('moderator');
   const phoneVerified = Boolean(profile.phoneVerified) || founderAccount;
   const isOnline = Boolean(profile.isOnline || profile.online) || founderAccount;
   const displayName = founderAccount
@@ -916,6 +921,13 @@ export default function Profile() {
                   {driverVerified && (
                     <span className="rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-green-500">
                       Verified Driver
+                    </span>
+                  )}
+
+                  {verifiedModerator && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-green-400">
+                      <BadgeCheck className="h-3 w-3" />
+                      Verified Moderator
                     </span>
                   )}
 
@@ -1507,3 +1519,4 @@ export default function Profile() {
     </div>
   );
 }
+
