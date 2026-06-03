@@ -306,7 +306,7 @@ function MerchantCard({
   return (
     <motion.article
       whileHover={{ y: -3 }}
-      className="relative flex aspect-square w-44 shrink-0 flex-col justify-between rounded-2xl border border-white/10 bg-brand-card/80 p-4 shadow-2xl sm:w-48"
+      className="relative flex min-h-64 w-full flex-col justify-between rounded-2xl border border-white/10 bg-brand-card/80 p-4 shadow-2xl"
     >
       <div className="absolute right-4 top-4">
         <OnlineDot active={active} />
@@ -391,7 +391,7 @@ function DriverCard({ driver }: { driver: UserProfile }) {
   return (
     <motion.article
       whileHover={{ y: -3 }}
-      className="relative flex aspect-square w-44 shrink-0 flex-col justify-between rounded-2xl border border-white/10 bg-brand-card/80 p-4 shadow-2xl sm:w-48"
+      className="relative flex min-h-64 w-full flex-col justify-between rounded-2xl border border-white/10 bg-brand-card/80 p-4 shadow-2xl"
     >
       <div className="absolute right-4 top-4">
         <OnlineDot active={available} />
@@ -1160,13 +1160,13 @@ export default function Home() {
               tone="green"
             />
 
-            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
               {verifiedMerchants.length > 0 ? (
                 verifiedMerchants.map(merchant => (
                   <MerchantCard key={merchant.id} merchant={merchant} verified />
                 ))
               ) : (
-                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
+                <div className="col-span-full rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
                   No verified users yet.
                 </div>
               )}
@@ -1181,13 +1181,13 @@ export default function Home() {
               action="View All Unverified"
             />
 
-            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
               {unverifiedMerchants.length > 0 ? (
                 unverifiedMerchants.map(merchant => (
                   <MerchantCard key={merchant.id} merchant={merchant} verified={false} />
                 ))
               ) : (
-                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
+                <div className="col-span-full rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
                   No unverified users found.
                 </div>
               )}
@@ -1203,13 +1203,13 @@ export default function Home() {
               tone="green"
             />
 
-            <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
               {availableDrivers.length > 0 ? (
                 availableDrivers.map(driver => (
                   <DriverCard key={driver.id} driver={driver} />
                 ))
               ) : (
-                <div className="rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
+                <div className="col-span-full rounded-3xl border border-white/10 bg-brand-card p-8 text-sm text-slate-500">
                   No available drivers right now.
                 </div>
               )}
