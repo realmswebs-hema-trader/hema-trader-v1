@@ -45,6 +45,7 @@ import DeliveryDetail from './pages/DeliveryDetail';
 import DeliveryTracking from './pages/DeliveryTracking';
 import MapView from './pages/MapView';
 import Admin from './pages/Admin';
+import Moderators from './pages/Moderators';
 import ModeratorDashboard from './pages/ModeratorDashboard';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
@@ -411,6 +412,11 @@ function AppRoutes() {
                 <ModeratorDashboard />
               </PrivateRoute>
             }
+          />
+
+          <Route
+            path="/moderators"
+            element={<Moderators />}
           />
 
           <Route
