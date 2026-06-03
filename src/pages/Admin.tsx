@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  arrayUnion,
   addDoc,
   collection,
   doc,
@@ -56,10 +57,18 @@ import { REVENUE_CONFIG } from '../config/revenueConfig';
 import { db } from '../lib/firebase';
 
 const ADMIN_EMAIL = 'realmswebs@gmail.com';
+const DEFAULT_MODERATOR_EMAIL = 'realmscity@gmail.com';
 const PAGE_SIZE = 20;
 const CHART_COLORS = ['#f59e0b', '#22c55e', '#38bdf8', '#a855f7', '#f97316', '#ef4444'];
 
-type AdminTab = 'ops' | 'users' | 'disputes' | 'risk' | 'fraud' | 'revenue';
+type AdminTab =
+  | 'ops'
+  | 'users'
+  | 'moderators'
+  | 'disputes'
+  | 'risk'
+  | 'fraud'
+  | 'revenue';
 type RevenueKind =
   | 'trade_fee'
   | 'delivery_commission'
@@ -88,6 +97,22 @@ interface UserProfile {
   driverTier?: 'none' | 'trusted' | 'master';
   totalTrades?: number;
   averageRating?: number;
+  phoneNumber?: string;
+  location?: string;
+  city?: string;
+  isModerator?: boolean;
+  moderatorVerified?: boolean;
+  moderatorStatus?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
+  moderatorApplicationStatus?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
+  moderatorAvailability?: 'available' | 'busy' | 'offline';
+  moderatorCity?: string;
+  moderatorRegions?: string[];
+  moderatorRoutes?: string[];
+  moderatorTransportCapacity?: string;
+  moderatorRating?: number;
+  completedModeratorDeliveries?: number;
+  moderatorWalletBalance?: number;
+  moderatorCanWithdrawImmediately?: boolean;
   subscription?: {
     plan?: 'free' | 'starter' | 'pro' | 'business';
     status?: 'active' | 'expired' | 'cancelled';
@@ -193,6 +218,24 @@ interface VerificationRequest {
   createdAt?: any;
 }
 
+interface ModeratorApplication {
+  id: string;
+  userId: string;
+  email?: string;
+  displayName?: string;
+  phoneNumber?: string;
+  cityOrRegion?: string;
+  routes?: string[];
+  transportCapacity?: string;
+  identityDocumentUrl?: string;
+  status?: 'pending_review' | 'approved' | 'rejected' | 'suspended';
+  reviewedBy?: string;
+  reviewedAt?: any;
+  rejectionReason?: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
 interface SystemHealth {
   stuckTrades: number;
   openReports: number;
@@ -274,6 +317,7 @@ export default function Admin() {
   const [subscriptions, setSubscriptions] = useState<SubscriptionRecord[]>([]);
   const [boosts, setBoosts] = useState<BoostRecord[]>([]);
   const [verifications, setVerifications] = useState<VerificationRequest[]>([]);
+  const [moderatorApplications, setModeratorApplications] = useState<ModeratorApplication[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState<string | null>(null);
   const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot | null>(null);
@@ -289,6 +333,7 @@ export default function Admin() {
     setUsers([]);
     setTrades([]);
     setReports([]);
+    setModeratorApplications([]);
     void fetchData(false);
   }, [activeTab, authUser?.uid, isAdmin]);
 
@@ -426,6 +471,41 @@ export default function Admin() {
 
         setUsers(nextUsers);
         setReports(nextReports);
+      } else if (activeTab === 'moderators') {
+        const [nextModerators, nextApplications] = await Promise.all([
+          readQuery(
+            query(collection(db, 'users'), where('roles', 'array-contains', 'moderator'), limit(200)),
+            d => ({ userId: d.id, ...d.data() } as UserProfile),
+            'Moderators'
+          ),
+          readQuery(
+            query(collection(db, 'moderatorApplications'), limit(200)),
+            d => ({ id: d.id, ...d.data() } as ModeratorApplication),
+            'Moderator applications'
+          )
+        ]);
+
+        setUsers(
+          nextModerators.sort((a, b) => {
+            const statusRank: Record<string, number> = {
+              approved: 4,
+              pending_review: 3,
+              suspended: 2,
+              rejected: 1
+            };
+            const statusDelta =
+              (statusRank[b.moderatorStatus || ''] || 0) -
+              (statusRank[a.moderatorStatus || ''] || 0);
+
+            if (statusDelta !== 0) return statusDelta;
+
+            return getDisplayName(a).localeCompare(getDisplayName(b));
+          })
+        );
+
+        setModeratorApplications(
+          nextApplications.sort((a, b) => getMillis(b.createdAt) - getMillis(a.createdAt))
+        );
       }
     } catch (err) {
       console.error('Admin fetch error:', err);
@@ -623,6 +703,165 @@ export default function Admin() {
     } catch (error) {
       console.error('Payout update failed:', error);
       alert('Payout update failed.');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  const handleModeratorApplicationReview = async (
+    application: ModeratorApplication,
+    status: 'approved' | 'rejected'
+  ) => {
+    if (!application.userId) return;
+
+    setProcessing(`moderator_application_${application.id}`);
+
+    try {
+      const userUpdates: Record<string, any> = {
+        moderatorApplicationStatus: status,
+        moderatorStatus: status,
+        updatedAt: serverTimestamp()
+      };
+
+      if (status === 'approved') {
+        userUpdates.roles = arrayUnion('moderator');
+        userUpdates.isModerator = true;
+        userUpdates.moderatorVerified = true;
+        userUpdates.moderatorStatus = 'approved';
+        userUpdates.moderatorApplicationStatus = 'approved';
+        userUpdates.moderatorAvailability = 'available';
+        userUpdates.moderatorCity = application.cityOrRegion || '';
+        userUpdates.moderatorRegions = application.cityOrRegion
+          ? [application.cityOrRegion]
+          : [];
+        userUpdates.moderatorRoutes = application.routes || [];
+        userUpdates.moderatorTransportCapacity =
+          application.transportCapacity || 'Verified long-distance delivery support';
+        userUpdates.moderatorCanWithdrawImmediately = true;
+        userUpdates.moderatorApprovedAt = serverTimestamp();
+        userUpdates.moderatorApprovedBy = authUser?.uid || '';
+      }
+
+      await updateDoc(doc(db, 'moderatorApplications', application.id), {
+        status,
+        reviewedBy: authUser?.uid || '',
+        reviewedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      await updateDoc(doc(db, 'users', application.userId), userUpdates);
+
+      await logAudit(
+        status === 'approved' ? 'MODERATOR_APPROVED' : 'MODERATOR_REJECTED',
+        application.userId,
+        `Moderator application ${status}`,
+        { applicationId: application.id }
+      );
+
+      void fetchData(false);
+    } catch (error) {
+      console.error('Moderator review failed:', error);
+      alert('Moderator review failed.');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  const handleModeratorStatus = async (
+    moderator: UserProfile,
+    status: 'approved' | 'suspended'
+  ) => {
+    setProcessing(`moderator_${moderator.userId}`);
+
+    try {
+      await updateDoc(doc(db, 'users', moderator.userId), {
+        roles: arrayUnion('moderator'),
+        isModerator: status === 'approved',
+        moderatorVerified: status === 'approved',
+        moderatorStatus: status,
+        moderatorApplicationStatus: status,
+        moderatorAvailability: status === 'approved' ? 'available' : 'offline',
+        moderatorCanWithdrawImmediately: status === 'approved',
+        updatedAt: serverTimestamp(),
+        ...(status === 'approved'
+          ? {
+              moderatorApprovedAt: serverTimestamp(),
+              moderatorApprovedBy: authUser?.uid || ''
+            }
+          : {
+              moderatorSuspendedAt: serverTimestamp(),
+              moderatorSuspendedBy: authUser?.uid || ''
+            })
+      });
+
+      await logAudit(
+        status === 'approved' ? 'MODERATOR_RESTORED' : 'MODERATOR_SUSPENDED',
+        moderator.userId,
+        `Moderator marked ${status}`,
+        { email: moderator.email || '' }
+      );
+
+      void fetchData(false);
+    } catch (error) {
+      console.error('Moderator status update failed:', error);
+      alert('Moderator status update failed.');
+    } finally {
+      setProcessing(null);
+    }
+  };
+
+  const seedDefaultModerator = async () => {
+    setProcessing('seed_default_moderator');
+
+    try {
+      const defaultModeratorSnap = await getDocs(
+        query(collection(db, 'users'), where('email', '==', DEFAULT_MODERATOR_EMAIL), limit(1))
+      );
+
+      if (defaultModeratorSnap.empty) {
+        alert(
+          `${DEFAULT_MODERATOR_EMAIL} must sign in once before admin can verify the account as a moderator.`
+        );
+        return;
+      }
+
+      const defaultModeratorDoc = defaultModeratorSnap.docs[0];
+
+      await updateDoc(doc(db, 'users', defaultModeratorDoc.id), {
+        roles: arrayUnion('moderator', 'buyer', 'seller'),
+        isModerator: true,
+        moderatorVerified: true,
+        moderatorStatus: 'approved',
+        moderatorApplicationStatus: 'approved',
+        moderatorAvailability: 'available',
+        moderatorCity: 'Cameroon',
+        moderatorRegions: ['Douala', 'Bamenda', 'Bafoussam', 'Yaounde'],
+        moderatorRoutes: [
+          'Douala-Bamenda',
+          'Douala-Bafoussam',
+          'Douala-Yaounde',
+          'Bamenda-Bafoussam',
+          'Yaounde-Bafoussam'
+        ],
+        moderatorTransportCapacity:
+          'Verified Hema Moderator for long-distance marketplace delivery coordination.',
+        moderatorCanWithdrawImmediately: true,
+        moderatorApprovedAt: serverTimestamp(),
+        moderatorApprovedBy: authUser?.uid || '',
+        updatedAt: serverTimestamp()
+      });
+
+      await logAudit(
+        'DEFAULT_MODERATOR_SEEDED',
+        defaultModeratorDoc.id,
+        `${DEFAULT_MODERATOR_EMAIL} verified as moderator`
+      );
+
+      alert(`${DEFAULT_MODERATOR_EMAIL} is now a verified Hema Moderator.`);
+      void fetchData(false);
+    } catch (error) {
+      console.error('Default moderator seed failed:', error);
+      alert('Could not verify default moderator.');
     } finally {
       setProcessing(null);
     }
@@ -847,6 +1086,7 @@ export default function Admin() {
           {[
             { id: 'ops', icon: Activity, label: 'Overview' },
             { id: 'users', icon: Users, label: 'Users' },
+            { id: 'moderators', icon: BadgeCheck, label: 'Moderators' },
             { id: 'disputes', icon: Scale, label: 'Disputes' },
             { id: 'risk', icon: AlertOctagon, label: 'Risk Radar' },
             { id: 'fraud', icon: ShieldAlert, label: 'Fraud' },
@@ -1085,6 +1325,252 @@ export default function Admin() {
                 </button>
               </div>
             )}
+          </motion.div>
+        )}
+
+        {activeTab === 'moderators' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8">
+            <div className="flex flex-col justify-between gap-6 rounded-[2.5rem] border border-amber-500/20 bg-amber-500/10 p-8 md:flex-row md:items-center">
+              <div className="space-y-2">
+                <h3 className="flex items-center gap-3 font-serif text-2xl text-white">
+                  <BadgeCheck className="h-6 w-6 text-amber-500" />
+                  Moderator Control
+                </h3>
+                <p className="max-w-3xl text-[10px] font-black uppercase leading-relaxed tracking-widest text-amber-500/70">
+                  Approve trusted delivery moderators, suspend unsafe operators, and keep long-distance delivery coverage visible to buyers.
+                </p>
+              </div>
+              <button
+                onClick={seedDefaultModerator}
+                disabled={processing === 'seed_default_moderator'}
+                className="rounded-xl bg-amber-500 px-6 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl disabled:opacity-50"
+              >
+                {processing === 'seed_default_moderator'
+                  ? 'Verifying...'
+                  : 'Verify realmscity@gmail.com'}
+              </button>
+            </div>
+
+            <div className="grid gap-8 xl:grid-cols-[0.9fr_1.1fr]">
+              <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h3 className="font-serif text-2xl text-white">
+                      Moderator Applications
+                    </h3>
+                    <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      Admin approval is required before badges and requests unlock.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-amber-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-amber-500">
+                    {
+                      moderatorApplications.filter(
+                        application => application.status === 'pending_review'
+                      ).length
+                    } pending
+                  </span>
+                </div>
+
+                <div className="space-y-4">
+                  {moderatorApplications.length > 0 ? (
+                    moderatorApplications.slice(0, 12).map(application => (
+                      <div
+                        key={application.id}
+                        className="space-y-4 rounded-2xl border border-white/5 bg-black/30 p-5"
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="font-serif text-xl text-white">
+                              {application.displayName || application.email || 'Moderator Applicant'}
+                            </p>
+                            <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
+                              {application.cityOrRegion || 'Service region not listed'}
+                            </p>
+                          </div>
+                          <span
+                            className={`rounded-full px-3 py-1 text-[8px] font-black uppercase tracking-widest ${
+                              application.status === 'approved'
+                                ? 'bg-green-500/10 text-green-400'
+                                : application.status === 'rejected'
+                                  ? 'bg-red-500/10 text-red-400'
+                                  : application.status === 'suspended'
+                                    ? 'bg-slate-500/10 text-slate-400'
+                                    : 'bg-amber-500/10 text-amber-500'
+                            }`}
+                          >
+                            {application.status || 'pending_review'}
+                          </span>
+                        </div>
+
+                        <div className="grid gap-3 text-[10px] uppercase tracking-widest text-slate-500">
+                          <p>
+                            Phone:{' '}
+                            <span className="text-slate-300">
+                              {application.phoneNumber || 'Not provided'}
+                            </span>
+                          </p>
+                          <p>
+                            Routes:{' '}
+                            <span className="text-slate-300">
+                              {(application.routes || []).join(', ') || 'No routes listed'}
+                            </span>
+                          </p>
+                          <p>
+                            Capacity:{' '}
+                            <span className="text-slate-300">
+                              {application.transportCapacity || 'Not described'}
+                            </span>
+                          </p>
+                        </div>
+
+                        {application.status === 'pending_review' && (
+                          <div className="flex gap-2 pt-2">
+                            <button
+                              onClick={() =>
+                                handleModeratorApplicationReview(application, 'approved')
+                              }
+                              disabled={processing === `moderator_application_${application.id}`}
+                              className="flex-1 rounded-xl bg-green-500 py-3 text-[9px] font-black uppercase text-black disabled:opacity-50"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() =>
+                                handleModeratorApplicationReview(application, 'rejected')
+                              }
+                              disabled={processing === `moderator_application_${application.id}`}
+                              className="flex-1 rounded-xl bg-red-500/10 py-3 text-[9px] font-black uppercase text-red-400 disabled:opacity-50"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-white/5 bg-black/30 p-8 text-center text-sm text-slate-500">
+                      No moderator applications yet.
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="space-y-6 rounded-[2.5rem] border border-white/5 bg-brand-card p-8 shadow-2xl">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h3 className="font-serif text-2xl text-white">
+                      Verified Moderators
+                    </h3>
+                    <p className="mt-1 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      These accounts appear in the public moderator directory.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-green-500/10 px-3 py-1 text-[8px] font-black uppercase tracking-widest text-green-400">
+                    {users.filter(user => user.moderatorStatus === 'approved').length} active
+                  </span>
+                </div>
+
+                <div className="grid gap-4">
+                  {users.length > 0 ? (
+                    users.map(moderator => {
+                      const approved = moderator.moderatorStatus === 'approved';
+                      const suspended = moderator.moderatorStatus === 'suspended';
+
+                      return (
+                        <div
+                          key={moderator.userId}
+                          className="rounded-2xl border border-white/5 bg-black/30 p-5"
+                        >
+                          <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
+                            <div className="flex items-start gap-4">
+                              <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/20 bg-amber-500/10 font-serif text-xl uppercase text-amber-500">
+                                {getDisplayName(moderator).slice(0, 1)}
+                              </div>
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-serif text-xl text-white">
+                                    {getDisplayName(moderator)}
+                                  </p>
+                                  {approved && (
+                                    <span className="flex items-center gap-1 rounded-full border border-green-500/20 bg-green-500/10 px-2 py-1 text-[8px] font-black uppercase tracking-widest text-green-400">
+                                      <BadgeCheck className="h-3 w-3" />
+                                      Verified Moderator
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="mt-1 text-[9px] uppercase tracking-widest text-slate-500">
+                                  {moderator.email || 'No email'} | {moderator.moderatorAvailability || 'offline'}
+                                </p>
+                                <p className="mt-3 max-w-2xl text-xs leading-relaxed text-slate-400">
+                                  {moderator.moderatorTransportCapacity ||
+                                    'Moderator service details have not been added yet.'}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex gap-2">
+                              {approved ? (
+                                <button
+                                  onClick={() => handleModeratorStatus(moderator, 'suspended')}
+                                  disabled={processing === `moderator_${moderator.userId}`}
+                                  className="rounded-xl bg-red-500/10 px-5 py-3 text-[9px] font-black uppercase tracking-widest text-red-400 disabled:opacity-50"
+                                >
+                                  Suspend
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleModeratorStatus(moderator, 'approved')}
+                                  disabled={processing === `moderator_${moderator.userId}`}
+                                  className="rounded-xl bg-green-500 px-5 py-3 text-[9px] font-black uppercase tracking-widest text-black disabled:opacity-50"
+                                >
+                                  {suspended ? 'Restore' : 'Approve'}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="mt-5 grid gap-3 md:grid-cols-3">
+                            <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
+                              <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+                                Regions
+                              </p>
+                              <p className="mt-1 text-xs text-slate-300">
+                                {(moderator.moderatorRegions || []).join(', ') ||
+                                  moderator.moderatorCity ||
+                                  moderator.location ||
+                                  'Not listed'}
+                              </p>
+                            </div>
+                            <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
+                              <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+                                Routes
+                              </p>
+                              <p className="mt-1 text-xs text-slate-300">
+                                {(moderator.moderatorRoutes || []).join(', ') ||
+                                  'No routes listed'}
+                              </p>
+                            </div>
+                            <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
+                              <p className="text-[8px] font-black uppercase tracking-widest text-slate-600">
+                                Performance
+                              </p>
+                              <p className="mt-1 text-xs text-slate-300">
+                                {moderator.completedModeratorDeliveries || 0} deliveries |{' '}
+                                {safeNumber(moderator.moderatorRating || moderator.averageRating).toFixed(1)} rating
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-2xl border border-white/5 bg-black/30 p-8 text-center text-sm text-slate-500">
+                      No verified moderators yet. Use the button above to verify the default account after it signs in.
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
           </motion.div>
         )}
 
