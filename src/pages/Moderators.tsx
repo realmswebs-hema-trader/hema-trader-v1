@@ -6,7 +6,6 @@ import {
   Clock,
   Loader2,
   MapPin,
-  MessageCircle,
   Navigation,
   Search,
   ShieldCheck,
@@ -399,11 +398,11 @@ export default function Moderators() {
                     Profile
                   </Link>
                   <Link
-                    to={ownModeratorProfile ? '/moderator' : `/messages/${moderator.id}`}
+                    to={ownModeratorProfile ? '/moderator' : '/trades'}
                     className="flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 py-3 text-[9px] font-black uppercase tracking-widest text-slate-300 transition hover:bg-white/10"
                   >
-                    <MessageCircle className="h-3.5 w-3.5" />
-                    {ownModeratorProfile ? 'Dashboard' : 'Message'}
+                    <Navigation className="h-3.5 w-3.5" />
+                    {ownModeratorProfile ? 'Dashboard' : 'Use In Trade'}
                   </Link>
                 </div>
               </article>
