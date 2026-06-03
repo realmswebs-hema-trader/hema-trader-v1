@@ -43,6 +43,13 @@ export default function BottomNav() {
   }
 
   navItems.push({
+    icon: ShieldCheck,
+    label: 'Moderators',
+    path: '/moderators',
+    protected: true
+  });
+
+  navItems.push({
     icon: User,
     label: 'Profile',
     path: '/profile',
