@@ -14,7 +14,6 @@ import {
   type User
 } from 'firebase/auth';
 import {
-  Timestamp,
   doc,
   getDoc,
   serverTimestamp,
@@ -31,20 +30,7 @@ import {
   normalizeNameKey,
   syncUserAndFounderOnAuth
 } from '../../services/trustScoreService';
-
-type SubscriptionPlan = 'free' | 'starter' | 'pro' | 'business';
-type SubscriptionRole = 'buyer' | 'seller' | 'driver';
-type SubscriptionStatus = 'active' | 'expired' | 'cancelled';
-type SubscriptionPaymentStatus = 'paid' | 'unpaid' | 'trial';
-
-interface UserSubscription {
-  plan: SubscriptionPlan;
-  role: SubscriptionRole;
-  status: SubscriptionStatus;
-  startedAt: any;
-  expiresAt: any;
-  paymentStatus: SubscriptionPaymentStatus;
-}
+import { ensureFounderFollowForUser } from '../../services/followService';
 
 interface AuthProfile {
   userId: string;
@@ -55,7 +41,6 @@ interface AuthProfile {
   photoURL: string;
   roles: string[];
   activeRole?: string;
-  subscription?: UserSubscription;
   latitude?: number;
   longitude?: number;
   currentLocation?: {
@@ -116,11 +101,6 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const FOUNDER_ROLES = ['buyer', 'seller', 'driver', 'admin'];
-const SUBSCRIPTION_PLANS = ['free', 'starter', 'pro', 'business'] as const;
-const SUBSCRIPTION_ROLES = ['buyer', 'seller', 'driver'] as const;
-const SUBSCRIPTION_STATUSES = ['active', 'expired', 'cancelled'] as const;
-const SUBSCRIPTION_PAYMENT_STATUSES = ['paid', 'unpaid', 'trial'] as const;
-
 const FIRESTORE_TIMEOUT_MS = 8000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const PROFILE_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
@@ -173,66 +153,6 @@ const normalizeRoles = (roles: unknown): string[] => {
 const getFounderActiveRole = (data: any = {}) =>
   FOUNDER_ROLES.includes(data.activeRole) ? data.activeRole : 'admin';
 
-const isSubscriptionPlan = (value: unknown): value is SubscriptionPlan =>
-  SUBSCRIPTION_PLANS.includes(value as SubscriptionPlan);
-
-const isSubscriptionRole = (value: unknown): value is SubscriptionRole =>
-  SUBSCRIPTION_ROLES.includes(value as SubscriptionRole);
-
-const isSubscriptionStatus = (value: unknown): value is SubscriptionStatus =>
-  SUBSCRIPTION_STATUSES.includes(value as SubscriptionStatus);
-
-const isSubscriptionPaymentStatus = (
-  value: unknown
-): value is SubscriptionPaymentStatus =>
-  SUBSCRIPTION_PAYMENT_STATUSES.includes(value as SubscriptionPaymentStatus);
-
-const getSubscriptionRole = (
-  roles: string[],
-  activeRole?: string,
-  existingRole?: string
-): SubscriptionRole => {
-  if (isSubscriptionRole(existingRole)) return existingRole;
-  if (isSubscriptionRole(activeRole)) return activeRole;
-
-  const matchingRole = roles.find(role => isSubscriptionRole(role));
-  return isSubscriptionRole(matchingRole) ? matchingRole : 'buyer';
-};
-
-const buildSubscription = (
-  roles: string[],
-  activeRole: string,
-  existingData: any = {}
-): UserSubscription => {
-  const existingSubscription = existingData.subscription || {};
-  const now = new Date();
-  const defaultExpiry = new Date(now);
-
-  defaultExpiry.setFullYear(now.getFullYear() + 1);
-
-  return {
-    plan: isSubscriptionPlan(existingSubscription.plan)
-      ? existingSubscription.plan
-      : 'free',
-    role: getSubscriptionRole(
-      roles,
-      activeRole,
-      existingSubscription.role
-    ),
-    status: isSubscriptionStatus(existingSubscription.status)
-      ? existingSubscription.status
-      : 'active',
-    startedAt: existingSubscription.startedAt || Timestamp.fromDate(now),
-    expiresAt:
-      existingSubscription.expiresAt || Timestamp.fromDate(defaultExpiry),
-    paymentStatus: isSubscriptionPaymentStatus(
-      existingSubscription.paymentStatus
-    )
-      ? existingSubscription.paymentStatus
-      : 'trial'
-  };
-};
-
 const getSafeDisplayName = (firebaseUser: User, data: any = {}) => {
   if (isFounderEmail(firebaseUser.email)) return FOUNDER_NAME;
 
@@ -279,7 +199,6 @@ const buildProfile = (firebaseUser: User, data: any = {}): AuthProfile => {
     : data;
 
   const roles = normalizeRoles(mergedData.roles);
-  const activeRole = mergedData.activeRole ?? roles[0] ?? '';
 
   return {
     ...mergedData,
@@ -299,9 +218,7 @@ const buildProfile = (firebaseUser: User, data: any = {}): AuthProfile => {
       '',
     photoURL: mergedData.photoURL ?? firebaseUser.photoURL ?? '',
     roles,
-    activeRole,
-    subscription:
-      mergedData.subscription || buildSubscription(roles, activeRole, mergedData)
+    activeRole: mergedData.activeRole ?? roles[0] ?? ''
   };
 };
 
@@ -433,8 +350,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const phoneConfirmationRef = useRef<ConfirmationResult | null>(null);
 
   const runFounderSyncInBackground = (firebaseUser: User) => {
-    if (!isFounderEmail(firebaseUser.email)) return;
-
     const sessionKey = `hema_founder_sync_${firebaseUser.uid}`;
 
     if (window.sessionStorage.getItem(sessionKey)) return;
@@ -443,6 +358,19 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     syncUserAndFounderOnAuth(firebaseUser).catch(error => {
       console.error('Founder sync failed:', error);
+      window.sessionStorage.removeItem(sessionKey);
+    });
+  };
+
+  const runFounderFollowSyncInBackground = (firebaseUser: User) => {
+    const sessionKey = `hema_founder_follow_${firebaseUser.uid}`;
+
+    if (window.sessionStorage.getItem(sessionKey)) return;
+
+    window.sessionStorage.setItem(sessionKey, '1');
+
+    ensureFounderFollowForUser(firebaseUser).catch(error => {
+      console.error('Founder auto-follow failed:', error);
       window.sessionStorage.removeItem(sessionKey);
     });
   };
@@ -473,11 +401,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       : existingData.activeRole ?? roles[0] ?? 'buyer';
 
     const displayName = getSafeDisplayName(firebaseUser, existingData);
-    const subscription = buildSubscription(
-      roles,
-      nextActiveRole,
-      existingData
-    );
 
     const profileUpdate: Record<string, any> = {
       uid: firebaseUser.uid,
@@ -491,7 +414,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       photoURL: firebaseUser.photoURL || existingData.photoURL || '',
       roles,
       activeRole: nextActiveRole,
-      subscription,
       isOnline: true,
       online: true,
       lastActiveAt: serverTimestamp(),
@@ -517,6 +439,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
 
     runFounderSyncInBackground(firebaseUser);
+    runFounderFollowSyncInBackground(firebaseUser);
 
     let freshData = {
       ...existingData,
@@ -727,18 +650,12 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     if (isFounderEmail(user.email)) {
       const founderActiveRole = getFounderActiveRole(profile || {});
-      const founderSubscription = buildSubscription(
-        FOUNDER_ROLES,
-        founderActiveRole,
-        profile || {}
-      );
 
       await setDoc(
         doc(db, 'users', user.uid),
         {
           ...getFounderUserFields(profile || {}),
           activeRole: founderActiveRole,
-          subscription: founderSubscription,
           updatedAt: serverTimestamp()
         },
         { merge: true }
@@ -749,8 +666,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           ? {
               ...prev,
               ...getFounderUserFields(prev),
-              activeRole: founderActiveRole,
-              subscription: founderSubscription
+              activeRole: founderActiveRole
             }
           : prev
       );
@@ -762,16 +678,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const safeRoles = normalizeRoles(roles);
     const nextActiveRole = safeRoles[0] || '';
     const roleDefaults = buildRoleDefaults(safeRoles, profile || {});
-    const nextSubscription = buildSubscription(
-      safeRoles,
-      nextActiveRole,
-      profile || {}
-    );
 
     const updates: Record<string, any> = {
       roles: safeRoles,
       activeRole: nextActiveRole,
-      subscription: nextSubscription,
       updatedAt: serverTimestamp(),
       ...roleDefaults
     };
@@ -788,7 +698,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             ...prev,
             roles: safeRoles,
             activeRole: nextActiveRole,
-            subscription: nextSubscription,
             ...roleDefaults,
             ...(!safeRoles.includes('driver') ? { driverStatus: 'offline' } : {})
           }
@@ -808,21 +717,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       return;
     }
 
-    const nextSubscription = isSubscriptionRole(role)
-      ? {
-          ...buildSubscription(roles, role, profile),
-          role
-        }
-      : profile.subscription;
-
     const updates: Record<string, any> = {
       activeRole: role,
       updatedAt: serverTimestamp()
     };
-
-    if (nextSubscription) {
-      updates.subscription = nextSubscription;
-    }
 
     if (!isFounderEmail(user.email) && role === 'driver' && profile.driverStatus === 'offline') {
       updates.driverStatus = 'available';
@@ -837,7 +735,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             ...prev,
             roles,
             activeRole: role,
-            ...(nextSubscription ? { subscription: nextSubscription } : {}),
             ...(updates.driverStatus ? { driverStatus: updates.driverStatus } : {})
           }
         : prev
