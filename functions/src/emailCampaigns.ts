@@ -1,7 +1,7 @@
 import * as admin from 'firebase-admin';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { defineSecret } from 'firebase-functions/params';
-import nodemailer from 'nodemailer';
+import * as nodemailer from 'nodemailer';
 
 if (!admin.apps.length) {
   admin.initializeApp();
@@ -221,11 +221,7 @@ const buildHtmlEmail = (
 export const sendAdminEmailCampaign = onCall(
   {
     region: 'us-central1',
-    cors: [
-      'https://hema-trader-v1.onrender.com',
-      'http://localhost:5173',
-      'http://localhost:3000'
-    ],
+    cors: true,
     timeoutSeconds: 540,
     memory: '512MiB',
     secrets: [
@@ -279,15 +275,29 @@ export const sendAdminEmailCampaign = onCall(
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    const transporter = nodemailer.createTransport({
-      host: 'smtp.mailbox.org',
-      port: 465,
-      secure: true,
-      auth: {
-        user: smtpUser,
-        pass: smtpPassword
-      }
-    });
+    let transporter: nodemailer.Transporter;
+
+    try {
+      transporter = nodemailer.createTransport({
+        host: 'smtp.mailbox.org',
+        port: 465,
+        secure: true,
+        auth: {
+          user: smtpUser,
+          pass: smtpPassword
+        }
+      });
+
+      await transporter.verify();
+    } catch (error) {
+      console.error('Mailbox SMTP setup failed:', error);
+      throw new HttpsError(
+        'failed-precondition',
+        error instanceof Error
+          ? `Mailbox SMTP setup failed: ${error.message}`
+          : 'Mailbox SMTP setup failed. Check mailbox.org credentials and app password.'
+      );
+    }
 
     let sentCount = 0;
     let failedCount = 0;
@@ -348,6 +358,31 @@ export const sendAdminEmailCampaign = onCall(
       recipientCount: recipients.length,
       sentCount,
       failedCount
+    };
+  }
+);
+
+export const testAdminEmailCampaignSetup = onCall(
+  {
+    region: 'us-central1',
+    cors: true,
+    secrets: [
+      MAILBOX_SMTP_USER,
+      MAILBOX_SMTP_PASSWORD,
+      ADMIN_CC_EMAIL,
+      APP_BASE_URL
+    ]
+  },
+  async request => {
+    await assertAdmin(request.auth?.uid, request.auth?.token.email as string | undefined);
+
+    return {
+      ok: true,
+      smtpUserConfigured: Boolean(MAILBOX_SMTP_USER.value()),
+      smtpPasswordConfigured: Boolean(MAILBOX_SMTP_PASSWORD.value()),
+      adminCcConfigured: Boolean(ADMIN_CC_EMAIL.value()),
+      appBaseUrlConfigured: Boolean(APP_BASE_URL.value()),
+      callerEmail: request.auth?.token.email || ''
     };
   }
 );
