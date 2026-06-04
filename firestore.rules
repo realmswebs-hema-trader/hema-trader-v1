@@ -1,4 +1,4 @@
-rules_version = '2';
+﻿rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -20,10 +20,20 @@ service cloud.firestore {
       return signedIn() &&
         (
           isFounderAdminEmail() ||
-          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+          (
+            exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            (
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true ||
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.admin == true ||
+              (
+                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles is list &&
+                'admin' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.roles
+              )
+            )
+          )
         );
     }
-
     function isUser(userId) {
       return signedIn() && request.auth.uid == userId;
     }
@@ -1000,6 +1010,9 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    match /emailCampaigns/{campaignId} {
+      allow read, write: if isAdmin();
+    }
     match /adminLogs/{logId} {
       allow read, write: if isAdmin();
     }
