@@ -24,7 +24,7 @@ export interface AdminEmailCampaignResult {
 export const sendAdminEmailCampaign = async (
   input: AdminEmailCampaignInput
 ) => {
-  const functions = getFunctions();
+  const functions = getFunctions(undefined, 'us-central1');
   const sendCampaign = httpsCallable<
     AdminEmailCampaignInput,
     AdminEmailCampaignResult
