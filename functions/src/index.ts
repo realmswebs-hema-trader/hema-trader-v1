@@ -1,12 +1,14 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
-import { initializeApp } from 'firebase-admin/app';
+import { getApps, initializeApp } from 'firebase-admin/app';
 import {
   FieldValue,
   Timestamp,
   getFirestore
 } from 'firebase-admin/firestore';
 
-initializeApp();
+if (!getApps().length) {
+  initializeApp();
+}
 
 const db = getFirestore();
 const ADMIN_EMAIL = 'realmswebs@gmail.com';
