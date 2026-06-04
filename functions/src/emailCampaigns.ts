@@ -221,6 +221,11 @@ const buildHtmlEmail = (
 export const sendAdminEmailCampaign = onCall(
   {
     region: 'us-central1',
+    cors: [
+      'https://hema-trader-v1.onrender.com',
+      'http://localhost:5173',
+      'http://localhost:3000'
+    ],
     timeoutSeconds: 540,
     memory: '512MiB',
     secrets: [
@@ -237,8 +242,17 @@ export const sendAdminEmailCampaign = onCall(
     assertCampaignInput(input);
 
     const smtpUser = MAILBOX_SMTP_USER.value() || FROM_EMAIL;
+    const smtpPassword = MAILBOX_SMTP_PASSWORD.value();
     const adminReplyEmail = ADMIN_CC_EMAIL.value() || ADMIN_EMAIL;
     const appBaseUrl = APP_BASE_URL.value() || 'https://hema-trader-v1.onrender.com';
+
+    if (!smtpPassword) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Mailbox SMTP password is not configured. Set MAILBOX_SMTP_PASSWORD in Firebase Functions secrets.'
+      );
+    }
+
     const recipients = await getRecipients(input.audience, input.recipientIds || []);
 
     if (recipients.length === 0) {
@@ -271,7 +285,7 @@ export const sendAdminEmailCampaign = onCall(
       secure: true,
       auth: {
         user: smtpUser,
-        pass: MAILBOX_SMTP_PASSWORD.value()
+        pass: smtpPassword
       }
     });
 
