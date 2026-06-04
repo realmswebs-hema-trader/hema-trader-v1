@@ -29,6 +29,7 @@ import {
   Gavel,
   HeartPulse,
   Loader2,
+  Mail,
   Scale,
   ShieldAlert,
   ShieldCheck,
@@ -55,6 +56,7 @@ import {
 import { useAuth } from '../components/auth/AuthContext';
 import { REVENUE_CONFIG } from '../config/revenueConfig';
 import { db } from '../lib/firebase';
+import AdminEmailPanel from '../components/admin/AdminEmailPanel';
 
 const ADMIN_EMAIL = 'realmswebs@gmail.com';
 const DEFAULT_MODERATOR_EMAIL = 'realmscity@gmail.com';
@@ -65,6 +67,7 @@ type AdminTab =
   | 'ops'
   | 'users'
   | 'moderators'
+  | 'email'
   | 'disputes'
   | 'risk'
   | 'fraud'
@@ -1087,6 +1090,7 @@ export default function Admin() {
             { id: 'ops', icon: Activity, label: 'Overview' },
             { id: 'users', icon: Users, label: 'Users' },
             { id: 'moderators', icon: BadgeCheck, label: 'Moderators' },
+            { id: 'email', icon: Mail, label: 'Email' },
             { id: 'disputes', icon: Scale, label: 'Disputes' },
             { id: 'risk', icon: AlertOctagon, label: 'Risk Radar' },
             { id: 'fraud', icon: ShieldAlert, label: 'Fraud' },
@@ -1571,6 +1575,12 @@ export default function Admin() {
                 </div>
               </section>
             </div>
+          </motion.div>
+        )}
+
+        {activeTab === 'email' && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <AdminEmailPanel />
           </motion.div>
         )}
 
