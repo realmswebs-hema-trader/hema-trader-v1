@@ -15,11 +15,11 @@ import {
   query
 } from 'firebase/firestore';
 
-import { db } from '../lib/firebase';
+import { db } from '../../lib/firebase';
 import {
   sendAdminEmailCampaign,
   type EmailAudience
-} from '../services/emailCampaignService';
+} from '../../services/emailCampaignService';
 
 interface UserEmailRow {
   id: string;
