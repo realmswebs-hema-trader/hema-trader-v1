@@ -468,3 +468,8 @@ export const requestPayout = onCall(async request => {
 
   return { success: true };
 });
+
+export {
+  sendAdminEmailCampaign,
+  testAdminEmailCampaignSetup
+} from './emailCampaigns';
