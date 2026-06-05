@@ -471,5 +471,7 @@ export const requestPayout = onCall(async request => {
 
 export {
   sendAdminEmailCampaign,
-  testAdminEmailCampaignSetup
+  testAdminEmailCampaignSetup,
+  sendWelcomeEmailOnUserCreate,
+  sendNewListingEmailOnListingCreate
 } from './emailCampaigns';
