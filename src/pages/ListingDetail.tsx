@@ -3,13 +3,16 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
+  increment,
   limit,
   query,
   runTransaction,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where
 } from 'firebase/firestore';
@@ -37,11 +40,6 @@ import { useNotifications } from '../components/notifications/NotificationContex
 import { REVENUE_CONFIG } from '../config/revenueConfig';
 import { db } from '../lib/firebase';
 import { payListingBoostFromWallet } from '../services/walletService';
-import {
-  followUser,
-  subscribeToFollowState,
-  unfollowUser
-} from '../services/followService';
 import {
   calculateDistance,
   formatDistance,
@@ -394,23 +392,50 @@ export default function ListingDetail() {
   const [isFollowing, setIsFollowing] = useState(false);
   const [followingLoading, setFollowingLoading] = useState(false);
   const [boosting, setBoosting] = useState<ListingBoostType | null>(null);
+  const [selectedImageIndex, setSelectedImageIndex] = useState(0);
 
   useEffect(() => {
     if (!user || !listing) return;
 
-    const sellerId = getListingSellerId(listing);
+    const checkFollow = async () => {
+      try {
+        const sellerId = getListingSellerId(listing);
 
-    if (!sellerId || sellerId === user.uid) {
-      setIsFollowing(false);
-      return;
-    }
+        if (!sellerId || sellerId === user.uid) {
+          setIsFollowing(false);
+          return;
+        }
 
-    return subscribeToFollowState({
-      followerId: user.uid,
-      followingId: sellerId,
-      onChange: setIsFollowing
-    });
+        const followId = `${user.uid}_${sellerId}`;
+        const followSnap = await getDoc(doc(db, 'follows', followId));
+
+        setIsFollowing(followSnap.exists());
+      } catch (err) {
+        console.warn('Could not check follow state:', err);
+        setIsFollowing(false);
+      }
+    };
+
+    checkFollow();
   }, [user, listing]);
+
+  useEffect(() => {
+    setSelectedImageIndex(0);
+  }, [id]);
+
+  const updateUserCounterSafely = async (
+    userId: string,
+    field: 'followersCount' | 'followingCount',
+    amount: number
+  ) => {
+    try {
+      await updateDoc(doc(db, 'users', userId), {
+        [field]: increment(amount)
+      });
+    } catch (err) {
+      console.warn(`Could not update ${field}:`, err);
+    }
+  };
 
   const toggleFollow = async () => {
     if (!user || !listing || !seller) return;
@@ -421,12 +446,12 @@ export default function ListingDetail() {
 
     setFollowingLoading(true);
 
+    const followId = `${user.uid}_${sellerId}`;
+    const followRef = doc(db, 'follows', followId);
+
     try {
       if (isFollowing) {
-        await unfollowUser({
-          followerId: user.uid,
-          followingId: sellerId
-        });
+        await deleteDoc(followRef);
 
         setIsFollowing(false);
         setSeller(prev =>
@@ -437,11 +462,16 @@ export default function ListingDetail() {
               }
             : null
         );
+
+        void updateUserCounterSafely(user.uid, 'followingCount', -1);
+        void updateUserCounterSafely(sellerId, 'followersCount', -1);
       } else {
-        await followUser({
+        await setDoc(followRef, {
           followerId: user.uid,
           followingId: sellerId,
-          autoFollowedFounder: false
+          participantIds: [user.uid, sellerId],
+          participants: [user.uid, sellerId],
+          createdAt: serverTimestamp()
         });
 
         setIsFollowing(true);
@@ -453,6 +483,9 @@ export default function ListingDetail() {
               }
             : null
         );
+
+        void updateUserCounterSafely(user.uid, 'followingCount', 1);
+        void updateUserCounterSafely(sellerId, 'followersCount', 1);
 
         void sendNotification(sellerId, {
           title: 'New Follower',
@@ -874,6 +907,7 @@ export default function ListingDetail() {
   }
 
   const listingImages = getListingImages(listing);
+  const selectedImage = listingImages[selectedImageIndex] || listingImages[0] || '';
   const userPoint = toGeoPoint(profile);
   const listingPoint = toGeoPoint(listing);
   const distance =
@@ -903,14 +937,14 @@ export default function ListingDetail() {
   return (
     <div className="mx-auto max-w-6xl space-y-8 pb-20">
       <div className="overflow-hidden rounded-[2rem] border border-white/5 bg-brand-card shadow-2xl">
-        <div className="grid grid-cols-1 lg:grid-cols-[0.95fr_1.05fr]">
-          <div className="relative min-h-[280px] border-b border-white/5 bg-slate-900 lg:border-b-0 lg:border-r">
-            <div className="aspect-[4/3] h-full max-h-[520px] w-full">
-              {listingImages[0] ? (
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+          <div className="relative min-h-[280px] min-w-0 border-b border-white/5 bg-slate-950 lg:border-b-0 lg:border-r">
+            <div className="aspect-[4/3] h-full max-h-[560px] w-full bg-slate-950">
+              {selectedImage ? (
                 <img
-                  src={listingImages[0]}
-                  alt={listing.title}
-                  className="h-full w-full object-cover grayscale-[0.15] transition-all duration-700 hover:grayscale-0"
+                  src={selectedImage}
+                  alt={`${listing.title} photo ${selectedImageIndex + 1}`}
+                  className="h-full w-full object-contain grayscale-[0.08] transition-all duration-700 hover:grayscale-0"
                 />
               ) : (
                 <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/20 text-center">
@@ -929,6 +963,39 @@ export default function ListingDetail() {
               )}
             </div>
 
+            {listingImages.length > 1 && (
+              <div className="border-t border-white/5 bg-black/60 p-3">
+                <div className="grid grid-cols-4 gap-3 sm:grid-cols-5">
+                  {listingImages.map((imageUrl, imageIndex) => {
+                    const selected = imageIndex === selectedImageIndex;
+
+                    return (
+                      <button
+                        key={`${imageUrl}-${imageIndex}`}
+                        type="button"
+                        onClick={() => setSelectedImageIndex(imageIndex)}
+                        className={`relative aspect-[4/3] overflow-hidden rounded-xl border transition ${
+                          selected
+                            ? 'border-amber-500 ring-2 ring-amber-500/20'
+                            : 'border-white/10 opacity-70 hover:border-white/30 hover:opacity-100'
+                        }`}
+                        aria-label={`View product photo ${imageIndex + 1}`}
+                      >
+                        <img
+                          src={imageUrl}
+                          alt={`${listing.title} thumbnail ${imageIndex + 1}`}
+                          className="h-full w-full object-cover"
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-center text-[8px] font-black uppercase tracking-widest text-slate-600">
+                  {selectedImageIndex + 1} of {listingImages.length} photos
+                </p>
+              </div>
+            )}
+
             <div className="absolute left-4 top-4 rounded-full border border-white/10 bg-black/70 px-3 py-1.5 backdrop-blur-md">
               <p className="text-[8px] font-black uppercase tracking-widest text-amber-500">
                 {listing.category}
@@ -944,7 +1011,7 @@ export default function ListingDetail() {
             </div>
           </div>
 
-          <div className="flex flex-col p-6 md:p-8">
+          <div className="flex min-w-0 flex-col p-6 md:p-8">
             {activeBoost && (
               <div className="mb-4 flex w-max items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2">
                 <Star className="h-4 w-4 fill-amber-500 text-amber-500" />
@@ -966,25 +1033,25 @@ export default function ListingDetail() {
               )}
             </div>
 
-            <h1 className="font-serif text-3xl leading-tight tracking-tight text-white md:text-4xl">
+            <h1 className="break-words font-serif text-3xl leading-tight tracking-tight text-white md:text-4xl">
               {listing.title}
             </h1>
 
-            <div className="mt-5 grid gap-4 border-b border-white/5 pb-5 sm:grid-cols-[1fr_auto] sm:items-end">
-              <div>
+            <div className="mt-5 grid min-w-0 gap-4 border-b border-white/5 pb-5 xl:grid-cols-[minmax(0,1fr)_max-content] xl:items-end">
+              <div className="min-w-0">
                 <p className="text-[9px] font-black uppercase tracking-widest text-slate-600">
                   Price
                 </p>
-                <p className="mt-1 text-4xl font-black tracking-tight text-amber-500 md:text-5xl">
+                <p className="mt-1 break-words text-3xl font-black tracking-tight text-amber-500 sm:text-4xl md:text-5xl">
                   {listingPrice}
                 </p>
               </div>
 
-              <div className="sm:text-right">
+              <div className="min-w-0 xl:text-right">
                 <p className="text-[9px] font-black uppercase tracking-widest text-slate-600">
                   Availability
                 </p>
-                <p className="mt-1 font-serif text-xl italic text-white">
+                <p className="mt-1 break-words font-serif text-lg italic text-white md:text-xl">
                   {inventoryType === 'single'
                     ? listingAvailabilityLabel(listing)
                     : listing.quantity}
@@ -1057,7 +1124,7 @@ export default function ListingDetail() {
                 <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
                   Location
                 </p>
-                <p className="mt-1 truncate text-xs font-bold text-white">
+                <p className="mt-1 break-words text-xs font-bold text-white">
                   {displayListingLocation(listing)}
                 </p>
                 {distance !== null && (
@@ -1075,7 +1142,7 @@ export default function ListingDetail() {
                 <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-slate-600">
                   Map
                 </p>
-                <p className="mt-1 text-xs font-bold text-white">
+                <p className="mt-1 break-words text-xs font-bold text-white">
                   Open nearby
                 </p>
               </Link>
@@ -1088,7 +1155,7 @@ export default function ListingDetail() {
                 <p className="mt-3 text-[8px] font-black uppercase tracking-widest text-green-400">
                   Delivery
                 </p>
-                <p className="mt-1 text-xs font-bold text-white">
+                <p className="mt-1 break-words text-xs font-bold text-white">
                   Find driver
                 </p>
               </Link>
@@ -1101,7 +1168,7 @@ export default function ListingDetail() {
                     <p className="mb-1 text-[8px] font-black uppercase tracking-widest text-slate-600">
                       {key}
                     </p>
-                    <p className="font-serif text-sm text-white">{value}</p>
+                    <p className="break-words font-serif text-sm text-white">{value}</p>
                   </div>
                 ))}
               </div>
@@ -1112,7 +1179,7 @@ export default function ListingDetail() {
                 <Scale className="h-3 w-3" />
                 Product Description
               </h3>
-              <p className="line-clamp-5 whitespace-pre-wrap border-l-2 border-amber-500/10 pl-4 font-serif text-sm italic leading-relaxed text-slate-400">
+              <p className="whitespace-pre-wrap break-words border-l-2 border-amber-500/10 pl-4 font-serif text-sm italic leading-relaxed text-slate-400">
                 "{listing.description}"
               </p>
             </div>
