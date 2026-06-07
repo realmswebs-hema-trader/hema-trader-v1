@@ -11,7 +11,7 @@ const {
   MAILCHIMP_AUDIENCE_ID = '5aa53b8bae',
   APP_BASE_URL = 'https://hema-trader-v1.onrender.com',
   ADMIN_EMAIL = 'realmswebs@gmail.com',
-  CORS_ORIGINS = 'https://hema-trader-v1.onrender.com,http://localhost:5173,http://localhost:3000'
+  CORS_ORIGINS = 'https://hema-trader-v1-web.onrender.com,https://hema-trader-v1.onrender.com,http://localhost:5173,http://localhost:3000'
 } = process.env;
 
 if (!admin.apps.length) {
@@ -153,25 +153,28 @@ const syncRecipientToMailchimp = async recipient => {
         status_if_new: 'subscribed',
         merge_fields: {
           FNAME: name.firstName || 'Trader',
-          LNAME: name.lastName,
-          USERID: recipient.id || ''
+          LNAME: name.lastName || ''
         }
       }
     }
   );
 
-  await mailchimpRequest(
-    `/lists/${MAILCHIMP_AUDIENCE_ID}/members/${subscriberHash(email)}/tags`,
-    {
-      method: 'POST',
-      body: {
-        tags: [
-          { name: 'Hema Trader', status: 'active' },
-          { name: isModerator(recipient) ? 'Moderator' : 'User', status: 'active' }
-        ]
+  try {
+    await mailchimpRequest(
+      `/lists/${MAILCHIMP_AUDIENCE_ID}/members/${subscriberHash(email)}/tags`,
+      {
+        method: 'POST',
+        body: {
+          tags: [
+            { name: 'Hema Trader', status: 'active' },
+            { name: isModerator(recipient) ? 'Moderator' : 'User', status: 'active' }
+          ]
+        }
       }
-    }
-  );
+    );
+  } catch (error) {
+    console.warn('Mailchimp tag sync failed, continuing:', error);
+  }
 };
 
 const createStaticSegment = async (name, emails) => {
