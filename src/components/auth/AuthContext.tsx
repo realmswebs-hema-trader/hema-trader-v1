@@ -31,6 +31,7 @@ import {
   syncUserAndFounderOnAuth
 } from '../../services/trustScoreService';
 import { ensureFounderFollowForUser } from '../../services/followService';
+import { sendWelcomeEmail } from '../../services/emailCampaignService';
 
 interface AuthProfile {
   userId: string;
@@ -375,6 +376,27 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     });
   };
 
+  const runWelcomeEmailInBackground = (firebaseUser: User) => {
+    const sessionKey = `hema_welcome_email_${firebaseUser.uid}`;
+
+    try {
+      if (window.sessionStorage.getItem(sessionKey)) return;
+      window.sessionStorage.setItem(sessionKey, '1');
+    } catch {
+      // Session storage is optional. Continue without blocking auth.
+    }
+
+    sendWelcomeEmail(firebaseUser).catch(error => {
+      console.warn('Welcome email failed:', error);
+
+      try {
+        window.sessionStorage.removeItem(sessionKey);
+      } catch {
+        // Ignore storage cleanup failures.
+      }
+    });
+  };
+
   const saveUserProfile = async (firebaseUser: User) => {
     const userRef = doc(db, 'users', firebaseUser.uid);
     const cachedData = readCachedProfile(firebaseUser.uid);
@@ -440,6 +462,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     runFounderSyncInBackground(firebaseUser);
     runFounderFollowSyncInBackground(firebaseUser);
+    runWelcomeEmailInBackground(firebaseUser);
 
     let freshData = {
       ...existingData,
