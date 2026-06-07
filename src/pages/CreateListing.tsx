@@ -31,6 +31,7 @@ import {
 import { useAuth } from '../components/auth/AuthContext';
 import { useNotifications } from '../components/notifications/NotificationContext';
 import { db } from '../lib/firebase';
+import { sendNewListingEmail } from '../services/emailCampaignService';
 
 interface ListingGpsLocation {
   latitude: number;
@@ -882,6 +883,10 @@ export default function CreateListing() {
       });
 
       await notifyFollowersOfNewListing(listingDoc.id);
+
+      sendNewListingEmail(listingDoc.id, user).catch(emailError => {
+        console.warn('New listing email failed:', emailError);
+      });
 
       navigate('/');
     } catch (error) {
