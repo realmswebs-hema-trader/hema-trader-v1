@@ -47,13 +47,14 @@ const getCurrentUser = (user?: User | null) => {
   return currentUser;
 };
 
-const callEmailEngine = async <T>(
+const callEmailEngine = async <T,>(
   path: string,
   body: Record<string, unknown>,
   user?: User | null
 ): Promise<T> => {
   const currentUser = getCurrentUser(user);
   const token = await currentUser.getIdToken();
+
   const response = await fetch(`${getEmailApiBaseUrl()}${path}`, {
     method: 'POST',
     headers: {
@@ -78,16 +79,18 @@ export const sendAdminEmailCampaign = async (
 ) =>
   callEmailEngine<EmailCampaignResult>(
     '/api/email/admin-campaign',
-    input,
+    {
+      ...input,
+      subject: input.subject.trim(),
+      title: input.title.trim(),
+      body: input.body.trim(),
+      recipientIds: input.recipientIds || []
+    },
     user
   );
 
 export const sendWelcomeEmail = async (user?: User | null) =>
-  callEmailEngine<EmailCampaignResult>(
-    '/api/email/welcome-user',
-    {},
-    user
-  );
+  callEmailEngine<EmailCampaignResult>('/api/email/welcome-user', {}, user);
 
 export const sendNewListingEmail = async (
   listingId: string,
