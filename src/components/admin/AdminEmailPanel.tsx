@@ -41,6 +41,10 @@ const isModerator = (user: UserEmailRow) =>
     user.moderatorVerified === true &&
     user.moderatorStatus === 'approved');
 
+const emailApiBaseUrl = import.meta.env.VITE_EMAIL_API_BASE_URL as
+  | string
+  | undefined;
+
 export default function AdminEmailPanel() {
   const [users, setUsers] = useState<UserEmailRow[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
@@ -56,6 +60,8 @@ export default function AdminEmailPanel() {
   const [body, setBody] = useState('');
   const [ctaLabel, setCtaLabel] = useState('');
   const [ctaUrl, setCtaUrl] = useState('');
+
+  const emailEngineConfigured = Boolean(emailApiBaseUrl);
 
   useEffect(() => {
     let mounted = true;
@@ -134,6 +140,13 @@ export default function AdminEmailPanel() {
   };
 
   const sendCampaign = async () => {
+    if (!emailEngineConfigured) {
+      setMessage(
+        'VITE_EMAIL_API_BASE_URL is not configured on the main Render app service.'
+      );
+      return;
+    }
+
     if (!subject.trim() || !title.trim() || !body.trim()) {
       setMessage('Subject, title, and body are required.');
       return;
@@ -198,7 +211,7 @@ export default function AdminEmailPanel() {
               Email Campaigns
             </h2>
             <p className="mt-2 max-w-3xl text-[10px] font-black uppercase leading-relaxed tracking-widest text-slate-500">
-              Send branded Hema Trader updates, newsletters, safety notices, and promos from hematrader@mailbox.org.
+              Send branded Hema Trader updates, newsletters, safety notices, and promos through the Render email engine and Mailchimp.
             </p>
           </div>
 
@@ -210,6 +223,7 @@ export default function AdminEmailPanel() {
               </p>
               <p className="font-serif text-xl text-white">{users.length}</p>
             </div>
+
             <div className="rounded-2xl border border-white/5 bg-black/30 p-4">
               <BadgeCheck className="mx-auto h-4 w-4 text-green-400" />
               <p className="mt-2 text-[8px] font-black uppercase text-slate-600">
@@ -217,6 +231,7 @@ export default function AdminEmailPanel() {
               </p>
               <p className="font-serif text-xl text-white">{moderatorCount}</p>
             </div>
+
             <div className="rounded-2xl border border-white/5 bg-black/30 p-4">
               <Send className="mx-auto h-4 w-4 text-blue-400" />
               <p className="mt-2 text-[8px] font-black uppercase text-slate-600">
@@ -227,6 +242,15 @@ export default function AdminEmailPanel() {
           </div>
         </div>
       </section>
+
+      {!emailEngineConfigured && (
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm leading-relaxed text-red-200">
+          Email engine is not configured. Add{' '}
+          <span className="font-bold text-white">VITE_EMAIL_API_BASE_URL</span>{' '}
+          to the main Render static site environment variables, set it to your
+          Render email engine URL, then redeploy the main app.
+        </div>
+      )}
 
       {message && (
         <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-200">
@@ -245,24 +269,28 @@ export default function AdminEmailPanel() {
               placeholder="Email subject"
               className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
             />
+
             <input
               value={preheader}
               onChange={event => setPreheader(event.target.value)}
               placeholder="Short preview text"
               className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
             />
+
             <input
               value={title}
               onChange={event => setTitle(event.target.value)}
               placeholder="Email headline"
               className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
             />
+
             <textarea
               value={body}
               onChange={event => setBody(event.target.value)}
               placeholder="Write the message. You can include updates, promotions, safety notices, or newsletter content."
               className="min-h-52 resize-y rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm leading-relaxed text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
             />
+
             <div className="grid gap-4 md:grid-cols-2">
               <input
                 value={ctaLabel}
@@ -270,6 +298,7 @@ export default function AdminEmailPanel() {
                 placeholder="Button label, optional"
                 className="rounded-xl border border-white/5 bg-black/40 px-5 py-4 text-sm text-white placeholder:text-slate-700 focus:border-amber-500 focus:outline-none"
               />
+
               <input
                 value={ctaUrl}
                 onChange={event => setCtaUrl(event.target.value)}
@@ -281,10 +310,14 @@ export default function AdminEmailPanel() {
 
           <button
             onClick={sendCampaign}
-            disabled={working || recipientCount === 0}
+            disabled={working || recipientCount === 0 || !emailEngineConfigured}
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-amber-500 py-4 text-[10px] font-black uppercase tracking-widest text-black shadow-xl disabled:opacity-50"
           >
-            {working ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            {working ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
             Send Branded Email
           </button>
         </section>
@@ -351,7 +384,10 @@ export default function AdminEmailPanel() {
                             {user.email}
                           </p>
                         </div>
-                        {selected && <CheckCircle2 className="h-4 w-4 text-amber-500" />}
+
+                        {selected && (
+                          <CheckCircle2 className="h-4 w-4 text-amber-500" />
+                        )}
                       </button>
                     );
                   })
