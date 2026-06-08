@@ -355,6 +355,8 @@ const sendToRecipients = async ({ recipients, input, source, sourceId, createdBy
   }
 
   if (syncedRecipients.length === 0) {
+    console.error('Mailchimp recipient sync failures:', failures.slice(0, 10));
+
     await campaignRef.set(
       {
         status: 'failed',
@@ -365,7 +367,8 @@ const sendToRecipients = async ({ recipients, input, source, sourceId, createdBy
       { merge: true }
     );
 
-    throw new Error('No recipients could be synced to Mailchimp.');
+    const firstFailure = failures[0]?.error || 'No recipients could be synced to Mailchimp.';
+    throw new Error(`No recipients could be synced to Mailchimp. First error: ${firstFailure}`);
   }
 
   const { campaign, segmentId } = await createAndSendCampaign({
